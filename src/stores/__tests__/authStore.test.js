@@ -161,4 +161,60 @@ describe('Auth Store & Session Lifecycle', () => {
       'Demo login is only available in mock backend mode.'
     )
   })
+
+  it('handles remote signup with active session and hydrates profile', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+
+    const mockSession = { access_token: 'jwt_signed_up', user: { id: 'usr_bob' } }
+    const mockUser = { id: 'usr_bob', name: 'Bob New', roles: ['customer'] }
+
+    vi.spyOn(authService, 'signup').mockResolvedValue({
+      session: mockSession,
+      authUser: mockSession.user,
+      needsConfirmation: false,
+    })
+    vi.spyOn(authService, 'me').mockResolvedValue(mockUser)
+
+    const result = await useAuthStore.getState().signup('bob@campus.edu', 'secret1234', { name: 'Bob New' })
+
+    expect(result.needsConfirmation).toBe(false)
+    expect(result.user).toEqual(mockUser)
+    expect(useAuthStore.getState().token).toBe('jwt_signed_up')
+    expect(useAuthStore.getState().user).toEqual(mockUser)
+  })
+
+  it('handles remote signup when confirmation is required without persisting false session', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+
+    const mockUser = { id: 'usr_unverified', email: 'pending@campus.edu' }
+
+    vi.spyOn(authService, 'signup').mockResolvedValue({
+      session: null,
+      authUser: mockUser,
+      needsConfirmation: true,
+    })
+
+    const result = await useAuthStore.getState().signup('pending@campus.edu', 'secret1234', { name: 'Pending User' })
+
+    expect(result.needsConfirmation).toBe(true)
+    expect(result.user).toEqual(mockUser)
+    expect(useAuthStore.getState().token).toBeNull()
+    expect(useAuthStore.getState().session).toBeNull()
+  })
+
+  it('handles signup database trigger failure gracefully without polluting session state', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+
+    vi.spyOn(authService, 'signup').mockRejectedValue(
+      new Error('Database error saving new user')
+    )
+
+    await expect(
+      useAuthStore.getState().signup('error@campus.edu', 'secret1234', { name: 'Err User' })
+    ).rejects.toThrow('Database error saving new user')
+
+    expect(useAuthStore.getState().token).toBeNull()
+    expect(useAuthStore.getState().session).toBeNull()
+    expect(useAuthStore.getState().user).toBeNull()
+  })
 })
