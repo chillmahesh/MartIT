@@ -221,8 +221,8 @@ async function handleCheckPayment(req, res, next) {
     const now = Date.now()
     const windowExpiry = new Date(order.payment_window_expires_at).getTime()
 
-    // 2. Terminal state guard: If already EXPIRED, FAILED, or REFUNDED, prevent late overwrite
-    if (['EXPIRED', 'FAILED', 'REFUNDED'].includes(order.payment_status)) {
+    // 2. Terminal state guard: If already EXPIRED, FAILED, REFUNDED, or order CANCELLED, prevent late overwrite
+    if (order.status === 'CANCELLED' || ['EXPIRED', 'FAILED', 'REFUNDED'].includes(order.payment_status)) {
       return res.status(200).json({
         orderId: order.id,
         status: 'expired',
@@ -233,7 +233,7 @@ async function handleCheckPayment(req, res, next) {
 
     // 3. Server-authoritative 2-minute timer expiry check
     if (now >= windowExpiry) {
-      await executeAtomicPaymentExpiry(supabase, order.id)
+      await executeAtomicPaymentExpiry(supabase, order.id, false)
 
       return res.status(200).json({
         orderId: order.id,
@@ -309,7 +309,7 @@ async function handleExpirePayment(req, res, next) {
       throw ApiError.conflict('Cannot expire an order that is already paid.', 'ALREADY_PAID')
     }
 
-    await executeAtomicPaymentExpiry(supabase, order.id)
+    await executeAtomicPaymentExpiry(supabase, order.id, true)
 
     res.status(200).json({
       orderId: order.id,

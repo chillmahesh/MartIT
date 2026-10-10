@@ -544,6 +544,41 @@ describe('Payment State Transitions & Hardening', () => {
     expect(dbOrder.payment_status).not.toBe('PAID')
   })
 
+  it('rejects verifying payment for an order with status CANCELLED even if payment_status was PENDING', async () => {
+    mockState.orders.push({
+      id: 'ord_cancelled_pending_test',
+      customer_id: 'usr_alice',
+      status: 'CANCELLED',
+      payment_status: 'PENDING',
+      item_subtotal: '100.00',
+      combined_delivery_fee: '15.00',
+      base_amount: '115.00',
+      platform_fee: '0.15',
+      total_payable: '115.15',
+      fee_paise: 15,
+      payment_window_expires_at: new Date(Date.now() + 60000).toISOString(),
+      created_at: new Date().toISOString(),
+      order_fulfillment_groups: [],
+    })
+
+    mockState.payment_records.push({
+      order_id: 'ord_cancelled_pending_test',
+      evidence: 'Payment received',
+      amount: 115.15,
+    })
+
+    const res = await request(app)
+      .post('/api/v1/orders/ord_cancelled_pending_test/check-payment')
+      .set('Authorization', 'Bearer tok_alice')
+
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('expired')
+    expect(res.body.paymentStatus).not.toBe('PAID')
+
+    const dbOrder = mockState.orders.find((o) => o.id === 'ord_cancelled_pending_test')
+    expect(dbOrder.payment_status).not.toBe('PAID')
+  })
+
   it('fails safely with 500 and does NOT mutate database state or fall back to REST updates when RPC fails during check-payment', async () => {
     mockState.payment_records.push({
       order_id: 'ord_active_win',
