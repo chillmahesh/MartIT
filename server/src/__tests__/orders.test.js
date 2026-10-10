@@ -60,18 +60,24 @@ describe('Order History & Detail Endpoints', () => {
         { id: 'usr_alice', token: 'tok_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
         { id: 'usr_bob', token: 'tok_bob', email: 'bob@campus.edu', name: 'Bob Intruder' },
         { id: 'usr_runner', token: 'tok_runner', email: 'runner@campus.edu', name: 'Runner Rob' },
+        { id: 'usr_runner2', token: 'tok_runner2', email: 'runner2@campus.edu', name: 'Runner Rita' },
+        { id: 'usr_applicant', token: 'tok_applicant', email: 'applicant@campus.edu', name: 'Applicant Alex' },
         { id: 'usr_admin', token: 'tok_admin', email: 'admin@campus.edu', name: 'Admin Adam' },
       ],
       profiles: [
         { id: 'usr_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
         { id: 'usr_bob', email: 'bob@campus.edu', name: 'Bob Intruder' },
         { id: 'usr_runner', email: 'runner@campus.edu', name: 'Runner Rob', runner_status: 'approved' },
+        { id: 'usr_runner2', email: 'runner2@campus.edu', name: 'Runner Rita', runner_status: 'approved' },
+        { id: 'usr_applicant', email: 'applicant@campus.edu', name: 'Applicant Alex', runner_status: 'applicant' },
         { id: 'usr_admin', email: 'admin@campus.edu', name: 'Admin Adam' },
       ],
       userRoles: [
         { user_id: 'usr_alice', role: ROLES.CUSTOMER },
         { user_id: 'usr_bob', role: ROLES.CUSTOMER },
         { user_id: 'usr_runner', role: ROLES.RUNNER },
+        { user_id: 'usr_runner2', role: ROLES.RUNNER },
+        { user_id: 'usr_applicant', role: ROLES.CUSTOMER },
         { user_id: 'usr_admin', role: ROLES.ADMIN },
       ],
       orders: [sampleOrder],
@@ -117,6 +123,46 @@ describe('Order History & Detail Endpoints', () => {
 
     expect(res.status).toBe(200)
     expect(res.body.id).toBe('ord_123')
+  })
+
+  it('blocks an unassigned runner (Runner Rita) from reading Alice order with 403 Forbidden', async () => {
+    const res = await request(app)
+      .get('/api/v1/orders/ord_123')
+      .set('Authorization', 'Bearer tok_runner2')
+
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('allows approved assigned runner to list assigned orders via GET /api/v1/runner/orders', async () => {
+    const res = await request(app)
+      .get('/api/v1/runner/orders')
+      .set('Authorization', 'Bearer tok_runner')
+
+    expect(res.status).toBe(200)
+    expect(Array.isArray(res.body)).toBe(true)
+    expect(res.body.length).toBe(1)
+    expect(res.body[0].id).toBe('ord_123')
+    expect(res.body[0].runner_id).toBe('usr_runner')
+  })
+
+  it('returns empty queue for approved runner with no assigned orders', async () => {
+    const res = await request(app)
+      .get('/api/v1/runner/orders')
+      .set('Authorization', 'Bearer tok_runner2')
+
+    expect(res.status).toBe(200)
+    expect(Array.isArray(res.body)).toBe(true)
+    expect(res.body.length).toBe(0)
+  })
+
+  it('blocks non-runner customer from accessing runner order queue with 403 Forbidden', async () => {
+    const res = await request(app)
+      .get('/api/v1/runner/orders')
+      .set('Authorization', 'Bearer tok_alice')
+
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('FORBIDDEN')
   })
 
   it('allows admin to read any order details', async () => {

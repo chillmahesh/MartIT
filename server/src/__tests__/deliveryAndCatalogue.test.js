@@ -8,9 +8,27 @@ describe('Catalogue & Authoritative Delivery Quote Endpoints', () => {
 
   beforeEach(() => {
     createMockSupabaseClient({
+      users: [
+        { id: 'usr_owner1', token: 'tok_owner1', email: 'owner1@campus.edu', name: 'Owner One' },
+        { id: 'usr_owner2', token: 'tok_owner2', email: 'owner2@campus.edu', name: 'Owner Two' },
+        { id: 'usr_customer', token: 'tok_customer', email: 'cust@campus.edu', name: 'Cust Carol' },
+        { id: 'usr_admin', token: 'tok_admin', email: 'admin@campus.edu', name: 'Admin Adam' },
+      ],
+      profiles: [
+        { id: 'usr_owner1', email: 'owner1@campus.edu', name: 'Owner One' },
+        { id: 'usr_owner2', email: 'owner2@campus.edu', name: 'Owner Two' },
+        { id: 'usr_customer', email: 'cust@campus.edu', name: 'Cust Carol' },
+        { id: 'usr_admin', email: 'admin@campus.edu', name: 'Admin Adam' },
+      ],
+      userRoles: [
+        { user_id: 'usr_owner1', role: 'store_owner' },
+        { user_id: 'usr_owner2', role: 'store_owner' },
+        { user_id: 'usr_customer', role: 'customer' },
+        { user_id: 'usr_admin', role: 'admin' },
+      ],
       stores: [
-        { id: 'store_open', name: 'Open Mart', is_open: true, latitude: '12.970000', longitude: '77.590000' },
-        { id: 'store_closed', name: 'Closed Mart', is_open: false, latitude: '12.970000', longitude: '77.590000' },
+        { id: 'store_open', owner_id: 'usr_owner1', name: 'Open Mart', is_open: true, latitude: '12.970000', longitude: '77.590000', description: 'Campus Mart' },
+        { id: 'store_closed', owner_id: 'usr_owner2', name: 'Closed Mart', is_open: false, latitude: '12.970000', longitude: '77.590000', description: 'Night Canteen' },
       ],
       locations: [
         { id: 'loc_close', name: 'Nearby Hostel', latitude: '12.973000', longitude: '77.590000', is_active: true }, // ~0.33 km -> band 10
@@ -114,5 +132,66 @@ describe('Catalogue & Authoritative Delivery Quote Endpoints', () => {
     expect(res.status).toBe(404)
     expect(res.body.code).toBe('NOT_FOUND')
     expect(res.body.stack).toBeUndefined()
+  })
+
+  it('allows store owner to update their own store settings (isOpen, description)', async () => {
+    const res = await request(app)
+      .patch('/api/v1/stores/store_open')
+      .set('Authorization', 'Bearer tok_owner1')
+      .send({ isOpen: false, description: 'Temporarily closed for restock' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.id).toBe('store_open')
+    expect(res.body.isOpen).toBe(false)
+    expect(res.body.description).toBe('Temporarily closed for restock')
+  })
+
+  it('also supports RPC-style POST /stores/update for frontend api.js', async () => {
+    const res = await request(app)
+      .post('/stores/update')
+      .set('Authorization', 'Bearer tok_owner1')
+      .send({ storeId: 'store_open', isOpen: true })
+
+    expect(res.status).toBe(200)
+    expect(res.body.isOpen).toBe(true)
+  })
+
+  it('blocks another store owner from modifying a store they do not own with 403 Forbidden', async () => {
+    const res = await request(app)
+      .patch('/api/v1/stores/store_open')
+      .set('Authorization', 'Bearer tok_owner2')
+      .send({ isOpen: false })
+
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('blocks a customer from modifying any store with 403 Forbidden', async () => {
+    const res = await request(app)
+      .patch('/api/v1/stores/store_open')
+      .set('Authorization', 'Bearer tok_customer')
+      .send({ isOpen: false })
+
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('blocks unauthenticated requests to modify a store with 401 Unauthenticated', async () => {
+    const res = await request(app)
+      .patch('/api/v1/stores/store_open')
+      .send({ isOpen: false })
+
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('UNAUTHENTICATED')
+  })
+
+  it('allows an admin to update any store', async () => {
+    const res = await request(app)
+      .patch('/api/v1/stores/store_closed')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ isOpen: true })
+
+    expect(res.status).toBe(200)
+    expect(res.body.isOpen).toBe(true)
   })
 })

@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "start": "node server/src/index.js",
     "server:dev": "node server/src/index.js",
     "server:start": "node server/src/index.js",
     "test:server": "vitest run server/",
