@@ -37,10 +37,10 @@ BEGIN
   END IF;
 
   -- Test expire_order_payment
-  IF has_function_privilege('anon', 'expire_order_payment(varchar)', 'EXECUTE') THEN
+  IF has_function_privilege('anon', 'expire_order_payment(varchar, boolean)', 'EXECUTE') THEN
     RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on expire_order_payment';
   END IF;
-  IF has_function_privilege('authenticated', 'expire_order_payment(varchar)', 'EXECUTE') THEN
+  IF has_function_privilege('authenticated', 'expire_order_payment(varchar, boolean)', 'EXECUTE') THEN
     RAISE EXCEPTION 'SECURITY FAIL: authenticated has EXECUTE on expire_order_payment';
   END IF;
 
@@ -380,6 +380,94 @@ BEGIN
   END IF;
 
   RAISE NOTICE '✓ TEST 8 PASSED: Inventory locking prevents overselling.';
+END;
+$$;
+
+-- ------------------------------------------------------------------------------
+-- TEST 9: Paid Orders Cannot Be Expired
+-- expire_order_payment must reject orders with payment_status = PAID
+-- ------------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_failed BOOLEAN := FALSE;
+  v_cust_id UUID := gen_random_uuid();
+BEGIN
+  INSERT INTO profiles (id, email, name) VALUES (v_cust_id, 'test_paid_no_exp@campus.edu', 'Paid No Exp')
+  ON CONFLICT (id) DO NOTHING;
+
+  INSERT INTO orders (
+    id, customer_id, delivery_location_id, delivery_location_snapshot,
+    status, payment_status,
+    item_subtotal, combined_delivery_fee, base_amount, platform_fee, total_payable,
+    route_distance_km, route_stop_sequence, routing_provider, routing_mode, fee_policy_version,
+    payment_attempt_id, fee_paise, payment_allocated_at, payment_window_expires_at, payment_cooldown_expires_at,
+    paid_at, idempotency_key
+  ) VALUES (
+    'ord_paid_immut_1', v_cust_id, 'loc_hostel_a', '{"name":"Hostel"}'::jsonb,
+    'CONFIRMED', 'PAID',
+    100.00, 15.00, 115.00, 0.15, 115.15, 1.0, '[]'::jsonb, 'straight_line', 'walking', '2026-10-09.1',
+    'att_pi_1', 15, NOW(), NOW() + interval '2 minutes', NOW() + interval '7 minutes',
+    NOW(), 'idemp_paid_immut_1'
+  );
+
+  BEGIN
+    PERFORM expire_order_payment('ord_paid_immut_1', TRUE);
+  EXCEPTION WHEN raise_exception THEN
+    v_failed := TRUE;
+  END;
+
+  IF NOT v_failed THEN
+    RAISE EXCEPTION 'SECURITY FAIL: expire_order_payment expired a PAID order!';
+  END IF;
+
+  RAISE NOTICE '✓ TEST 9 PASSED: Paid orders cannot be expired.';
+END;
+$$;
+
+-- ------------------------------------------------------------------------------
+-- TEST 10: Cancelled Orders Cannot Be Marked Paid
+-- mark_platform_fee_paid must reject orders with status = CANCELLED
+-- ------------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_failed BOOLEAN := FALSE;
+  v_cust_id UUID := gen_random_uuid();
+BEGIN
+  INSERT INTO profiles (id, email, name) VALUES (v_cust_id, 'test_canc_no_paid@campus.edu', 'Canc No Paid')
+  ON CONFLICT (id) DO NOTHING;
+
+  INSERT INTO orders (
+    id, customer_id, delivery_location_id, delivery_location_snapshot,
+    status, payment_status,
+    item_subtotal, combined_delivery_fee, base_amount, platform_fee, total_payable,
+    route_distance_km, route_stop_sequence, routing_provider, routing_mode, fee_policy_version,
+    payment_attempt_id, fee_paise, payment_allocated_at, payment_window_expires_at, payment_cooldown_expires_at,
+    idempotency_key
+  ) VALUES (
+    'ord_canc_test_1', v_cust_id, 'loc_hostel_a', '{"name":"Hostel"}'::jsonb,
+    'CANCELLED', 'PENDING', -- Cancelled order with active pending timer
+    100.00, 15.00, 115.00, 0.15, 115.15, 1.0, '[]'::jsonb, 'straight_line', 'walking', '2026-10-09.1',
+    'att_cn_1', 15, NOW(), NOW() + interval '2 minutes', NOW() + interval '7 minutes',
+    'idemp_canc_1'
+  );
+
+  INSERT INTO payment_records (
+    id, order_id, attempt_id, amount, status, evidence
+  ) VALUES (
+    'pay_canc_rec_1', 'ord_canc_test_1', 'att_cn_1', 115.15, 'PAID', 'Payment received'
+  );
+
+  BEGIN
+    PERFORM mark_platform_fee_paid('ord_canc_test_1');
+  EXCEPTION WHEN raise_exception THEN
+    v_failed := TRUE;
+  END;
+
+  IF NOT v_failed THEN
+    RAISE EXCEPTION 'SECURITY FAIL: mark_platform_fee_paid marked a CANCELLED order as PAID!';
+  END IF;
+
+  RAISE NOTICE '✓ TEST 10 PASSED: Cancelled orders cannot be marked as PAID.';
 END;
 $$;
 

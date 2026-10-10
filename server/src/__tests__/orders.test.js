@@ -6,6 +6,7 @@ import { ROLES } from '../utils/permissions.js'
 
 describe('Order History & Detail Endpoints', () => {
   let app
+  let mockState
 
   const sampleOrder = {
     id: 'ord_123',
@@ -55,7 +56,7 @@ describe('Order History & Detail Endpoints', () => {
   }
 
   beforeEach(() => {
-    createMockSupabaseClient({
+    const mock = createMockSupabaseClient({
       users: [
         { id: 'usr_alice', token: 'tok_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
         { id: 'usr_bob', token: 'tok_bob', email: 'bob@campus.edu', name: 'Bob Intruder' },
@@ -82,6 +83,7 @@ describe('Order History & Detail Endpoints', () => {
       ],
       orders: [sampleOrder],
     })
+    mockState = mock.state
     app = createApp()
   })
 
@@ -123,6 +125,18 @@ describe('Order History & Detail Endpoints', () => {
 
     expect(res.status).toBe(200)
     expect(res.body.id).toBe('ord_123')
+  })
+
+  it('blocks an assigned runner whose runnerStatus is suspended from reading order details with 403 Forbidden', async () => {
+    const runnerProfile = mockState.profiles.find((p) => p.id === 'usr_runner')
+    runnerProfile.runner_status = 'suspended'
+
+    const res = await request(app)
+      .get('/api/v1/orders/ord_123')
+      .set('Authorization', 'Bearer tok_runner')
+
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('FORBIDDEN')
   })
 
   it('blocks an unassigned runner (Runner Rita) from reading Alice order with 403 Forbidden', async () => {
@@ -496,5 +510,87 @@ describe('Payment State Transitions & Hardening', () => {
 
     expect(res.status).toBe(409)
     expect(res.body.code).toBe('ALREADY_PAID')
+  })
+
+  it('rejects verifying payment for a CANCELLED order', async () => {
+    mockState.orders.push({
+      id: 'ord_cancelled_test',
+      customer_id: 'usr_alice',
+      status: 'CANCELLED',
+      payment_status: 'CANCELLED',
+      item_subtotal: '100.00',
+      combined_delivery_fee: '15.00',
+      base_amount: '115.00',
+      platform_fee: '0.15',
+      total_payable: '115.15',
+      fee_paise: 15,
+      payment_window_expires_at: new Date(Date.now() + 60000).toISOString(),
+      created_at: new Date().toISOString(),
+      order_fulfillment_groups: [],
+    })
+
+    mockState.payment_records.push({
+      order_id: 'ord_cancelled_test',
+      evidence: 'Payment received',
+      amount: 115.15,
+    })
+
+    const res = await request(app)
+      .post('/api/v1/orders/ord_cancelled_test/check-payment')
+      .set('Authorization', 'Bearer tok_alice')
+
+    expect(res.body.paymentStatus).not.toBe('PAID')
+    const dbOrder = mockState.orders.find((o) => o.id === 'ord_cancelled_test')
+    expect(dbOrder.payment_status).not.toBe('PAID')
+  })
+
+  it('fails safely with 500 and does NOT mutate database state or fall back to REST updates when RPC fails during check-payment', async () => {
+    mockState.payment_records.push({
+      order_id: 'ord_active_win',
+      evidence: 'Payment received',
+      amount: 115.15,
+    })
+
+    // Simulate database transaction failure in RPC
+    mockState.rpcError = { message: 'deadlock detected in stored procedure transaction' }
+
+    const res = await request(app)
+      .post('/api/v1/orders/ord_active_win/check-payment')
+      .set('Authorization', 'Bearer tok_alice')
+
+    expect(res.status).toBe(500)
+    expect(res.body.code).toBe('TRANSACTION_FAILED')
+
+    // Confirm state remains unmutated (strictly zero REST fallback updates)
+    const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+    expect(dbOrder.payment_status).toBe('PENDING')
+    expect(dbOrder.status).toBe('CREATED')
+
+    const feeSlot = mockState.platform_fee_reservations.find(
+      (r) => r.active_order_id === 'ord_active_win',
+    )
+    expect(feeSlot.is_paid).toBe(false)
+  })
+
+  it('fails safely with 500 and does NOT mutate database state or fall back to REST updates when RPC fails during expire', async () => {
+    // Simulate database transaction failure in RPC
+    mockState.rpcError = { message: 'connection dropped during stored procedure transaction' }
+
+    const res = await request(app)
+      .post('/api/v1/orders/ord_active_win/expire')
+      .set('Authorization', 'Bearer tok_alice')
+
+    expect(res.status).toBe(500)
+    expect(res.body.code).toBe('TRANSACTION_FAILED')
+
+    // Confirm state remains unmutated (strictly zero REST fallback updates)
+    const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+    expect(dbOrder.payment_status).toBe('PENDING')
+    expect(dbOrder.status).toBe('CREATED')
+
+    const feeSlot = mockState.platform_fee_reservations.find(
+      (r) => r.active_order_id === 'ord_active_win',
+    )
+    expect(feeSlot.active_order_id).toBe('ord_active_win')
   })
 })
