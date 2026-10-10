@@ -1,8 +1,159 @@
-import { request } from './api'
+import { request, ApiError } from './api'
+import { isMockBackend } from '@/config/env'
+import { getSupabaseClient } from '@/config/supabaseClient'
 
 export const authService = {
-  /** Mock-only: signs in as a sample account for the given role. Replaced by real login in Phase 3. */
-  demoLogin: (role) => request('auth.demoLogin', { role }),
-  logout: () => request('auth.logout'),
-  me: () => request('auth.me'),
+  /**
+   * Mock-only: signs in as a sample account for the given role.
+   */
+  async demoLogin(role) {
+    if (!isMockBackend) {
+      throw new ApiError('INVALID_MODE', 'Demo login is only available in mock backend mode.')
+    }
+    return request('auth.demoLogin', { role })
+  },
+
+  /**
+   * Email/password sign-in.
+   * In mock mode: delegates to mock handler.
+   * In remote mode: authenticates via Supabase Auth and hydrates profile from backend.
+   */
+  async login(email, password) {
+    if (isMockBackend) {
+      // In mock mode, find matching sample account or simulate login
+      const res = await request('auth.login', { email, password }).catch(async () => {
+        // Fallback for demo convenience in mock mode if user types customer email
+        return request('auth.demoLogin', { role: 'customer' })
+      })
+      return res
+    }
+
+    const supabase = getSupabaseClient()
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    })
+
+    if (error) {
+      let message = error.message
+      if (error.message?.toLowerCase().includes('invalid login credentials')) {
+        message = 'Invalid email or password. Please verify your credentials and try again.'
+      } else if (error.message?.toLowerCase().includes('email not confirmed')) {
+        message = 'Please confirm your email address before logging in.'
+      }
+      throw new ApiError(error.code || 'AUTH_ERROR', message, error.status || 400)
+    }
+
+    if (!data?.session) {
+      throw new ApiError('SESSION_MISSING', 'Login succeeded but no active session was established.')
+    }
+
+    return { session: data.session, authUser: data.user }
+  },
+
+  /**
+   * Email/password sign-up.
+   * In remote mode: registers with Supabase Auth with metadata (name, phone).
+   * Handled safely: client metadata is never trusted for roles or permissions.
+   */
+  async signup(email, password, { name, phone = '' } = {}) {
+    if (isMockBackend) {
+      return request('auth.signup', { email, password, name, phone }).catch(() => {
+        return {
+          user: { id: 'usr_new', name, email, roles: ['customer'] },
+          session: null,
+          needsConfirmation: false,
+        }
+      })
+    }
+
+    const supabase = getSupabaseClient()
+    const { data, error } = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: {
+        data: {
+          name: name?.trim() || '',
+          ...(phone ? { phone: phone.trim() } : {}),
+        },
+      },
+    })
+
+    if (error) {
+      const msg = error.message?.toLowerCase() || ''
+      if (msg.includes('already registered') || msg.includes('user already exists') || error.status === 422) {
+        throw new ApiError(
+          'DUPLICATE_EMAIL',
+          'An account with this email already exists. Please log in instead.',
+          409
+        )
+      }
+      throw new ApiError(error.code || 'SIGNUP_ERROR', error.message, error.status || 400)
+    }
+
+    // Detect duplicate signup obfuscation when email confirmation is enabled:
+    // Supabase returns an empty identities array for existing users when identity enumeration protection is on.
+    if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+      throw new ApiError(
+        'DUPLICATE_EMAIL',
+        'An account with this email already exists. Please log in instead.',
+        409
+      )
+    }
+
+    // If confirmation is required, session will be null
+    const needsConfirmation = !data?.session
+    return {
+      session: data?.session || null,
+      authUser: data?.user || null,
+      needsConfirmation,
+    }
+  },
+
+  /**
+   * Signs out current user session.
+   */
+  async logout() {
+    if (isMockBackend) {
+      return request('auth.logout')
+    }
+
+    const supabase = getSupabaseClient()
+    if (supabase) {
+      await supabase.auth.signOut().catch(() => {})
+    }
+  },
+
+  /**
+   * Authoritative profile and role retrieval from backend.
+   * Never relies on user metadata for permissions.
+   */
+  async me() {
+    return request('auth.me')
+  },
+
+  /**
+   * Retrieves active Supabase session (remote mode).
+   */
+  async getSession() {
+    if (isMockBackend) return null
+    const supabase = getSupabaseClient()
+    if (!supabase) return null
+    const { data } = await supabase.auth.getSession()
+    return data?.session || null
+  },
+
+  /**
+   * Subscribes to Supabase auth state transitions.
+   */
+  onAuthStateChange(callback) {
+    if (isMockBackend) {
+      return { data: { subscription: { unsubscribe: () => {} } } }
+    }
+    const supabase = getSupabaseClient()
+    if (!supabase) {
+      return { data: { subscription: { unsubscribe: () => {} } } }
+    }
+    return supabase.auth.onAuthStateChange(callback)
+  },
 }

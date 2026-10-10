@@ -54,6 +54,14 @@ BEGIN
     RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on release_order_inventory';
   END IF;
 
+  -- Test handle_new_user
+  IF has_function_privilege('anon', 'handle_new_user()', 'EXECUTE') THEN
+    RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on handle_new_user';
+  END IF;
+  IF has_function_privilege('authenticated', 'handle_new_user()', 'EXECUTE') THEN
+    RAISE EXCEPTION 'SECURITY FAIL: authenticated has EXECUTE on handle_new_user';
+  END IF;
+
   -- Test helper function anon execution
   IF has_function_privilege('anon', 'auth_is_admin()', 'EXECUTE') THEN
     RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on auth_is_admin';
@@ -468,6 +476,77 @@ BEGIN
   END IF;
 
   RAISE NOTICE '✓ TEST 10 PASSED: Cancelled orders cannot be marked as PAID.';
+END;
+$$;
+
+-- ------------------------------------------------------------------------------
+-- TEST 11: Auth User Creation Profile & Role Trigger Integrity
+-- handle_new_user must create profile and customer role, while rejecting metadata role escalation
+-- ------------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_test_uid UUID := gen_random_uuid();
+  v_profile_rec RECORD;
+  v_role_count INTEGER;
+  v_has_admin_role BOOLEAN;
+BEGIN
+  -- Simulate auth user insertion event using the trigger function
+  -- With malicious client metadata trying to grant admin and runner roles
+  PERFORM public.handle_new_user()
+  FROM (
+    SELECT
+      v_test_uid AS id,
+      'test_trigger_new@campus.edu' AS email,
+      NULL::text AS phone,
+      '{"name":"Trigger Test User","role":"admin","roles":["super_admin"],"runner_status":"approved"}'::jsonb AS raw_user_meta_data
+  ) AS NEW;
+
+  -- Verify profile exists with correct sanitized name
+  SELECT * INTO v_profile_rec FROM public.profiles WHERE id = v_test_uid;
+  IF v_profile_rec IS NULL THEN
+    RAISE EXCEPTION 'SECURITY FAIL: handle_new_user did not create profile record!';
+  END IF;
+
+  IF v_profile_rec.name <> 'Trigger Test User' THEN
+    RAISE EXCEPTION 'SECURITY FAIL: profile name was not correctly populated!';
+  END IF;
+
+  -- Verify runner_status is NULL (not escalated from metadata)
+  IF v_profile_rec.runner_status IS NOT NULL THEN
+    RAISE EXCEPTION 'SECURITY FAIL: handle_new_user allowed runner_status from client metadata!';
+  END IF;
+
+  -- Verify customer role exists
+  SELECT COUNT(*) INTO v_role_count FROM public.user_roles WHERE user_id = v_test_uid AND role = 'customer';
+  IF v_role_count <> 1 THEN
+    RAISE EXCEPTION 'SECURITY FAIL: customer role was not assigned!';
+  END IF;
+
+  -- Verify admin role was NOT created from metadata
+  SELECT EXISTS (
+    SELECT 1 FROM public.user_roles WHERE user_id = v_test_uid AND role IN ('admin', 'super_admin', 'runner')
+  ) INTO v_has_admin_role;
+
+  IF v_has_admin_role THEN
+    RAISE EXCEPTION 'SECURITY FAIL: client metadata successfully escalated privileged roles!';
+  END IF;
+
+  -- Idempotency test: Re-running for same user must not duplicate roles or error
+  PERFORM public.handle_new_user()
+  FROM (
+    SELECT
+      v_test_uid AS id,
+      'test_trigger_new@campus.edu' AS email,
+      NULL::text AS phone,
+      '{"name":"Trigger Test User"}'::jsonb AS raw_user_meta_data
+  ) AS NEW;
+
+  SELECT COUNT(*) INTO v_role_count FROM public.user_roles WHERE user_id = v_test_uid AND role = 'customer';
+  IF v_role_count <> 1 THEN
+    RAISE EXCEPTION 'SECURITY FAIL: trigger is not idempotent; duplicate role created!';
+  END IF;
+
+  RAISE NOTICE '✓ TEST 11 PASSED: Auth user trigger created profile and customer role safely without role escalation.';
 END;
 $$;
 

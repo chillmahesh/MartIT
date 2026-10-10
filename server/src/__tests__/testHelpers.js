@@ -53,6 +53,19 @@ export function createMockSupabaseClient({
     },
 
     from(table) {
+      if (state.tableErrors && state.tableErrors[table]) {
+        const queryError = { message: state.tableErrors[table] }
+        return {
+          select() { return this },
+          eq() { return this },
+          order() { return this },
+          limit() { return this },
+          async maybeSingle() { return { data: null, error: queryError } },
+          async single() { return { data: null, error: queryError } },
+          then(resolve) { return resolve({ data: null, error: queryError }) },
+        }
+      }
+
       if (!state[table]) {
         state[table] = []
       }

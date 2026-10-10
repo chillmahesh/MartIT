@@ -34,30 +34,44 @@ export async function authenticate(req, res, next) {
     const authUser = authData.user
 
     // Fetch user profile from database
-    const { data: profile } = await supabase
+    const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('id, email, name, phone, runner_status, default_location_id')
       .eq('id', authUser.id)
       .maybeSingle()
 
+    if (profileError) {
+      throw ApiError.internal('Database error while retrieving user profile.', 'DATABASE_ERROR')
+    }
+
+    if (!profile) {
+      throw ApiError.unauthorized('User profile not found. Account may be uninitialized.', 'PROFILE_NOT_FOUND')
+    }
+
     // Fetch user roles
-    const { data: roleRecords } = await supabase
+    const { data: roleRecords, error: rolesError } = await supabase
       .from('user_roles')
       .select('role')
       .eq('user_id', authUser.id)
 
-    const roles = (roleRecords && roleRecords.length > 0)
-      ? roleRecords.map((r) => r.role)
-      : [ROLES.CUSTOMER] // Default fallback role
+    if (rolesError) {
+      throw ApiError.internal('Database error while retrieving user permissions.', 'DATABASE_ERROR')
+    }
+
+    if (!roleRecords || roleRecords.length === 0) {
+      throw ApiError.unauthorized('No assigned roles found for this account.', 'ROLE_NOT_FOUND')
+    }
+
+    const roles = roleRecords.map((r) => r.role)
 
     req.user = {
       id: authUser.id,
-      email: authUser.email || profile?.email || '',
-      name: profile?.name || authUser.user_metadata?.name || 'User',
-      phone: profile?.phone || null,
+      email: profile.email || authUser.email || '',
+      name: profile.name,
+      phone: profile.phone || null,
       roles: Array.from(new Set(roles)),
-      runnerStatus: profile?.runner_status || null,
-      defaultLocationId: profile?.default_location_id || null,
+      runnerStatus: profile.runner_status || null,
+      defaultLocationId: profile.default_location_id || null,
     }
 
     next()
