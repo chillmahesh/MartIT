@@ -150,31 +150,91 @@ export function createMockSupabaseClient({
     },
 
     async rpc(fn, args) {
+      if (state.rpcError) {
+        return { data: null, error: state.rpcError }
+      }
+
       if (fn === 'expire_order_payment') {
         const orderId = args?.p_order_id
+        const force = args?.p_force ?? false
         const order = state.orders.find((o) => o.id === orderId)
-        if (order) {
+        if (!order) {
+          return { data: null, error: { message: 'ORDER_NOT_FOUND' } }
+        }
+        if (order.payment_status === 'PAID') {
+          return { data: null, error: { message: 'CANNOT_EXPIRE_PAID_ORDER' } }
+        }
+        if (order.payment_status === 'EXPIRED') {
+          return { data: [{ expired: true, previous_status: 'EXPIRED' }], error: null }
+        }
+        const now = Date.now()
+        const windowExp = new Date(order.payment_window_expires_at).getTime()
+        if (['PENDING', 'PROCESSING'].includes(order.payment_status) && (force || now >= windowExp)) {
+          const prevStatus = order.payment_status
           order.payment_status = 'EXPIRED'
           order.status = 'CANCELLED'
           order.updated_at = new Date().toISOString()
+          const fee = state.platform_fee_reservations.find(
+            (r) => r.active_order_id === orderId && !r.is_paid,
+          )
+          if (fee) fee.active_order_id = null
+          if (state.inventory_reservations) {
+            state.inventory_reservations
+              .filter((ir) => ir.order_id === orderId && ir.status === 'HELD')
+              .forEach((ir) => {
+                ir.status = 'RELEASED'
+                ir.released_at = new Date().toISOString()
+              })
+          }
+          return { data: [{ expired: true, previous_status: prevStatus }], error: null }
         }
-        const fee = state.platform_fee_reservations.find((r) => r.active_order_id === orderId)
-        if (fee) fee.active_order_id = null
-        return { data: { expired: true }, error: null }
+        return { data: [{ expired: false, previous_status: order.payment_status }], error: null }
       }
 
       if (fn === 'mark_platform_fee_paid') {
         const orderId = args?.p_order_id
         const order = state.orders.find((o) => o.id === orderId)
-        if (order) {
-          order.payment_status = 'PAID'
-          order.status = 'CONFIRMED'
-          order.paid_at = new Date().toISOString()
+        if (!order) {
+          return { data: null, error: { message: 'ORDER_NOT_FOUND' } }
         }
+        if (order.payment_status === 'PAID') {
+          return { data: true, error: null }
+        }
+        if (order.status === 'CANCELLED' || ['EXPIRED', 'FAILED', 'REFUNDED'].includes(order.payment_status)) {
+          return { data: null, error: { message: 'CANNOT_VERIFY_TERMINAL_PAYMENT' } }
+        }
+        const now = Date.now()
+        const windowExp = new Date(order.payment_window_expires_at).getTime()
+        if (now >= windowExp) {
+          return { data: null, error: { message: 'PAYMENT_WINDOW_EXPIRED' } }
+        }
+        const hasVerifiedRecord = (state.payment_records || []).some(
+          (pr) => pr.order_id === orderId && Number(pr.amount) === Number(order.total_payable),
+        )
+        if (!hasVerifiedRecord) {
+          return { data: null, error: { message: 'UNVERIFIED_PAYMENT_SHORTCUT_PROHIBITED' } }
+        }
+
+        order.payment_status = 'PAID'
+        order.status = 'CONFIRMED'
+        order.paid_at = new Date().toISOString()
+        order.updated_at = order.paid_at
+
         const fee = state.platform_fee_reservations.find(
           (r) => r.active_order_id === orderId || r.fee_paise === order?.fee_paise,
         )
-        if (fee) fee.is_paid = true
+        if (fee) {
+          fee.is_paid = true
+          fee.paid_at = order.paid_at
+        }
+        if (state.inventory_reservations) {
+          state.inventory_reservations
+            .filter((ir) => ir.order_id === orderId && ir.status === 'HELD')
+            .forEach((ir) => {
+              ir.status = 'COMMITTED'
+              ir.committed_at = order.paid_at
+            })
+        }
         return { data: true, error: null }
       }
 

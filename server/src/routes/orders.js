@@ -120,7 +120,10 @@ async function handleGetOrder(req, res, next) {
 
     // Ownership & Role Verification
     const isOwner = order.customer_id === req.user.id
-    const isAssignedRunner = order.runner_id === req.user.id
+    const isAssignedRunner =
+      order.runner_id === req.user.id &&
+      req.user.roles.includes(ROLES.RUNNER) &&
+      req.user.runnerStatus === 'approved'
     const hasStaffAccess =
       req.user.roles.includes(ROLES.ADMIN) ||
       req.user.roles.includes(ROLES.SUPER_ADMIN)
@@ -249,7 +252,7 @@ async function handleCheckPayment(req, res, next) {
       .maybeSingle()
 
     if (verifiedPayment && Number(verifiedPayment.amount) === Number(order.total_payable)) {
-      await executeAtomicPaymentVerification(supabase, order.id, order.total_payable)
+      await executeAtomicPaymentVerification(supabase, order.id)
 
       return res.status(200).json({
         orderId: order.id,
@@ -320,72 +323,79 @@ async function handleExpirePayment(req, res, next) {
 }
 
 /**
- * Helper to execute genuine atomic payment expiry in PostgreSQL via stored procedure
+ * Helper to execute genuine atomic payment expiry in PostgreSQL via stored procedure.
+ * STRICT: Does NOT fall back to sequential REST updates on failure.
  */
-async function executeAtomicPaymentExpiry(supabase, orderId) {
-  if (typeof supabase.rpc === 'function') {
-    const { error } = await supabase.rpc('expire_order_payment', { p_order_id: orderId })
-    if (!error) return true
+async function executeAtomicPaymentExpiry(supabase, orderId, force = true) {
+  if (typeof supabase.rpc !== 'function') {
+    throw ApiError.internal('Database transaction engine unavailable.', 'RPC_UNAVAILABLE')
   }
-  const nowIso = new Date().toISOString()
-  await supabase
-    .from('orders')
-    .update({
-      payment_status: 'EXPIRED',
-      status: 'CANCELLED',
-      updated_at: nowIso,
-    })
-    .eq('id', orderId)
 
-  await supabase
-    .from('platform_fee_reservations')
-    .update({ active_order_id: null })
-    .eq('active_order_id', orderId)
-    .eq('is_paid', false)
+  const { data, error } = await supabase.rpc('expire_order_payment', {
+    p_order_id: orderId,
+    p_force: force,
+  })
 
-  await supabase
-    .from('inventory_reservations')
-    .update({ status: 'RELEASED', released_at: nowIso })
-    .eq('order_id', orderId)
-    .eq('status', 'HELD')
+  if (error) {
+    if (error.message && error.message.includes('CANNOT_EXPIRE_PAID_ORDER')) {
+      throw ApiError.conflict('Cannot expire an order that is already paid.', 'ALREADY_PAID')
+    }
+    throw ApiError.internal(
+      `Payment expiration transaction failed: ${error.message || 'Unknown database error'}`,
+      'TRANSACTION_FAILED'
+    )
+  }
+
+  const result = Array.isArray(data) ? data[0] : data
+  if (!result || result.expired !== true) {
+    throw ApiError.badRequest('Order payment could not be expired.', 'EXPIRY_FAILED')
+  }
+
   return true
 }
 
 /**
- * Helper to execute genuine atomic payment verification in PostgreSQL via stored procedure
+ * Helper to execute genuine atomic payment verification in PostgreSQL via stored procedure.
+ * STRICT: Does NOT fall back to sequential REST updates on failure.
  */
-async function executeAtomicPaymentVerification(supabase, orderId, totalPayable) {
-  if (typeof supabase.rpc === 'function') {
-    const { error } = await supabase.rpc('mark_platform_fee_paid', { p_order_id: orderId })
-    if (!error) return true
+async function executeAtomicPaymentVerification(supabase, orderId) {
+  if (typeof supabase.rpc !== 'function') {
+    throw ApiError.internal('Database transaction engine unavailable.', 'RPC_UNAVAILABLE')
   }
-  const paidIso = new Date().toISOString()
-  await supabase
-    .from('orders')
-    .update({
-      payment_status: 'PAID',
-      status: 'CONFIRMED',
-      paid_at: paidIso,
-      updated_at: paidIso,
-    })
-    .eq('id', orderId)
 
-  await supabase
-    .from('platform_fee_reservations')
-    .update({
-      is_paid: true,
-      paid_at: paidIso,
-    })
-    .eq('active_order_id', orderId)
+  const { data, error } = await supabase.rpc('mark_platform_fee_paid', {
+    p_order_id: orderId,
+  })
 
-  await supabase
-    .from('inventory_reservations')
-    .update({
-      status: 'COMMITTED',
-      committed_at: paidIso,
-    })
-    .eq('order_id', orderId)
-    .eq('status', 'HELD')
+  if (error) {
+    if (error.message && error.message.includes('CANNOT_VERIFY_TERMINAL_PAYMENT')) {
+      throw ApiError.conflict(
+        'Order is cancelled or in a terminal payment state and cannot be marked paid.',
+        'TERMINAL_STATE'
+      )
+    }
+    if (error.message && error.message.includes('PAYMENT_WINDOW_EXPIRED')) {
+      throw ApiError.badRequest('Payment verification window has expired.', 'PAYMENT_WINDOW_EXPIRED')
+    }
+    if (error.message && error.message.includes('UNVERIFIED_PAYMENT_SHORTCUT_PROHIBITED')) {
+      throw ApiError.badRequest(
+        'Payment record evidence does not match order total.',
+        'PAYMENT_UNVERIFIED'
+      )
+    }
+    throw ApiError.internal(
+      `Payment verification transaction failed: ${error.message || 'Unknown database error'}`,
+      'TRANSACTION_FAILED'
+    )
+  }
+
+  if (!data) {
+    throw ApiError.internal(
+      'Payment verification transaction returned an unexpected result.',
+      'TRANSACTION_FAILED'
+    )
+  }
+
   return true
 }
 

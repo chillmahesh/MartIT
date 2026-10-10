@@ -135,6 +135,7 @@ SECURITY DEFINER
 SET search_path = public, pg_temp
 AS $$
 DECLARE
+  v_order_status order_status_enum;
   v_status payment_status_enum;
   v_total NUMERIC(10, 2);
   v_window_exp TIMESTAMPTZ;
@@ -150,7 +151,7 @@ BEGIN
   END IF;
 
   -- Lock order row to verify current payment state
-  SELECT payment_status, total_payable, payment_window_expires_at INTO v_status, v_total, v_window_exp
+  SELECT status, payment_status, total_payable, payment_window_expires_at INTO v_order_status, v_status, v_total, v_window_exp
   FROM public.orders
   WHERE id = p_order_id
   FOR UPDATE;
@@ -165,8 +166,8 @@ BEGIN
     RETURN TRUE;
   END IF;
 
-  -- Guard: terminal states cannot be transitioned to PAID
-  IF v_status IN ('EXPIRED', 'FAILED', 'REFUNDED') THEN
+  -- Guard: cancelled orders or terminal payment states cannot be transitioned to PAID
+  IF v_order_status = 'CANCELLED' OR v_status IN ('EXPIRED', 'FAILED', 'REFUNDED') THEN
     RAISE EXCEPTION 'CANNOT_VERIFY_TERMINAL_PAYMENT'
       USING HINT = 'Order payment has already expired or failed and cannot be transitioned to PAID.';
   END IF;
@@ -221,7 +222,10 @@ $$;
 -- Releases fee slot to cooldown and releases held inventory.
 -- ============================================================================
 
-CREATE OR REPLACE FUNCTION expire_order_payment(p_order_id VARCHAR(64))
+CREATE OR REPLACE FUNCTION expire_order_payment(
+  p_order_id VARCHAR(64),
+  p_force BOOLEAN DEFAULT FALSE
+)
 RETURNS TABLE (
   expired BOOLEAN,
   previous_status payment_status_enum
@@ -258,15 +262,21 @@ BEGIN
       USING HINT = 'An order that has been paid and confirmed cannot be expired.';
   END IF;
 
-  -- Only expire if in active pending/processing state and window has passed
-  IF v_status IN ('PENDING', 'PROCESSING') AND v_now >= v_window_exp THEN
+  -- Already expired is idempotent
+  IF v_status = 'EXPIRED' THEN
+    RETURN QUERY SELECT TRUE, v_status;
+    RETURN;
+  END IF;
+
+  -- Only expire if in active pending/processing state and (p_force is TRUE or window has passed)
+  IF v_status IN ('PENDING', 'PROCESSING') AND (p_force = TRUE OR v_now >= v_window_exp) THEN
     UPDATE public.orders
     SET payment_status = 'EXPIRED',
         status = 'CANCELLED',
         updated_at = v_now
     WHERE id = p_order_id;
 
-    -- Unbind order from fee slot so it enters 5-minute cooldown
+    -- Unbind order from fee slot so it enters 5-minute cooldown (protects paid fee slots)
     UPDATE public.platform_fee_reservations
     SET active_order_id = NULL
     WHERE active_order_id = p_order_id AND is_paid = FALSE;
@@ -384,13 +394,13 @@ $$;
 REVOKE EXECUTE ON FUNCTION allocate_platform_fee(VARCHAR, VARCHAR, INTEGER, INTEGER) FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION release_platform_fee(VARCHAR) FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION mark_platform_fee_paid(VARCHAR) FROM PUBLIC, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION expire_order_payment(VARCHAR) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION expire_order_payment(VARCHAR, BOOLEAN) FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION reserve_order_inventory(VARCHAR, JSONB, INTEGER) FROM PUBLIC, anon, authenticated;
 REVOKE EXECUTE ON FUNCTION release_order_inventory(VARCHAR) FROM PUBLIC, anon, authenticated;
 
 GRANT EXECUTE ON FUNCTION allocate_platform_fee(VARCHAR, VARCHAR, INTEGER, INTEGER) TO service_role;
 GRANT EXECUTE ON FUNCTION release_platform_fee(VARCHAR) TO service_role;
 GRANT EXECUTE ON FUNCTION mark_platform_fee_paid(VARCHAR) TO service_role;
-GRANT EXECUTE ON FUNCTION expire_order_payment(VARCHAR) TO service_role;
+GRANT EXECUTE ON FUNCTION expire_order_payment(VARCHAR, BOOLEAN) TO service_role;
 GRANT EXECUTE ON FUNCTION reserve_order_inventory(VARCHAR, JSONB, INTEGER) TO service_role;
 GRANT EXECUTE ON FUNCTION release_order_inventory(VARCHAR) TO service_role;
