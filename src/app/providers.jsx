@@ -30,7 +30,13 @@ const queryClient = new QueryClient({
 
 /** Re-validates a persisted session with the server on load; clears it if rejected. */
 function SessionCheck() {
+  const initialize = useAuthStore((s) => s.initialize)
   const token = useAuthStore((s) => s.token)
+
+  useEffect(() => {
+    initialize()
+  }, [initialize])
+
   const { data, error } = useQuery({
     queryKey: ['me', token],
     queryFn: authService.me,

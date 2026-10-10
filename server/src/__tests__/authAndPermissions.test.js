@@ -185,4 +185,44 @@ describe('Authentication & Authorization Endpoints', () => {
     expect(res.status).toBe(403)
     expect(res.body.code).toBe('FORBIDDEN')
   })
+
+  it('returns 500 DATABASE_ERROR when profile lookup encounters a database error', async () => {
+    state.tableErrors = { profiles: 'connection reset by peer' }
+    const res = await request(app)
+      .get('/api/v1/auth/me')
+      .set('Authorization', 'Bearer tok_cust')
+
+    expect(res.status).toBe(500)
+    expect(res.body.code).toBe('DATABASE_ERROR')
+  })
+
+  it('returns 500 DATABASE_ERROR when user_roles lookup encounters a database error', async () => {
+    state.tableErrors = { user_roles: 'deadlock detected' }
+    const res = await request(app)
+      .get('/api/v1/auth/me')
+      .set('Authorization', 'Bearer tok_cust')
+
+    expect(res.status).toBe(500)
+    expect(res.body.code).toBe('DATABASE_ERROR')
+  })
+
+  it('returns 401 PROFILE_NOT_FOUND when user profile is missing in the database', async () => {
+    state.profiles = state.profiles.filter((p) => p.id !== 'usr_customer')
+    const res = await request(app)
+      .get('/api/v1/auth/me')
+      .set('Authorization', 'Bearer tok_cust')
+
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('PROFILE_NOT_FOUND')
+  })
+
+  it('returns 401 ROLE_NOT_FOUND when user has no assigned roles in user_roles', async () => {
+    state.user_roles = state.user_roles.filter((r) => r.user_id !== 'usr_customer')
+    const res = await request(app)
+      .get('/api/v1/auth/me')
+      .set('Authorization', 'Bearer tok_cust')
+
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('ROLE_NOT_FOUND')
+  })
 })

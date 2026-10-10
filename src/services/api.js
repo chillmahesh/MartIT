@@ -1,7 +1,7 @@
 /**
  * Single transport for all services. Components never call this directly — they use
  * the domain services (authService, deliveryService, …) so the backend can be swapped
- * (Base44 / custom API) without touching UI code.
+ * without touching UI code.
  */
 import { env, isMockBackend } from '@/config/env'
 import { ApiError } from './mockServer/errors'
@@ -9,6 +9,11 @@ import { ApiError } from './mockServer/errors'
 let getToken = () => null
 export function setTokenProvider(fn) {
   getToken = fn
+}
+
+let onUnauthorizedHandler = null
+export function setOnUnauthorizedHandler(fn) {
+  onUnauthorizedHandler = fn
 }
 
 let mockServerPromise = null
@@ -20,7 +25,7 @@ function mockServer() {
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 
 export async function request(name, payload = {}) {
-  const token = getToken()
+  const token = await getToken()
 
   if (isMockBackend) {
     const server = await mockServer()
@@ -38,9 +43,22 @@ export async function request(name, payload = {}) {
     },
     body: JSON.stringify(payload),
   })
+
   const body = await res.json().catch(() => ({}))
   if (!res.ok) {
-    throw new ApiError(body.code || 'HTTP_ERROR', body.message || 'Something went wrong. Please try again.', res.status, body.details)
+    if (res.status === 401 && !isMockBackend && typeof onUnauthorizedHandler === 'function') {
+      try {
+        onUnauthorizedHandler()
+      } catch {
+        // Prevent interceptor errors from obscuring API error
+      }
+    }
+    throw new ApiError(
+      body.code || (res.status === 401 ? 'UNAUTHENTICATED' : 'HTTP_ERROR'),
+      body.message || (res.status === 401 ? 'Session expired. Please log in again.' : 'Something went wrong. Please try again.'),
+      res.status,
+      body.details
+    )
   }
   return body
 }

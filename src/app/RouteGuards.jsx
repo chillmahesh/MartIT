@@ -1,6 +1,7 @@
 import { Navigate, Outlet, useLocation } from 'react-router'
 import { useAuthStore } from '@/stores/authStore'
 import { ForbiddenPage } from '@/pages/ForbiddenPage'
+import { RouteFallback } from '@/components/layout/RouteFallback'
 import { hasPermission, homePathFor, PERMISSIONS } from '@/utils/permissions'
 
 /**
@@ -19,8 +20,12 @@ const AREA_PERMISSION = {
 }
 
 export function RequireRole({ role }) {
-  const { token, user } = useAuthStore()
+  const { token, user, isInitialized } = useAuthStore()
   const location = useLocation()
+
+  if (!isInitialized) {
+    return <RouteFallback />
+  }
 
   if (!token || !user) {
     const next = encodeURIComponent(location.pathname + location.search)
@@ -32,7 +37,10 @@ export function RequireRole({ role }) {
 
 /** Sends signed-in users away from login/signup to their home area. */
 export function RedirectIfAuthed() {
-  const user = useAuthStore((s) => s.user)
+  const { user, isInitialized } = useAuthStore()
+  if (!isInitialized) {
+    return <RouteFallback />
+  }
   if (user) return <Navigate to={homePathFor(user)} replace />
   return <Outlet />
 }

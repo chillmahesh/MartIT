@@ -25,6 +25,10 @@ export class ApiError extends Error {
     return new ApiError(code, message, 401)
   }
 
+  static unauthorized(message = 'Please log in again.', code = 'UNAUTHENTICATED') {
+    return new ApiError(code, message, 401)
+  }
+
   static forbidden(message = "You don't have permission to do that.", code = 'FORBIDDEN') {
     return new ApiError(code, message, 403)
   }
