@@ -17,16 +17,16 @@ export function createMockSupabaseClient({
   payment_records = [],
 } = {}) {
   const state = {
-    users: [...users],
-    profiles: [...profiles],
-    user_roles: [...(userRoles || [])],
-    stores: [...stores],
-    locations: [...locations],
-    categories: [...categories],
-    products: [...products],
-    orders: [...orders],
-    platform_fee_reservations: [...platform_fee_reservations],
-    payment_records: [...payment_records],
+    users: structuredClone(users),
+    profiles: structuredClone(profiles),
+    user_roles: structuredClone(userRoles || []),
+    stores: structuredClone(stores),
+    locations: structuredClone(locations),
+    categories: structuredClone(categories),
+    products: structuredClone(products),
+    orders: structuredClone(orders),
+    platform_fee_reservations: structuredClone(platform_fee_reservations),
+    payment_records: structuredClone(payment_records),
   }
 
   const client = {
@@ -147,6 +147,38 @@ export function createMockSupabaseClient({
       }
 
       return query
+    },
+
+    async rpc(fn, args) {
+      if (fn === 'expire_order_payment') {
+        const orderId = args?.p_order_id
+        const order = state.orders.find((o) => o.id === orderId)
+        if (order) {
+          order.payment_status = 'EXPIRED'
+          order.status = 'CANCELLED'
+          order.updated_at = new Date().toISOString()
+        }
+        const fee = state.platform_fee_reservations.find((r) => r.active_order_id === orderId)
+        if (fee) fee.active_order_id = null
+        return { data: { expired: true }, error: null }
+      }
+
+      if (fn === 'mark_platform_fee_paid') {
+        const orderId = args?.p_order_id
+        const order = state.orders.find((o) => o.id === orderId)
+        if (order) {
+          order.payment_status = 'PAID'
+          order.status = 'CONFIRMED'
+          order.paid_at = new Date().toISOString()
+        }
+        const fee = state.platform_fee_reservations.find(
+          (r) => r.active_order_id === orderId || r.fee_paise === order?.fee_paise,
+        )
+        if (fee) fee.is_paid = true
+        return { data: true, error: null }
+      }
+
+      return { data: null, error: null }
     },
   }
 

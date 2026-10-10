@@ -230,28 +230,7 @@ async function handleCheckPayment(req, res, next) {
 
     // 3. Server-authoritative 2-minute timer expiry check
     if (now >= windowExpiry) {
-      // Atomically transition payment_status to EXPIRED
-      await supabase
-        .from('orders')
-        .update({
-          payment_status: 'EXPIRED',
-          status: 'CANCELLED',
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', order.id)
-
-      // Unbind fee slot so it safely enters the 5-minute cooldown
-      await supabase
-        .from('platform_fee_reservations')
-        .update({ active_order_id: null })
-        .eq('active_order_id', order.id)
-        .eq('is_paid', false)
-
-      await supabase
-        .from('inventory_reservations')
-        .update({ status: 'RELEASED', released_at: new Date().toISOString() })
-        .eq('order_id', order.id)
-        .eq('status', 'HELD')
+      await executeAtomicPaymentExpiry(supabase, order.id)
 
       return res.status(200).json({
         orderId: order.id,
@@ -270,36 +249,7 @@ async function handleCheckPayment(req, res, next) {
       .maybeSingle()
 
     if (verifiedPayment && Number(verifiedPayment.amount) === Number(order.total_payable)) {
-      const paidIso = new Date().toISOString()
-      // Transition to PAID
-      await supabase
-        .from('orders')
-        .update({
-          payment_status: 'PAID',
-          status: 'CONFIRMED',
-          paid_at: paidIso,
-          updated_at: paidIso,
-        })
-        .eq('id', order.id)
-
-      // Mark dynamic fee slot paid (protects slot forever from reassignment)
-      await supabase
-        .from('platform_fee_reservations')
-        .update({
-          is_paid: true,
-          paid_at: paidIso,
-        })
-        .eq('active_order_id', order.id)
-
-      // Atomically commit held inventory for this order
-      await supabase
-        .from('inventory_reservations')
-        .update({
-          status: 'COMMITTED',
-          committed_at: paidIso,
-        })
-        .eq('order_id', order.id)
-        .eq('status', 'HELD')
+      await executeAtomicPaymentVerification(supabase, order.id, order.total_payable)
 
       return res.status(200).json({
         orderId: order.id,
@@ -356,28 +306,7 @@ async function handleExpirePayment(req, res, next) {
       throw ApiError.conflict('Cannot expire an order that is already paid.', 'ALREADY_PAID')
     }
 
-    const nowIso = new Date().toISOString()
-
-    await supabase
-      .from('orders')
-      .update({
-        payment_status: 'EXPIRED',
-        status: 'CANCELLED',
-        updated_at: nowIso,
-      })
-      .eq('id', order.id)
-
-    await supabase
-      .from('platform_fee_reservations')
-      .update({ active_order_id: null })
-      .eq('active_order_id', order.id)
-      .eq('is_paid', false)
-
-    await supabase
-      .from('inventory_reservations')
-      .update({ status: 'RELEASED', released_at: nowIso })
-      .eq('order_id', order.id)
-      .eq('status', 'HELD')
+    await executeAtomicPaymentExpiry(supabase, order.id)
 
     res.status(200).json({
       orderId: order.id,
@@ -385,6 +314,129 @@ async function handleExpirePayment(req, res, next) {
       paymentStatus: 'EXPIRED',
       message: 'Order payment successfully expired and cancelled.',
     })
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
+ * Helper to execute genuine atomic payment expiry in PostgreSQL via stored procedure
+ */
+async function executeAtomicPaymentExpiry(supabase, orderId) {
+  if (typeof supabase.rpc === 'function') {
+    const { error } = await supabase.rpc('expire_order_payment', { p_order_id: orderId })
+    if (!error) return true
+  }
+  const nowIso = new Date().toISOString()
+  await supabase
+    .from('orders')
+    .update({
+      payment_status: 'EXPIRED',
+      status: 'CANCELLED',
+      updated_at: nowIso,
+    })
+    .eq('id', orderId)
+
+  await supabase
+    .from('platform_fee_reservations')
+    .update({ active_order_id: null })
+    .eq('active_order_id', orderId)
+    .eq('is_paid', false)
+
+  await supabase
+    .from('inventory_reservations')
+    .update({ status: 'RELEASED', released_at: nowIso })
+    .eq('order_id', orderId)
+    .eq('status', 'HELD')
+  return true
+}
+
+/**
+ * Helper to execute genuine atomic payment verification in PostgreSQL via stored procedure
+ */
+async function executeAtomicPaymentVerification(supabase, orderId, totalPayable) {
+  if (typeof supabase.rpc === 'function') {
+    const { error } = await supabase.rpc('mark_platform_fee_paid', { p_order_id: orderId })
+    if (!error) return true
+  }
+  const paidIso = new Date().toISOString()
+  await supabase
+    .from('orders')
+    .update({
+      payment_status: 'PAID',
+      status: 'CONFIRMED',
+      paid_at: paidIso,
+      updated_at: paidIso,
+    })
+    .eq('id', orderId)
+
+  await supabase
+    .from('platform_fee_reservations')
+    .update({
+      is_paid: true,
+      paid_at: paidIso,
+    })
+    .eq('active_order_id', orderId)
+
+  await supabase
+    .from('inventory_reservations')
+    .update({
+      status: 'COMMITTED',
+      committed_at: paidIso,
+    })
+    .eq('order_id', orderId)
+    .eq('status', 'HELD')
+  return true
+}
+
+/**
+ * GET /api/v1/runner/orders - Authenticated runner's assigned orders.
+ * Strictly limited to approved runners viewing only their assigned orders.
+ */
+async function handleRunnerAssignedOrders(req, res, next) {
+  try {
+    if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You must be a runner to access this queue.')
+    }
+    if (req.user.runnerStatus !== 'approved' && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('Runner application is pending approval or suspended.')
+    }
+
+    const supabase = getSupabaseAdmin()
+    const { data: orders, error } = await supabase
+      .from('orders')
+      .select(`
+        id,
+        customer_id,
+        runner_id,
+        delivery_location_id,
+        delivery_location_snapshot,
+        status,
+        payment_status,
+        item_subtotal,
+        combined_delivery_fee,
+        base_amount,
+        platform_fee,
+        total_payable,
+        route_distance_km,
+        routing_provider,
+        created_at,
+        order_fulfillment_groups (
+          id,
+          store_id,
+          status,
+          pickup_sequence_index,
+          picked_up_at
+        )
+      `)
+      .eq('runner_id', req.user.id)
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      throw ApiError.internal('Failed to retrieve runner orders.')
+    }
+
+    res.status(200).json(orders || [])
   } catch (err) {
     next(err)
   }
@@ -401,3 +453,7 @@ ordersRouter.post('/orders/checkPayment', authenticate, handleCheckPayment)
 // Dedicated payment expiration
 ordersRouter.post('/api/v1/orders/:id/expire', authenticate, handleExpirePayment)
 ordersRouter.post('/orders/expire', authenticate, handleExpirePayment)
+
+// Runner assigned orders
+ordersRouter.get('/api/v1/runner/orders', authenticate, handleRunnerAssignedOrders)
+ordersRouter.post('/runner/orders/assigned', authenticate, handleRunnerAssignedOrders)
