@@ -141,6 +141,13 @@ export const useAuthStore = create(
       },
 
       /**
+       * Password recovery request.
+       */
+      async forgotPassword(email) {
+        return authService.forgotPassword(email)
+      },
+
+      /**
        * Sign-out.
        */
       async logout() {

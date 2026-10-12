@@ -217,4 +217,18 @@ describe('Auth Store & Session Lifecycle', () => {
     expect(useAuthStore.getState().session).toBeNull()
     expect(useAuthStore.getState().user).toBeNull()
   })
+
+  it('triggers forgotPassword flow successfully via authService', async () => {
+    const forgotSpy = vi.spyOn(authService, 'forgotPassword').mockResolvedValue({ ok: true })
+
+    const res = await useAuthStore.getState().forgotPassword('reset@campus.edu')
+    expect(res).toEqual({ ok: true })
+    expect(forgotSpy).toHaveBeenCalledWith('reset@campus.edu')
+  })
+
+  it('rejects invalid email addresses in forgotPassword', async () => {
+    await expect(
+      useAuthStore.getState().forgotPassword('invalid-email-no-at')
+    ).rejects.toThrow(/valid email/)
+  })
 })

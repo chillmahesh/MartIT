@@ -34,6 +34,7 @@ describe('Auth UI Components (LoginPage & SignupPage)', () => {
     expect(html).toContain('Sample runner')
     expect(html).toContain('Sample super admin')
     expect(html).toContain('you@campus.edu')
+    expect(html).toContain('Forgot password?')
   })
 
   it('renders LoginPage configuration alert when Supabase config is missing in remote mode', () => {
