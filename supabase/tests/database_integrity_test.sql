@@ -54,12 +54,17 @@ BEGIN
     RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on release_order_inventory';
   END IF;
 
-  -- Test handle_new_user
+  -- Test handle_new_user: client roles cannot execute, but auth admin can
   IF has_function_privilege('anon', 'handle_new_user()', 'EXECUTE') THEN
     RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on handle_new_user';
   END IF;
   IF has_function_privilege('authenticated', 'handle_new_user()', 'EXECUTE') THEN
     RAISE EXCEPTION 'SECURITY FAIL: authenticated has EXECUTE on handle_new_user';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
+    IF NOT has_function_privilege('supabase_auth_admin', 'handle_new_user()', 'EXECUTE') THEN
+      RAISE EXCEPTION 'SECURITY FAIL: supabase_auth_admin does not have EXECUTE on handle_new_user';
+    END IF;
   END IF;
 
   -- Test helper function anon execution

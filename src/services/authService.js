@@ -125,6 +125,37 @@ export const authService = {
   },
 
   /**
+   * Triggers password reset email workflow.
+   * In mock mode: delegates to mock handler.
+   * In remote mode: calls Supabase auth.resetPasswordForEmail.
+   */
+  async forgotPassword(email) {
+    const cleanEmail = email?.trim()
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      throw new ApiError('INVALID_EMAIL', 'Please enter a valid email address.', 400)
+    }
+
+    if (isMockBackend) {
+      return request('auth.forgotPassword', { email: cleanEmail }).catch(() => ({
+        ok: true,
+        message: 'Password reset link sent (demo simulation).',
+      }))
+    }
+
+    const supabase = getSupabaseClient()
+    const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}/login` : undefined
+    const { data, error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo,
+    })
+
+    if (error) {
+      throw new ApiError(error.code || 'RESET_PASSWORD_ERROR', error.message, error.status || 400)
+    }
+
+    return { ok: true, data }
+  },
+
+  /**
    * Authoritative profile and role retrieval from backend.
    * Never relies on user metadata for permissions.
    */

@@ -87,6 +87,12 @@ export function createMockServer({ routingProvider = null } = {}) {
       return { ok: true }
     },
     'auth.me': (_payload, { token }) => publicUser(requireUser(token)),
+    'auth.forgotPassword': ({ email }) => {
+      if (!email || !email.includes('@')) {
+        throw new ApiError('INVALID_EMAIL', 'Please provide a valid email address.', 400)
+      }
+      return { ok: true, message: 'Password recovery email sent (demo simulation).' }
+    },
 
     // ---- admin --------------------------------------------------------------
     'admin.users.list': (_payload, { token }) => {

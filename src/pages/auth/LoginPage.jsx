@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
-import { AlertCircle, Bike, Mail, Lock, ShieldCheck, ShoppingBasket } from 'lucide-react'
+import { AlertCircle, Bike, CheckCircle2, Mail, Lock, ShieldCheck, ShoppingBasket } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
+import { Dialog, DialogContent } from '@/components/ui/Dialog'
 import { Field } from '@/components/ui/Field'
 import { Input, PasswordInput } from '@/components/ui/Input'
 import { Spinner } from '@/components/ui/Spinner'
@@ -20,6 +21,7 @@ function safeNext(next) {
 export default function LoginPage() {
   const login = useAuthStore((s) => s.login)
   const demoLogin = useAuthStore((s) => s.demoLogin)
+  const forgotPassword = useAuthStore((s) => s.forgotPassword)
   const configError = useAuthStore((s) => s.configError) || useAuthStore.getState().configError
   const navigate = useNavigate()
   const [params] = useSearchParams()
@@ -29,6 +31,45 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
   const [pendingDemo, setPendingDemo] = useState(null)
+
+  // Forgot password modal state
+  const [forgotOpen, setForgotOpen] = useState(false)
+  const [forgotEmail, setForgotEmail] = useState('')
+  const [forgotSubmitting, setForgotSubmitting] = useState(false)
+  const [forgotSuccess, setForgotSuccess] = useState(false)
+  const [forgotError, setForgotError] = useState(null)
+
+  const handleOpenForgot = () => {
+    setForgotEmail(email.trim())
+    setForgotError(null)
+    setForgotSuccess(false)
+    setForgotOpen(true)
+  }
+
+  const handleForgotSubmit = async (e) => {
+    e.preventDefault()
+    setForgotError(null)
+    const clean = forgotEmail.trim()
+    if (!clean) {
+      setForgotError('Please enter your email address.')
+      return
+    }
+    if (!clean.includes('@')) {
+      setForgotError('Please enter a valid email address.')
+      return
+    }
+
+    setForgotSubmitting(true)
+    try {
+      await forgotPassword(clean)
+      setForgotSuccess(true)
+      toast.success('Password recovery email sent!')
+    } catch (err) {
+      setForgotError(err.message || 'Failed to request password reset. Please try again.')
+    } finally {
+      setForgotSubmitting(false)
+    }
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -135,8 +176,21 @@ export default function LoginPage() {
           />
         </Field>
 
-        <Field label="Password" error={undefined}>
+        <div className="grid gap-1.5">
+          <div className="flex items-center justify-between">
+            <label htmlFor="login-password" className="text-sm font-medium text-ink">
+              Password
+            </label>
+            <button
+              type="button"
+              onClick={handleOpenForgot}
+              className="text-xs font-medium text-fresh-ink hover:underline focus:outline-none"
+            >
+              Forgot password?
+            </button>
+          </div>
           <PasswordInput
+            id="login-password"
             name="password"
             autoComplete="current-password"
             required
@@ -145,7 +199,7 @@ export default function LoginPage() {
             placeholder="Enter your password"
             disabled={submitting}
           />
-        </Field>
+        </div>
 
         <Button
           type="submit"
@@ -198,6 +252,90 @@ export default function LoginPage() {
           Create an account
         </Link>
       </p>
+
+      {/* Forgot Password Modal Dialog */}
+      <Dialog open={forgotOpen} onOpenChange={setForgotOpen}>
+        <DialogContent
+          title="Reset your password"
+          description="Enter your registered campus email address and we'll send you instructions to recover access."
+        >
+          {forgotSuccess ? (
+            <div className="space-y-4">
+              <div
+                role="status"
+                className="flex items-start gap-3 rounded-card border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-800 dark:text-emerald-300"
+              >
+                <CheckCircle2 className="size-5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" aria-hidden="true" />
+                <div>
+                  <p className="font-semibold">Check your email</p>
+                  <p className="mt-1 text-ink">
+                    If an account exists for <span className="font-medium">{forgotEmail}</span>, we have sent instructions to reset your password.
+                  </p>
+                  {isMockMode && (
+                    <p className="mt-2 text-xs text-ink-muted">
+                      (Demo mode: simulated password recovery dispatched)
+                    </p>
+                  )}
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="secondary"
+                block
+                onClick={() => setForgotOpen(false)}
+              >
+                Back to log in
+              </Button>
+            </div>
+          ) : (
+            <form onSubmit={handleForgotSubmit} className="space-y-4" noValidate>
+              {forgotError && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2.5 rounded-card border border-danger/30 bg-danger/10 p-3 text-xs text-danger"
+                >
+                  <AlertCircle className="size-4 shrink-0 mt-0.5" aria-hidden="true" />
+                  <span>{forgotError}</span>
+                </div>
+              )}
+
+              <Field label="Campus Email" error={undefined}>
+                <Input
+                  type="email"
+                  name="forgotEmail"
+                  autoComplete="email"
+                  required
+                  value={forgotEmail}
+                  onChange={(e) => setForgotEmail(e.target.value)}
+                  placeholder="you@campus.edu"
+                  icon={Mail}
+                  disabled={forgotSubmitting}
+                  autoFocus
+                />
+              </Field>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => setForgotOpen(false)}
+                  disabled={forgotSubmitting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  loading={forgotSubmitting}
+                  disabled={Boolean(hasConfigError)}
+                >
+                  Send recovery link
+                </Button>
+              </div>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
     </section>
   )
 }

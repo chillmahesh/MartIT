@@ -13,14 +13,15 @@
 --   - Non-escalatable: Completely ignores raw_user_meta_data for roles/permissions.
 --     Only the default 'customer' role is ever granted.
 --   - Runner control: runner_status is strictly NULL (requires separate admin approval).
---   - Safe search_path: public, pg_temp prevents search path injection attacks.
+--   - Safe search_path: public, extensions, pg_temp prevents search path injection attacks
+--     while allowing resolution of extension types (citext, uuid-ossp).
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY DEFINER
-SET search_path = public, pg_temp
+SET search_path = public, extensions, pg_temp
 AS $$
 DECLARE
   v_raw_name TEXT;
@@ -77,10 +78,10 @@ BEGIN
   ON CONFLICT (id) DO UPDATE SET
     email = EXCLUDED.email,
     name = CASE
-      WHEN public.profiles.name = 'MartIT Customer' AND EXCLUDED.name <> 'MartIT Customer' THEN EXCLUDED.name
-      ELSE public.profiles.name
+      WHEN profiles.name = 'MartIT Customer' AND EXCLUDED.name <> 'MartIT Customer' THEN EXCLUDED.name
+      ELSE profiles.name
     END,
-    phone = COALESCE(public.profiles.phone, EXCLUDED.phone),
+    phone = COALESCE(profiles.phone, EXCLUDED.phone),
     updated_at = NOW();
 
   -- 2. Idempotently grant default 'customer' role
@@ -91,7 +92,7 @@ BEGIN
     created_at
   ) VALUES (
     NEW.id,
-    'customer',
+    'customer'::public.role_enum,
     NOW()
   )
   ON CONFLICT (user_id, role) DO NOTHING;
@@ -100,9 +101,23 @@ BEGIN
 END;
 $$;
 
--- Revoke execute from PUBLIC, anon, and authenticated; grant strictly to service_role
+-- Revoke execute from PUBLIC, anon, and authenticated; grant strictly to auth & service roles
 REVOKE EXECUTE ON FUNCTION public.handle_new_user() FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.handle_new_user() TO service_role;
+
+-- Grant EXECUTE and necessary table permissions to supabase_auth_admin (GoTrue auth worker) and service_role
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
+    GRANT USAGE ON SCHEMA public TO supabase_auth_admin;
+    GRANT ALL ON TABLE public.profiles TO supabase_auth_admin;
+    GRANT ALL ON TABLE public.user_roles TO supabase_auth_admin;
+    GRANT EXECUTE ON FUNCTION public.handle_new_user() TO supabase_auth_admin;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    GRANT EXECUTE ON FUNCTION public.handle_new_user() TO service_role;
+  END IF;
+END;
+$$;
 
 -- ============================================================================
 -- 2. ATTACH TRIGGER TO auth.users
