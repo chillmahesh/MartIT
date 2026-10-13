@@ -409,4 +409,29 @@ describe('Checkout Customer Details and Campus Address Selection', () => {
     expect(paymentHtml).toContain('9876543210')
     expect(paymentHtml).toContain('A Block, Room 101')
   })
+
+  // 13. Campus destination dropdown supports mouse wheel scroll without Lenis interference
+  it('renders destination dropdown with data-lenis-prevent and overscroll-contain so mouse wheel scroll works', () => {
+    const html = renderToString(
+      <DeliveryDetailsForm
+        details={{
+          fullName: 'Aarav Patel',
+          mobileNumber: '9876543210',
+          presetLocation: 'A Block',
+          customLocation: '',
+          deliveryInstructions: '',
+        }}
+        errors={{}}
+        onChange={vi.fn()}
+        initialDropdownOpen={true}
+      />,
+    )
+
+    // Verify dropdown listbox is open and has data-lenis-prevent attributes
+    expect(html).toContain('data-testid="campus-locations-list"')
+    expect(html).toContain('data-lenis-prevent')
+    expect(html).toContain('data-lenis-prevent-wheel')
+    expect(html).toContain('overscroll-contain')
+    expect(html).toContain('overflow-y-auto')
+  })
 })

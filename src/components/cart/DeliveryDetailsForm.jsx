@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useRef, useEffect } from 'react'
 import {
   User,
   Phone,
@@ -38,15 +38,60 @@ export function DeliveryDetailsForm({
   onChange,
   disabled = false,
   className,
+  initialDropdownOpen = false,
 }) {
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false)
+  const [isDropdownOpen, setIsDropdownOpen] = useState(initialDropdownOpen)
   const [searchQuery, setSearchQuery] = useState('')
+  const dropdownRef = useRef(null)
+  const listboxRef = useRef(null)
 
   const isOtherSelected =
     details.presetLocation === OTHER_LOCATION_VALUE ||
     details.presetLocation === OTHER_LOCATION_LABEL ||
     details.presetLocation === LEGACY_OTHER_LABEL ||
     details.presetLocation === 'Other / Enter address'
+
+  // Close dropdown on outside click or Escape key
+  useEffect(() => {
+    if (!isDropdownOpen) return
+
+    const handlePointerDownOutside = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) {
+        setIsDropdownOpen(false)
+      }
+    }
+
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setIsDropdownOpen(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDownOutside)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDownOutside)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isDropdownOpen])
+
+  // Isolate wheel events on listbox so Lenis/window smooth-scroll doesn't hijack or block mouse wheel scrolling
+  useEffect(() => {
+    if (!isDropdownOpen) return
+
+    const listbox = listboxRef.current
+    if (!listbox) return
+
+    const handleWheel = (e) => {
+      // Stop event from bubbling to window so Lenis does not intercept and cancel it
+      e.stopPropagation()
+    }
+
+    listbox.addEventListener('wheel', handleWheel, { passive: true })
+    return () => {
+      listbox.removeEventListener('wheel', handleWheel)
+    }
+  }, [isDropdownOpen])
 
   // Filter preset locations by search query
   const filteredPresets = useMemo(() => {
@@ -183,7 +228,7 @@ export function DeliveryDetailsForm({
             </select>
 
             {/* Interactive Combobox / Dropdown Trigger */}
-            <div className="relative">
+            <div ref={dropdownRef} className="relative">
               <button
                 type="button"
                 id="campus-location-trigger"
@@ -229,10 +274,16 @@ export function DeliveryDetailsForm({
               {/* Dropdown Menu Panel */}
               {isDropdownOpen && (
                 <div
+                  ref={listboxRef}
                   role="listbox"
                   aria-label="Campus destinations list"
                   data-testid="campus-locations-list"
-                  className="absolute z-40 left-0 right-0 mt-1.5 max-h-80 overflow-y-auto rounded-card border border-line bg-surface p-2 shadow-2 animate-fade-in"
+                  data-lenis-prevent
+                  data-lenis-prevent-wheel
+                  data-lenis-prevent-touch
+                  tabIndex={-1}
+                  onWheel={(e) => e.stopPropagation()}
+                  className="absolute z-40 left-0 right-0 mt-1.5 max-h-80 overflow-y-auto overscroll-contain rounded-card border border-line bg-surface p-2 shadow-2 animate-fade-in focus:outline-none"
                 >
                   {/* Search input for mobile filter */}
                   <div className="relative mb-2 px-1">
