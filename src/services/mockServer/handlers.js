@@ -5,10 +5,11 @@
  */
 import { calculateDeliveryFee, splitDeliveryFee, DELIVERY_FEE_MESSAGES } from '@/utils/deliveryFee'
 import { calculateOrderTotals } from '@/utils/orderTotals'
-import { ORDER_STATUS, transitionOrder } from '@/utils/orderMachine'
+import { ORDER_STATUS, canTransitionOrder, transitionOrder } from '@/utils/orderMachine'
 import { PAYMENT_STATUS, PAYMENT_SOURCE, transitionPayment } from '@/utils/paymentMachine'
 import { SAMPLE_CATEGORIES } from '@/mocks/categories'
 import { SAMPLE_ORDERS } from '@/mocks/orders'
+import { getOrderStoreIds, getOrderPickups } from '@/utils/runnerOrders'
 import { createDb } from './db'
 import { ApiError } from './errors'
 import { getDistanceKm } from './routing'
@@ -513,28 +514,265 @@ export function createMockServer({ routingProvider = null } = {}) {
       return customerView
     },
 
-    // ---- runner orders ------------------------------------------------------
+    // ---- runner orders & workflow -------------------------------------------
     /**
      * Lists assigned and available delivery orders for an authenticated runner.
-     * Requires the runner.deliver permission (approved runner).
+     * When isOnline is false, unassigned available requests are not offered.
      */
-    'runner.orders.assigned': (_payload, { token }) => {
+    'runner.orders.assigned': ({ isOnline = true } = {}, { token }) => {
       const user = requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
-      const source = db.orders.length > 0 ? db.orders : SAMPLE_ORDERS
-      return source.filter(
-        (o) =>
-          o.runnerId === user.id ||
-          !o.runnerId ||
-          o.status === ORDER_STATUS.CONFIRMED ||
-          o.status === ORDER_STATUS.PREPARING ||
-          o.status === ORDER_STATUS.PICKED_UP ||
-          o.status === ORDER_STATUS.ON_THE_WAY ||
-          o.status === ORDER_STATUS.DELIVERED,
-      )
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+      return db.orders.filter((o) => {
+        if (o.runnerId === user.id) {
+          return (
+            o.status === ORDER_STATUS.PREPARING ||
+            o.status === ORDER_STATUS.PICKED_UP ||
+            o.status === ORDER_STATUS.ON_THE_WAY ||
+            o.status === ORDER_STATUS.DELIVERED
+          )
+        }
+        // Unassigned requests: offered only when runner is online
+        if (!o.runnerId && o.status === ORDER_STATUS.CONFIRMED) {
+          return Boolean(isOnline)
+        }
+        return false
+      })
     },
+
+    /**
+     * Accepts a delivery request for the calling runner.
+     * Prevents duplicate acceptance, concurrent claims by two runners, and offline acceptance.
+     */
+    'runner.order.accept': ({ orderId, isOnline = true } = {}, { token }) => {
+      const user = requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      if (!orderId) {
+        throw new ApiError('INVALID_ORDER_ID', 'Order reference is required.', 400)
+      }
+      if (isOnline === false) {
+        throw new ApiError('RUNNER_OFFLINE', 'Runner must be online to accept delivery requests.', 400)
+      }
+
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+
+      const order = db.orders.find((o) => o.id === orderId)
+      if (!order) {
+        throw new ApiError('ORDER_NOT_FOUND', 'Order not found.', 404)
+      }
+
+      // Check if already accepted by this runner
+      if (order.runnerId === user.id) {
+        throw new ApiError(
+          'ORDER_ALREADY_ACCEPTED',
+          'You have already accepted this delivery request.',
+          400,
+          { orderId },
+        )
+      }
+
+      // Check if already assigned to someone else
+      if (order.runnerId && order.runnerId !== user.id) {
+        throw new ApiError(
+          'ORDER_ALREADY_ASSIGNED',
+          'This delivery request has already been assigned to another runner.',
+          409,
+          { orderId, assignedRunnerId: order.runnerId },
+        )
+      }
+
+      // Check if order is available for acceptance (must be CONFIRMED)
+      if (order.status !== ORDER_STATUS.CONFIRMED) {
+        throw new ApiError(
+          'UNAVAILABLE_REQUEST',
+          `Order is in ${order.status} status and is no longer available for acceptance.`,
+          409,
+          { orderId, status: order.status },
+        )
+      }
+
+      // Atomic transition to PREPARING
+      transitionOrder(order.status, ORDER_STATUS.PREPARING)
+      order.status = ORDER_STATUS.PREPARING
+      order.runnerId = user.id
+      order.assignedAt = new Date().toISOString()
+
+      // Multi-store initialization
+      const storeIds = getOrderStoreIds(order)
+      if (storeIds.length > 0 && (!order.pickups || order.pickups.length === 0)) {
+        order.pickups = storeIds.map((sid) => ({
+          storeId: sid,
+          status: 'PENDING',
+          pickedUpAt: null,
+        }))
+      }
+
+      db.saveOrders?.()
+      const { ledger: _ledger, ...customerView } = order
+      return customerView
+    },
+
+    /**
+     * Confirms pickup of an individual store in a (potentially multi-store) order.
+     * When all required stores are picked up, advances order status to PICKED_UP.
+     */
+    'runner.order.pickupStore': ({ orderId, storeId }, { token }) => {
+      const user = requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      if (!orderId || !storeId) {
+        throw new ApiError('INVALID_INPUT', 'Order ID and Store ID are required.', 400)
+      }
+
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+
+      const order = db.orders.find((o) => o.id === orderId)
+      if (!order) {
+        throw new ApiError('ORDER_NOT_FOUND', 'Order not found.', 404)
+      }
+      if (order.runnerId !== user.id) {
+        throw new ApiError('FORBIDDEN', 'You are not assigned to this delivery.', 403)
+      }
+      if (order.status !== ORDER_STATUS.PREPARING) {
+        throw new ApiError(
+          'INVALID_ORDER_STATE',
+          `Store pickups can only be confirmed while order is preparing (current: ${order.status}).`,
+          400,
+        )
+      }
+
+      const storeIds = getOrderStoreIds(order)
+      if (!storeIds.includes(storeId)) {
+        throw new ApiError('INVALID_STORE', 'Store is not part of this order.', 400)
+      }
+
+      if (!order.pickups || order.pickups.length === 0) {
+        order.pickups = storeIds.map((sid) => ({
+          storeId: sid,
+          status: 'PENDING',
+          pickedUpAt: null,
+        }))
+      }
+
+      const pickup = order.pickups.find((p) => p.storeId === storeId)
+      if (pickup) {
+        pickup.status = 'PICKED_UP'
+        pickup.pickedUpAt = new Date().toISOString()
+      }
+
+      // Check if all stores are now picked up
+      const allPickedUp = order.pickups.every((p) => p.status === 'PICKED_UP')
+      if (allPickedUp) {
+        transitionOrder(order.status, ORDER_STATUS.PICKED_UP)
+        order.status = ORDER_STATUS.PICKED_UP
+        order.pickedUpAt = new Date().toISOString()
+      }
+
+      db.saveOrders?.()
+      const { ledger: _ledger, ...customerView } = order
+      return customerView
+    },
+
+    /**
+     * Transitions an order forward along the state machine.
+     * Prevents skipping states, repeating states, incomplete multi-store pickups,
+     * and premature delivery without OTP.
+     */
+    'runner.order.transition': ({ orderId, nextStatus }, { token }) => {
+      const user = requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      if (!orderId || !nextStatus) {
+        throw new ApiError('INVALID_INPUT', 'Order ID and target status are required.', 400)
+      }
+
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+
+      const order = db.orders.find((o) => o.id === orderId)
+      if (!order) {
+        throw new ApiError('ORDER_NOT_FOUND', 'Order not found.', 404)
+      }
+      if (order.runnerId !== user.id) {
+        throw new ApiError('FORBIDDEN', 'You are not assigned to this delivery.', 403)
+      }
+
+      if (order.status === nextStatus) {
+        throw new ApiError(
+          'INVALID_TRANSITION',
+          `Order is already in ${nextStatus} status.`,
+          400,
+        )
+      }
+
+      // Multi-store pickup validation
+      if (nextStatus === ORDER_STATUS.PICKED_UP) {
+        const pickups = getOrderPickups(order)
+        if (pickups.length > 1) {
+          const pendingPickups = pickups.filter((p) => p.status !== 'PICKED_UP')
+          if (pendingPickups.length > 0) {
+            throw new ApiError(
+              'PICKUPS_INCOMPLETE',
+              `All store pickups must be complete before marking order as picked up. Pending stores: ${pendingPickups.map((p) => p.storeName).join(', ')}.`,
+              400,
+              { pendingStoreIds: pendingPickups.map((p) => p.storeId) },
+            )
+          }
+        } else if (order.pickups && order.pickups.length === 1) {
+          order.pickups[0].status = 'PICKED_UP'
+          order.pickups[0].pickedUpAt = new Date().toISOString()
+        }
+      }
+
+      // OTP verification restriction in Milestone 2
+      if (nextStatus === ORDER_STATUS.DELIVERED) {
+        throw new ApiError(
+          'OTP_VERIFICATION_REQUIRED',
+          'Customer OTP verification is required to complete delivery (Milestone 3).',
+          400,
+        )
+      }
+
+      // State machine validation
+      if (!canTransitionOrder(order.status, nextStatus)) {
+        throw new ApiError(
+          'INVALID_TRANSITION',
+          `Illegal order transition: cannot transition from ${order.status} to ${nextStatus}.`,
+          400,
+        )
+      }
+
+      transitionOrder(order.status, nextStatus)
+      order.status = nextStatus
+
+      if (nextStatus === ORDER_STATUS.PICKED_UP) {
+        order.pickedUpAt = new Date().toISOString()
+      } else if (nextStatus === ORDER_STATUS.ON_THE_WAY) {
+        order.departedAt = new Date().toISOString()
+      }
+
+      db.saveOrders?.()
+      const { ledger: _ledger, ...customerView } = order
+      return customerView
+    },
+
     'runner.orders': (_payload, { token }) => {
       requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
-      return db.orders.length > 0 ? db.orders : SAMPLE_ORDERS
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+      return db.orders
     },
   }
 

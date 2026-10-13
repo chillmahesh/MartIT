@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   PackagePlus,
   Bike,
@@ -23,44 +23,40 @@ import { ORDER_STATUS } from '@/utils/orderMachine'
 
 /**
  * RunnerDashboardPage Component
- * Milestone 1 Implementation:
+ * Milestone 2 Implementation:
  * - Runner availability toggle (Online/Offline status)
  * - Dashboard activity summary (Derived counts)
- * - 4 distinct delivery lifecycle sections
+ * - Functional delivery request acceptance against mock server
+ * - Order status progression through state machine
+ * - Multi-store pickup awareness & checklist
  * - Empty & loading states without fake claims
- * - Simulated actions for milestone 1
  */
 export default function RunnerDashboardPage() {
   const user = useAuthStore((s) => s.user)
   const { isOnline, activeTab, setActiveTab } = useRunnerStore()
-  const [localSimulatedOrders, setLocalSimulatedOrders] = useState([])
+  const queryClient = useQueryClient()
+  const [actionInProgress, setActionInProgress] = useState(false)
 
   // Query runner orders from service
   const {
-    data: remoteOrders = [],
+    data: allOrders = [],
     isLoading,
     isError,
     error,
     refetch,
     isFetching,
   } = useQuery({
-    queryKey: ['runner-orders'],
+    queryKey: ['runner-orders', isOnline],
     queryFn: async () => {
       try {
-        const res = await runnerService.getAssignedOrders()
+        const res = await runnerService.getAssignedOrders({ isOnline })
         return Array.isArray(res) ? res : []
       } catch (err) {
         console.warn('Runner orders retrieval notice:', err.message)
         throw err
       }
     },
-    staleTime: 30000,
-  })
-
-  // Merge remote orders with any local Milestone 1 simulated transitions
-  const allOrders = remoteOrders.map((ro) => {
-    const override = localSimulatedOrders.find((lo) => lo.id === ro.id)
-    return override ? { ...ro, ...override } : ro
+    staleTime: 10000,
   })
 
   // Categorize orders strictly by delivery lifecycle state
@@ -83,20 +79,50 @@ export default function RunnerDashboardPage() {
   const activeCount = assignedOrders.length + inProgressOrders.length
   const completedCount = completedOrders.length
 
-  // Simulated action handler for Milestone 1 (Assignment / Status)
-  const handleOrderAction = (order, actionType) => {
-    if (actionType === 'accept') {
-      if (!isOnline) {
-        toast.error('You are offline. Go online to accept delivery requests.')
+  // Action handler for Milestone 2 (Acceptance, Pickups, State Transitions)
+  const handleOrderAction = async (order, actionType, payload = {}) => {
+    if (actionInProgress) return
+    setActionInProgress(true)
+
+    try {
+      if (actionType === 'accept') {
+        if (!isOnline) {
+          toast.error('You are offline. Go online to accept delivery requests.')
+          return
+        }
+
+        await runnerService.acceptOrder(order.id, { isOnline })
+        toast.success(`Delivery request #${order.id} accepted and assigned to you.`)
+        await queryClient.invalidateQueries({ queryKey: ['runner-orders'] })
+        refetch()
         return
       }
 
-      // Simulate assignment in local state for UI demonstration
-      setLocalSimulatedOrders((prev) => [
-        ...prev.filter((o) => o.id !== order.id),
-        { id: order.id, status: ORDER_STATUS.PREPARING, runnerId: user?.id },
-      ])
-      toast.success(`Order #${order.id} accepted (Simulated for Milestone 1).`)
+      if (actionType === 'pickup-store') {
+        await runnerService.pickupStore(order.id, payload.storeId)
+        toast.success('Store pickup confirmed.')
+        await queryClient.invalidateQueries({ queryKey: ['runner-orders'] })
+        refetch()
+        return
+      }
+
+      if (actionType === 'transition') {
+        await runnerService.transitionOrder(order.id, payload.nextStatus)
+        if (payload.nextStatus === ORDER_STATUS.PICKED_UP) {
+          toast.success(`Order #${order.id} marked as picked up. Ready for transit!`)
+        } else if (payload.nextStatus === ORDER_STATUS.ON_THE_WAY) {
+          toast.success(`Order #${order.id} is now en route to the customer!`)
+        } else {
+          toast.success(`Order status updated to ${payload.nextStatus}.`)
+        }
+        await queryClient.invalidateQueries({ queryKey: ['runner-orders'] })
+        refetch()
+        return
+      }
+    } catch (err) {
+      toast.error(err.message || 'Operation failed. Please try again.')
+    } finally {
+      setActionInProgress(false)
     }
   }
 
@@ -110,7 +136,7 @@ export default function RunnerDashboardPage() {
               Runner Dashboard
             </h1>
             <Badge tone="brand" size="md">
-              Milestone 1
+              Milestone 2
             </Badge>
           </div>
           <p className="text-xs sm:text-sm text-ink-subtle mt-1">
@@ -123,7 +149,7 @@ export default function RunnerDashboardPage() {
             size="sm"
             tone="neutral"
             onClick={() => refetch()}
-            loading={isFetching}
+            loading={isFetching || actionInProgress}
             className="text-xs"
             aria-label="Refresh deliveries"
           >
@@ -137,7 +163,7 @@ export default function RunnerDashboardPage() {
       <div className="flex items-start gap-2.5 rounded-tile border border-info/30 bg-info/10 p-3 text-xs text-info">
         <Info className="size-4 shrink-0 mt-0.5" aria-hidden="true" />
         <p>
-          <strong>Mock Environment:</strong> Runner availability, delivery orders, and status transitions are simulated in this milestone. Real OTP verification and earnings will be connected in Milestone 2.
+          <strong>Mock Environment:</strong> Runner assignment, multi-store pickup, and lifecycle transitions are backed by mock server state in this milestone. Customer OTP verification and driver earnings will connect in Milestone 3.
         </p>
       </div>
 

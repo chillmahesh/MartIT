@@ -1,11 +1,20 @@
-import { Store, MapPin, ShoppingBag, Clock, IndianRupee, ArrowRight, User } from 'lucide-react'
+import {
+  Store,
+  MapPin,
+  ShoppingBag,
+  Clock,
+  ArrowRight,
+  User,
+  CheckCircle2,
+} from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { OrderStatusPill } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { ORDER_STATUS } from '@/utils/orderMachine'
 import { splitDeliveryFee } from '@/utils/deliveryFee'
 import { formatINR } from '@/utils/currency'
-import { SAMPLE_STORES, SAMPLE_DELIVERY_LOCATIONS } from '@/mocks/campus'
+import { SAMPLE_DELIVERY_LOCATIONS } from '@/mocks/campus'
+import { getOrderPickups, areAllPickupsComplete, getStoreDisplayName } from '@/utils/runnerOrders'
 import { cn } from '@/utils/cn'
 
 /**
@@ -26,14 +35,18 @@ function formatOrderTime(dateStr) {
 
 /**
  * DeliveryCard Component
- * Displays order reference, store info, destination, items, authoritative delivery fee, and state action.
+ * Displays order reference, store(s), destination, items, authoritative delivery fee,
+ * multi-store pickup progress, and state-appropriate actions.
  */
 export function DeliveryCard({ order, onAction, isOnline = true, className }) {
   if (!order) return null
 
-  // Resolve store details
-  const store = SAMPLE_STORES.find((s) => s.id === order.storeId)
-  const storeName = store ? store.name.replace(' (sample store)', '') : order.storeId || 'Campus Store'
+  // Resolve pickup store(s)
+  const pickups = getOrderPickups(order)
+  const isMultiStore = pickups.length > 1
+  const allPickupsDone = areAllPickupsComplete(order)
+  const completedPickupCount = pickups.filter((p) => p.status === 'PICKED_UP').length
+  const singleStoreName = pickups[0]?.storeName || getStoreDisplayName(order.storeId)
 
   // Resolve destination details
   const locationObj = SAMPLE_DELIVERY_LOCATIONS.find((l) => l.id === order.locationId)
@@ -92,21 +105,79 @@ export function DeliveryCard({ order, onAction, isOnline = true, className }) {
       </div>
 
       {/* Store and Destination Info */}
-      <div className="space-y-2.5 text-xs">
-        {/* Pickup Store */}
-        <div className="flex items-start gap-2.5">
-          <span className="grid size-6 shrink-0 place-items-center rounded bg-surface-2 text-ink-subtle mt-0.5">
-            <Store className="size-3.5" aria-hidden="true" />
-          </span>
-          <div className="min-w-0">
-            <p className="text-[11px] uppercase tracking-wider font-semibold text-ink-subtle">
-              Pickup from
-            </p>
-            <p className="font-bold text-ink truncate" data-testid={`store-name-${order.id}`}>
-              {storeName}
-            </p>
+      <div className="space-y-3 text-xs">
+        {/* Single Store vs Multi-store Display */}
+        {!isMultiStore ? (
+          <div className="flex items-start gap-2.5">
+            <span className="grid size-6 shrink-0 place-items-center rounded bg-surface-2 text-ink-subtle mt-0.5">
+              <Store className="size-3.5" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-[11px] uppercase tracking-wider font-semibold text-ink-subtle">
+                Pickup from
+              </p>
+              <p className="font-bold text-ink truncate" data-testid={`store-name-${order.id}`}>
+                {singleStoreName}
+              </p>
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="rounded-tile border border-line bg-surface-2/40 p-2.5 space-y-2">
+            <div className="flex items-center justify-between text-xs font-semibold text-ink">
+              <span className="flex items-center gap-1.5">
+                <Store className="size-3.5 text-ink-subtle" aria-hidden="true" />
+                <span>{`Required Pickups (${pickups.length} stores)`}</span>
+              </span>
+              <span className="text-[11px] font-medium text-ink-subtle">
+                {`${completedPickupCount} of ${pickups.length} collected`}
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {pickups.map((p) => {
+                const isDone = p.status === 'PICKED_UP'
+                return (
+                  <div
+                    key={p.storeId}
+                    className="flex items-center justify-between gap-2 rounded bg-surface px-2.5 py-1.5 text-xs border border-line/50"
+                    data-testid={`pickup-store-${order.id}-${p.storeId}`}
+                  >
+                    <div className="min-w-0 flex items-center gap-2">
+                      <span
+                        className={cn(
+                          'size-2 rounded-full shrink-0',
+                          isDone ? 'bg-fresh' : 'bg-warning',
+                        )}
+                        aria-hidden="true"
+                      />
+                      <span className="font-medium text-ink truncate">{p.storeName}</span>
+                    </div>
+
+                    {isDone ? (
+                      <span className="text-[11px] font-semibold text-fresh-ink flex items-center gap-1">
+                        <CheckCircle2 className="size-3 text-fresh" aria-hidden="true" />
+                        Picked up
+                      </span>
+                    ) : isPreparing ? (
+                      <Button
+                        size="sm"
+                        tone="brand"
+                        onClick={() =>
+                          onAction?.(order, 'pickup-store', { storeId: p.storeId })
+                        }
+                        data-testid={`action-pickup-${order.id}-${p.storeId}`}
+                        className="h-6 px-2 text-[10px] font-semibold"
+                      >
+                        Confirm Pickup
+                      </Button>
+                    ) : (
+                      <span className="text-[11px] text-ink-subtle">Pending</span>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Drop Destination */}
         <div className="flex items-start gap-2.5">
@@ -157,7 +228,7 @@ export function DeliveryCard({ order, onAction, isOnline = true, className }) {
       </div>
 
       {/* Payout & Fee Footer */}
-      <div className="border-t border-line/60 pt-3 flex items-center justify-between gap-3 text-xs">
+      <div className="border-t border-line/60 pt-3 flex flex-wrap items-center justify-between gap-3 text-xs">
         <div>
           <p className="text-[11px] text-ink-subtle font-medium">Delivery Fee</p>
           <div className="flex items-baseline gap-1.5">
@@ -189,15 +260,68 @@ export function DeliveryCard({ order, onAction, isOnline = true, className }) {
           )}
 
           {isPreparing && (
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent bg-accent/10 rounded px-2.5 py-1">
-              Store Preparing
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent bg-accent/10 rounded px-2 py-1">
+                Store Preparing
+              </span>
+              {!isMultiStore ? (
+                <Button
+                  size="sm"
+                  tone="brand"
+                  onClick={() =>
+                    onAction?.(order, 'transition', { nextStatus: ORDER_STATUS.PICKED_UP })
+                  }
+                  data-testid={`action-pickup-${order.id}`}
+                  className="text-xs font-semibold"
+                >
+                  <span>Confirm Pickup</span>
+                  <ArrowRight className="size-3" aria-hidden="true" />
+                </Button>
+              ) : allPickupsDone ? (
+                <Button
+                  size="sm"
+                  tone="brand"
+                  onClick={() =>
+                    onAction?.(order, 'transition', { nextStatus: ORDER_STATUS.PICKED_UP })
+                  }
+                  data-testid={`action-ready-${order.id}`}
+                  className="text-xs font-semibold"
+                >
+                  <span>Ready for Transit</span>
+                  <ArrowRight className="size-3" aria-hidden="true" />
+                </Button>
+              ) : (
+                <span className="text-[10px] text-ink-subtle font-medium">
+                  Collect all stores first
+                </span>
+              )}
+            </div>
           )}
 
-          {(isPickedUp || isOnTheWay) && (
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand bg-brand-soft rounded px-2.5 py-1">
-              Out for Delivery
-            </span>
+          {isPickedUp && (
+            <Button
+              size="sm"
+              tone="brand"
+              onClick={() =>
+                onAction?.(order, 'transition', { nextStatus: ORDER_STATUS.ON_THE_WAY })
+              }
+              data-testid={`action-start-delivery-${order.id}`}
+              className="text-xs font-semibold"
+            >
+              <span>Start Delivery</span>
+              <ArrowRight className="size-3" aria-hidden="true" />
+            </Button>
+          )}
+
+          {isOnTheWay && (
+            <div className="flex flex-col items-end">
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand bg-brand-soft rounded px-2.5 py-1">
+                Out for Delivery
+              </span>
+              <span className="text-[10px] text-ink-subtle mt-0.5">
+                OTP verification in M3
+              </span>
+            </div>
           )}
 
           {isDelivered && (

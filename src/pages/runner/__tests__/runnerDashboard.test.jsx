@@ -242,10 +242,253 @@ describe('Runner Dashboard UI — Milestone 1', () => {
       )
 
       expect(html).toContain('Runner Dashboard')
-      expect(html).toContain('Milestone 1')
+      expect(html).toContain('Milestone 2')
       expect(html).toContain('Mock Environment')
       expect(html).toContain('Delivery Activity Summary')
       expect(html).toContain('Online')
+    })
+  })
+
+  // 8. Milestone 2: Runner Assignment & Concurrency
+  describe('Milestone 2: Runner Assignment & Concurrency', () => {
+    it('successfully accepts an available delivery request', async () => {
+      const runnerToken = (await server.handle('auth.demoLogin', { role: 'runner' })).token
+      const result = await server.handle(
+        'runner.order.accept',
+        { orderId: 'ord_sample_avail_1', isOnline: true },
+        { token: runnerToken },
+      )
+
+      expect(result.id).toBe('ord_sample_avail_1')
+      expect(result.status).toBe(ORDER_STATUS.PREPARING)
+      expect(result.runnerId).toBe('u_runner_1')
+    })
+
+    it('prevents two runners from accepting the same request (concurrency)', async () => {
+      const runner1Token = (await server.handle('auth.demoLogin', { role: 'runner' })).token
+      const runner2Token = (await server.handle('auth.demoLogin', { role: 'runner_2' })).token
+
+      // Runner 1 accepts ord_sample_avail_1
+      await server.handle(
+        'runner.order.accept',
+        { orderId: 'ord_sample_avail_1', isOnline: true },
+        { token: runner1Token },
+      )
+
+      // Runner 2 attempts to accept the same order
+      await expect(
+        server.handle(
+          'runner.order.accept',
+          { orderId: 'ord_sample_avail_1', isOnline: true },
+          { token: runner2Token },
+        ),
+      ).rejects.toMatchObject({
+        code: 'ORDER_ALREADY_ASSIGNED',
+        status: 409,
+      })
+    })
+
+    it('rejects already-accepted or unavailable requests', async () => {
+      const runnerToken = (await server.handle('auth.demoLogin', { role: 'runner' })).token
+
+      // Accepting again by the same runner
+      await server.handle(
+        'runner.order.accept',
+        { orderId: 'ord_sample_avail_1', isOnline: true },
+        { token: runnerToken },
+      )
+      await expect(
+        server.handle(
+          'runner.order.accept',
+          { orderId: 'ord_sample_avail_1', isOnline: true },
+          { token: runnerToken },
+        ),
+      ).rejects.toMatchObject({
+        code: 'ORDER_ALREADY_ACCEPTED',
+        status: 400,
+      })
+
+      // Attempting to accept an order not in CONFIRMED status
+      server.db.orders.push({
+        id: 'ord_cancelled_test',
+        runnerId: null,
+        status: ORDER_STATUS.CANCELLED,
+      })
+      await expect(
+        server.handle(
+          'runner.order.accept',
+          { orderId: 'ord_cancelled_test', isOnline: true },
+          { token: runnerToken },
+        ),
+      ).rejects.toMatchObject({
+        code: 'UNAVAILABLE_REQUEST',
+        status: 409,
+      })
+    })
+
+    it('enforces offline runner restrictions on acceptance and availability', async () => {
+      const runnerToken = (await server.handle('auth.demoLogin', { role: 'runner' })).token
+
+      // Reject acceptance when runner is offline
+      await expect(
+        server.handle(
+          'runner.order.accept',
+          { orderId: 'ord_sample_avail_1', isOnline: false },
+          { token: runnerToken },
+        ),
+      ).rejects.toMatchObject({
+        code: 'RUNNER_OFFLINE',
+        status: 400,
+      })
+
+      // When offline, unassigned available requests are not offered
+      const offlineOrders = await server.handle(
+        'runner.orders.assigned',
+        { isOnline: false },
+        { token: runnerToken },
+      )
+      expect(offlineOrders.some((o) => o.status === ORDER_STATUS.CONFIRMED)).toBe(false)
+    })
+  })
+
+  // 9. Milestone 2: Order Status Progression & Transitions
+  describe('Milestone 2: Order Status Progression & Transitions', () => {
+    it('prevents illegal status transitions and repeated actions', async () => {
+      const runnerToken = (await server.handle('auth.demoLogin', { role: 'runner' })).token
+
+      // Accept ord_sample_avail_1 to become PREPARING
+      await server.handle(
+        'runner.order.accept',
+        { orderId: 'ord_sample_avail_1', isOnline: true },
+        { token: runnerToken },
+      )
+
+      // Illegal skip transition: PREPARING -> ON_THE_WAY
+      await expect(
+        server.handle(
+          'runner.order.transition',
+          { orderId: 'ord_sample_avail_1', nextStatus: ORDER_STATUS.ON_THE_WAY },
+          { token: runnerToken },
+        ),
+      ).rejects.toMatchObject({
+        code: 'INVALID_TRANSITION',
+        status: 400,
+      })
+
+      // Transition to PICKED_UP
+      await server.handle(
+        'runner.order.transition',
+        { orderId: 'ord_sample_avail_1', nextStatus: ORDER_STATUS.PICKED_UP },
+        { token: runnerToken },
+      )
+
+      // Repeated action: attempting PICKED_UP again
+      await expect(
+        server.handle(
+          'runner.order.transition',
+          { orderId: 'ord_sample_avail_1', nextStatus: ORDER_STATUS.PICKED_UP },
+          { token: runnerToken },
+        ),
+      ).rejects.toMatchObject({
+        code: 'INVALID_TRANSITION',
+        status: 400,
+      })
+
+      // Milestone 2 restriction: DELIVERED requires OTP verification in Milestone 3
+      await server.handle(
+        'runner.order.transition',
+        { orderId: 'ord_sample_avail_1', nextStatus: ORDER_STATUS.ON_THE_WAY },
+        { token: runnerToken },
+      )
+      await expect(
+        server.handle(
+          'runner.order.transition',
+          { orderId: 'ord_sample_avail_1', nextStatus: ORDER_STATUS.DELIVERED },
+          { token: runnerToken },
+        ),
+      ).rejects.toMatchObject({
+        code: 'OTP_VERIFICATION_REQUIRED',
+        status: 400,
+      })
+    })
+
+    it('rejects unauthorized transitions by unassigned runners', async () => {
+      const runner2Token = (await server.handle('auth.demoLogin', { role: 'runner_2' })).token
+
+      // Order ord_sample_prep_2 belongs to u_runner_1
+      await expect(
+        server.handle(
+          'runner.order.transition',
+          { orderId: 'ord_sample_prep_2', nextStatus: ORDER_STATUS.PICKED_UP },
+          { token: runner2Token },
+        ),
+      ).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+        status: 403,
+      })
+    })
+  })
+
+  // 10. Milestone 2: Multi-Store Awareness
+  describe('Milestone 2: Multi-Store Awareness', () => {
+    it('requires all store pickups to be completed before marking order as picked up', async () => {
+      const runnerToken = (await server.handle('auth.demoLogin', { role: 'runner' })).token
+      // ord_sample_multi_5 has store_campus_mart (picked up) and store_night_canteen (pending)
+
+      // Attempting to transition to PICKED_UP while a store is pending must fail
+      await expect(
+        server.handle(
+          'runner.order.transition',
+          { orderId: 'ord_sample_multi_5', nextStatus: ORDER_STATUS.PICKED_UP },
+          { token: runnerToken },
+        ),
+      ).rejects.toMatchObject({
+        code: 'PICKUPS_INCOMPLETE',
+        status: 400,
+      })
+
+      // Confirm pickup for the pending store
+      const updated = await server.handle(
+        'runner.order.pickupStore',
+        { orderId: 'ord_sample_multi_5', storeId: 'store_night_canteen' },
+        { token: runnerToken },
+      )
+
+      // Since all stores are now picked up, status advances to PICKED_UP
+      expect(updated.status).toBe(ORDER_STATUS.PICKED_UP)
+
+      // Now transitioning to ON_THE_WAY succeeds
+      const onTheWay = await server.handle(
+        'runner.order.transition',
+        { orderId: 'ord_sample_multi_5', nextStatus: ORDER_STATUS.ON_THE_WAY },
+        { token: runnerToken },
+      )
+      expect(onTheWay.status).toBe(ORDER_STATUS.ON_THE_WAY)
+    })
+
+    it('renders multi-store checklist with all stores and status indicators in DeliveryCard', () => {
+      const multiStoreOrder = {
+        id: 'ord_test_multi_1',
+        runnerId: 'u_runner_1',
+        storeIds: ['store_campus_mart', 'store_night_canteen'],
+        pickups: [
+          { storeId: 'store_campus_mart', status: 'PICKED_UP' },
+          { storeId: 'store_night_canteen', status: 'PENDING' },
+        ],
+        lines: [{ productId: 'p_milk_500', name: 'Milk', quantity: 1 }],
+        customerDetails: { fullName: 'Aarav', selectedDestination: 'A Block' },
+        pricing: { deliveryFee: 20 },
+        status: ORDER_STATUS.PREPARING,
+      }
+
+      const html = renderToString(<DeliveryCard order={multiStoreOrder} isOnline={true} />)
+      expect(html).toContain('Required Pickups (2 stores)')
+      expect(html).toContain('1 of 2 collected')
+      expect(html).toContain('Campus Mart')
+      expect(html).toContain('Night Canteen')
+      expect(html).toContain('Picked up')
+      expect(html).toContain('Confirm Pickup')
+      expect(html).toContain('Collect all stores first')
     })
   })
 })
