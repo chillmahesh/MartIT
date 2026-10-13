@@ -86,8 +86,20 @@ export default function ResetPasswordPage() {
       return
     }
 
-    // Check existing session via authService
     let isCancelled = false
+
+    // Listen for auth state transitions (e.g. Supabase async parsing of URL fragment)
+    const { data: authSub } = authService.onAuthStateChange((event, newSession) => {
+      if (isCancelled) return
+      if (
+        (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN') &&
+        newSession?.access_token
+      ) {
+        setStatus('ready')
+      }
+    })
+
+    // Check existing session via authService
     authService
       .getSession()
       .then((session) => {
@@ -95,12 +107,13 @@ export default function ResetPasswordPage() {
         if (session?.access_token) {
           setStatus('ready')
         } else {
-          // Listen briefly for onAuthStateChange if Supabase is still parsing hash
+          // If a recovery token is in the URL hash, allow sufficient time for Supabase to parse
+          const waitMs = urlParams.hasRecoveryToken ? 3000 : 1000
           const timer = setTimeout(() => {
             if (!isCancelled && !useAuthStore.getState().isPasswordRecovery) {
               setStatus('no_session')
             }
-          }, 800)
+          }, waitMs)
           return () => clearTimeout(timer)
         }
       })
@@ -110,6 +123,9 @@ export default function ResetPasswordPage() {
 
     return () => {
       isCancelled = true
+      if (authSub?.subscription?.unsubscribe) {
+        authSub.subscription.unsubscribe()
+      }
     }
   }, [isPasswordRecovery])
 
@@ -133,6 +149,14 @@ export default function ResetPasswordPage() {
 
     setSubmitting(true)
     try {
+      // Validate that an active Supabase recovery session exists before attempting password update
+      if (!isMockBackend) {
+        const session = await authService.getSession()
+        if (!session?.access_token) {
+          throw new Error('Your password recovery session is invalid or has expired. Please request a new link.')
+        }
+      }
+
       await updatePassword(password)
       setStatus('success')
       toast.success('Password updated successfully!')

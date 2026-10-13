@@ -45,7 +45,6 @@ export const routes = [
         children: [
           { index: true, element: <LandingPage /> },
           { path: 'styleguide', element: <StyleguidePage /> },
-          { path: '*', element: <NotFoundPage /> },
         ],
       },
       {
@@ -90,6 +89,10 @@ export const routes = [
         path: 'admin',
         element: <RequireRole role="admin" />,
         children: [{ element: <AdminLayout />, children: [{ index: true, element: <AdminConsolePage /> }] }],
+      },
+      {
+        element: <MarketingLayout />,
+        children: [{ path: '*', element: <NotFoundPage /> }],
       },
     ],
   },

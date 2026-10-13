@@ -155,7 +155,7 @@ export const authService = {
     const origin =
       typeof window !== 'undefined' && window.location?.origin
         ? window.location.origin
-        : 'http://localhost:5173'
+        : 'https://martit.vercel.app'
     const redirectTo = `${origin}/reset-password`
     const { data, error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
       redirectTo,

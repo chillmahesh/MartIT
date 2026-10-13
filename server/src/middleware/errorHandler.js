@@ -1,10 +1,19 @@
 import { ZodError } from 'zod'
 import { ApiError } from '../utils/errors.js'
+import { isOriginAllowed } from '../config/cors.js'
 
 export function errorHandler(err, req, res, next) {
   // If response has already started streaming, delegate to default Express handler
   if (res.headersSent) {
     return next(err)
+  }
+
+  // Ensure CORS headers are present on error responses for allowed origins
+  const origin = req.headers?.origin
+  if (origin && isOriginAllowed(origin) && !res.getHeader('Access-Control-Allow-Origin')) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
+    res.setHeader('Vary', 'Origin')
   }
 
   // Known ApiError

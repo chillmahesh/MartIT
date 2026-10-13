@@ -21,7 +21,7 @@ export function validateEnv(raw = process.env) {
       SUPABASE_URL: raw.SUPABASE_URL || 'http://localhost:54321',
       SUPABASE_ANON_KEY: raw.SUPABASE_ANON_KEY || 'test-anon-key',
       SUPABASE_SERVICE_ROLE_KEY: raw.SUPABASE_SERVICE_ROLE_KEY || 'test-service-key',
-      FRONTEND_ORIGINS: raw.FRONTEND_ORIGINS || 'http://localhost:5173,http://localhost:3000',
+      FRONTEND_ORIGINS: raw.FRONTEND_ORIGINS || 'https://martit.vercel.app,http://localhost:5173,http://localhost:3000',
       FEATURE_MULTI_STORE_CHECKOUT: raw.FEATURE_MULTI_STORE_CHECKOUT === 'true',
       ROUTING_PROVIDER: raw.ROUTING_PROVIDER || '',
       ROUTING_MODE: raw.ROUTING_MODE || 'walking',
@@ -76,10 +76,11 @@ export function validateEnv(raw = process.env) {
             message: 'SUPABASE_SERVICE_ROLE_KEY cannot be a placeholder in production',
           }),
         FRONTEND_ORIGINS: z
-          .string({ required_error: 'FRONTEND_ORIGINS is required in production' })
+          .string()
+          .default('https://martit.vercel.app')
           .refine(
             (origins) => {
-              const list = origins.split(',').map((o) => o.trim()).filter(Boolean)
+              const list = origins.split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean)
               return (
                 list.length > 0 &&
                 !list.includes('*') &&
@@ -110,7 +111,7 @@ export function validateEnv(raw = process.env) {
     SUPABASE_URL: z.string().url().default('http://localhost:54321'),
     SUPABASE_ANON_KEY: z.string().default('dev-anon-key'),
     SUPABASE_SERVICE_ROLE_KEY: z.string().default('dev-service-role-key'),
-    FRONTEND_ORIGINS: z.string().default('http://localhost:5173,http://localhost:3000'),
+    FRONTEND_ORIGINS: z.string().default('https://martit.vercel.app,http://localhost:5173,http://localhost:3000'),
     FEATURE_MULTI_STORE_CHECKOUT: z.coerce.boolean().default(false),
     ROUTING_PROVIDER: z.string().optional().default(''),
     ROUTING_MODE: z.string().default('walking'),
@@ -142,4 +143,6 @@ try {
 }
 
 export const env = parsedEnv
-export const allowedOrigins = parsedEnv.FRONTEND_ORIGINS.split(',').map((o) => o.trim())
+export const allowedOrigins = parsedEnv.FRONTEND_ORIGINS
+  ? parsedEnv.FRONTEND_ORIGINS.split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean)
+  : []
