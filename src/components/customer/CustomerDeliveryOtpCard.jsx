@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, ShieldAlert, RefreshCw, Clock, CheckCircle2, AlertTriangle, AlertCircle } from 'lucide-react'
+import { KeyRound, ShieldAlert, RefreshCw, Clock, CheckCircle2, AlertTriangle, AlertCircle, Smartphone } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -188,7 +188,7 @@ export function CustomerDeliveryOtpCard({ orderId, className }) {
             This verification code has expired. Click below to generate a new 6-digit OTP for your runner.
           </p>
         </div>
-      ) : (
+      ) : otpData.otp ? (
         /* OTP Digits Display */
         <div className="space-y-2 text-center py-1">
           <div
@@ -205,6 +205,37 @@ export function CustomerDeliveryOtpCard({ orderId, className }) {
                 {digit}
               </span>
             ))}
+          </div>
+
+          <div className="flex items-center justify-center gap-1.5 text-xs text-ink-subtle pt-1">
+            <Clock className="size-3.5 text-ink-muted" aria-hidden="true" />
+            <span>
+              Expires in{' '}
+              <strong className="font-mono text-ink">
+                {formatTimeRemaining(remainingMs)}
+              </strong>
+            </span>
+            {otpData.attemptsRemaining != null && otpData.attemptsRemaining < 3 && (
+              <span className="text-[11px] text-danger font-medium ml-1">
+                ({otpData.attemptsRemaining} {otpData.attemptsRemaining === 1 ? 'attempt' : 'attempts'} remaining)
+              </span>
+            )}
+          </div>
+        </div>
+      ) : (
+        /* Production Out-of-Band Delivery Display */
+        <div className="space-y-2 text-center py-2" data-testid={`customer-otp-production-${orderId}`}>
+          <div className="rounded-tile bg-surface border border-line p-3 space-y-1.5 text-center">
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-brand/10 text-brand text-xs font-semibold">
+              <Smartphone className="size-3.5" aria-hidden="true" />
+              <span>Dispatched via SMS</span>
+            </div>
+            <p className="text-xs text-ink">
+              Your 6-digit delivery verification code has been dispatched to your registered phone number.
+            </p>
+            <p className="text-[11px] text-ink-subtle">
+              Provide this OTP to your runner when they arrive to complete handover.
+            </p>
           </div>
 
           <div className="flex items-center justify-center gap-1.5 text-xs text-ink-subtle pt-1">

@@ -45,7 +45,12 @@ export class ApiError extends Error {
     return new ApiError(code, message, 422, details)
   }
 
+  static tooManyRequests(message = 'Too many requests.', code = 'TOO_MANY_REQUESTS', details = null) {
+    return new ApiError(code, message, 429, details)
+  }
+
   static internal(message = 'An unexpected server error occurred.', code = 'INTERNAL_ERROR') {
+
     return new ApiError(code, message, 500)
   }
 }

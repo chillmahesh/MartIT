@@ -36,7 +36,7 @@ export async function request(name, payload = {}) {
   }
 
   const baseUrl = (env.apiBaseUrl || '').replace(/\/+$/, '')
-  const endpoint = name.replace('.', '/').replace(/^\/+/, '')
+  const endpoint = name.replaceAll('.', '/').replace(/^\/+/, '')
   const fullUrl = `${baseUrl}/${endpoint}`
 
   let res

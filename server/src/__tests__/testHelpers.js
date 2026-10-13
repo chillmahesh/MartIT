@@ -251,6 +251,113 @@ export function createMockSupabaseClient({
         return { data: true, error: null }
       }
 
+      if (fn === 'verify_delivery_otp') {
+        const orderId = args?.p_order_id
+        const otpHal = args?.p_otp_hash
+        const runnerId = args?.p_runner_id
+
+        const order = state.orders.find((o) => o.id === orderId)
+        if (!order) {
+          return { data: null, error: { message: 'ORDER_NOT_FOUND' } }
+        }
+        if (order.runner_id !== runnerId && order.assigned_runner_id !== runnerId) {
+          return { data: null, error: { message: 'ORDER_NOT_ASSIGNED_TO_RUNNER' } }
+        }
+        if (order.status === 'DELIVERED' || order.handover_verified_at) {
+          return { data: null, error: { message: 'OTP_ALREADY_USED' } }
+        }
+        if (!['ON_THE_WAY', 'OUT_FOR_DELIVERY'].includes(order.status)) {
+          return { data: null, error: { message: 'INVALID_ORDER_STATE' } }
+        }
+        const now = Date.now()
+        if (order.handover_locked_until) {
+          const lockedUntil = new Date(order.handover_locked_until).getTime()
+          if (now < lockedUntil) {
+            return { data: null, error: { message: 'OTP_LOCKED' } }
+          }
+        }
+        if (order.handover_otp_expires_at) {
+          const expiresAt = new Date(order.handover_otp_expires_at).getTime()
+          if (now > expiresAt) {
+            return { data: null, error: { message: 'OTP_EXPIRED' } }
+          }
+        }
+        if (order.handover_otp_hash !== otpHal) {
+          order.handover_attempts_count = (order.handover_attempts_count || 0) + 1
+          if (order.handover_attempts_count >= 3) {
+            order.handover_locked_until = new Date(now + 300000).toISOString()
+            return { data: null, error: { message: 'OTP_LOCKED' } }
+          }
+          return { data: null, error: { message: 'OTP_INVALID' } }
+        }
+
+        const nowIso = new Date().toISOString()
+        order.status = 'DELIVERED'
+        order.handover_verified_at = nowIso
+        order.delivered_at = nowIso
+        order.handover_otp_hash = null
+        order.handover_attempts_count = 0
+        order.handover_locked_until = null
+        order.updated_at = nowIso
+
+        return {
+          data: [{
+            order_id: order.id,
+            status: 'DELIVERED',
+            verified_at: nowIso,
+          }],
+          error: null,
+        }
+      }
+
+      if (fn === 'reissue_delivery_otp') {
+        const orderId = args?.p_order_id
+        const newHash = args?.p_new_otp_hash
+        const customerId = args?.p_customer_id
+        const expirySeconds = args?.p_expiry_seconds || 300
+
+        const order = state.orders.find((o) => o.id === orderId)
+        if (!order) {
+          return { data: null, error: { message: 'ORDER_NOT_FOUND' } }
+        }
+        if (order.customer_id !== customerId) {
+          return { data: null, error: { message: 'FORBIDDEN_ORDER_ACCESS' } }
+        }
+        if (!['ON_THE_WAY', 'OUT_FOR_DELIVERY'].includes(order.status)) {
+          return { data: null, error: { message: 'INVALID_ORDER_STATE' } }
+        }
+        const now = Date.now()
+        if (order.handover_locked_until) {
+          const lockedUntil = new Date(order.handover_locked_until).getTime()
+          if (now < lockedUntil) {
+            return { data: null, error: { message: 'OTP_LOCKED' } }
+          }
+        }
+        if (order.handover_otp_last_resend_at) {
+          const lastResend = new Date(order.handover_otp_last_resend_at).getTime()
+          if (now < lastResend + 15000) {
+            return { data: null, error: { message: 'RATE_LIMITED' } }
+          }
+        }
+
+        const nowIso = new Date().toISOString()
+        const expIso = new Date(now + expirySeconds * 1000).toISOString()
+        order.handover_otp_hash = newHash
+        order.handover_otp_expires_at = expIso
+        order.handover_otp_last_resend_at = nowIso
+        order.updated_at = nowIso
+
+        return {
+          data: [{
+            order_id: order.id,
+            status: order.status,
+            expires_at: expIso,
+            attempts_remaining: Math.max(0, 3 - (order.handover_attempts_count || 0)),
+          }],
+          error: null,
+        }
+      }
+
       return { data: null, error: null }
     },
   }
