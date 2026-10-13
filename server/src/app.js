@@ -1,7 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
-import { allowedOrigins } from './config/env.js'
+import { corsOptions } from './config/cors.js'
 import { requestLogger } from './middleware/requestLogger.js'
 import { apiLimiter } from './middleware/rateLimiter.js'
 import { errorHandler } from './middleware/errorHandler.js'
@@ -21,23 +21,13 @@ export function createApp() {
   // Trust proxy for Render / Cloudflare deployments
   app.set('trust proxy', 1)
 
-  // Security headers
-  app.use(helmet())
+  // CORS configuration for explicitly allowed frontend origins - mount first
+  app.use(cors(corsOptions))
 
-  // CORS configuration for explicitly allowed frontend origins
+  // Security headers with cross-origin resource policy enabled
   app.use(
-    cors({
-      origin: (origin, callback) => {
-        // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
-        if (!origin) return callback(null, true)
-        if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
-          return callback(null, true)
-        }
-        return callback(new ApiError('CORS_FORBIDDEN', 'Origin not allowed by CORS policy.', 403))
-      },
-      credentials: true,
-      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization'],
+    helmet({
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
     }),
   )
 
