@@ -473,6 +473,92 @@ async function handleRunnerAssignedOrders(req, res, next) {
 }
 
 /**
+ * Runner Order State Transition endpoint.
+ * Enforces permitted state transitions, runner assignment, and strict OTP requirement for DELIVERED.
+ * When transitioning to ON_THE_WAY, atomically initializes the OTP challenge hash and 5-minute expiry.
+ */
+async function handleRunnerTransitionOrder(req, res, next) {
+  try {
+    if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You must be an approved runner to transition delivery status.')
+    }
+    if (req.user.runnerStatus !== 'approved' && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('Runner application is pending approval or suspended.')
+    }
+
+    const orderId = req.params?.id || req.body?.orderId
+    const nextStatus = req.body?.nextStatus
+
+    if (!orderId) {
+      throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
+    }
+    if (!nextStatus) {
+      throw ApiError.badRequest('Target order status is required.', 'INVALID_NEXT_STATUS')
+    }
+
+    // Direct transition to DELIVERED is strictly prohibited; must verify OTP
+    if (nextStatus === 'DELIVERED') {
+      throw ApiError.badRequest(
+        'Direct delivery completion is prohibited. Handover requires customer OTP verification.',
+        'OTP_VERIFICATION_REQUIRED'
+      )
+    }
+
+    const supabase = getSupabaseAdmin()
+    const { data: order, error } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('id', orderId)
+      .maybeSingle()
+
+    if (error || !order) {
+      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+    }
+
+    if (order.runner_id !== req.user.id && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You are not assigned to this delivery.')
+    }
+
+    const now = new Date().toISOString()
+    const updatePayload = {
+      status: nextStatus,
+      updated_at: now,
+    }
+
+    if (nextStatus === 'ON_THE_WAY') {
+      // Initialize cryptographically secure OTP challenge for customer handover
+      const otp = String(crypto.randomInt(100000, 1000000))
+      const otpHash = crypto.createHash('sha256').update(otp).digest('hex')
+      const expiresAt = new Date(Date.now() + 300000).toISOString()
+
+      updatePayload.handover_otp_hash = otpHash
+      updatePayload.handover_otp_expires_at = expiresAt
+      updatePayload.handover_attempts_count = 0
+      updatePayload.handover_locked_until = null
+
+      console.info(`[HandoverOTP] Order ${orderId} transitioned to ON_THE_WAY. Delivery OTP challenge initialized. Dispatch pending SMS provider setup.`)
+    }
+
+    const { error: updateErr } = await supabase
+      .from('orders')
+      .update(updatePayload)
+      .eq('id', orderId)
+
+    if (updateErr) {
+      throw ApiError.internal('Failed to update order status.')
+    }
+
+    res.status(200).json({
+      orderId,
+      status: nextStatus,
+      message: `Order status successfully updated to ${nextStatus}.`,
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
  * Runner Delivery OTP Verification endpoint.
  * Concurrency-safe: atomically verifies challenge and updates order status in PostgreSQL via stored procedure.
  */
@@ -605,7 +691,7 @@ async function handleGetDeliveryOtp(req, res, next) {
       attemptsRemaining,
       deliveryChannel: 'SMS',
       deliveryChannelConfigured: false,
-      message: 'Production OTP verification active. Plaintext OTP is dispatched via verified contact channel (SMS / Email).',
+      message: 'Production OTP verification active. Automated SMS dispatch is pending messaging provider setup.',
     })
   } catch (err) {
     next(err)
@@ -673,7 +759,7 @@ async function handleRefreshDeliveryOtp(req, res, next) {
       attemptsRemaining: reissuedRow?.attempts_remaining ?? 3,
       deliveryChannel: 'SMS',
       deliveryChannelConfigured: false,
-      message: 'Delivery OTP refreshed successfully. Dispatched to verified customer contact channel.',
+      message: 'Delivery OTP challenge reissued. Automated SMS dispatch is pending messaging provider setup.',
     })
   } catch (err) {
     next(err)
@@ -699,6 +785,10 @@ ordersRouter.post('/orders/expire', authenticate, handleExpirePayment)
 // Runner assigned orders
 ordersRouter.get('/api/v1/runner/orders', authenticate, handleRunnerAssignedOrders)
 ordersRouter.post('/runner/orders/assigned', authenticate, handleRunnerAssignedOrders)
+
+// Runner order lifecycle transition
+ordersRouter.post('/api/v1/runner/orders/:id/transition', authenticate, handleRunnerTransitionOrder)
+ordersRouter.post('/runner/order/transition', authenticate, handleRunnerTransitionOrder)
 
 // Customer delivery OTP challenge retrieval
 ordersRouter.get('/api/v1/orders/:id/delivery-otp', authenticate, handleGetDeliveryOtp)

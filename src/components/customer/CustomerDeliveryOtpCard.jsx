@@ -27,7 +27,6 @@ function formatTimeRemaining(ms) {
  */
 export function CustomerDeliveryOtpCard({ orderId, className }) {
   const queryClient = useQueryClient()
-  const [remainingMs, setRemainingMs] = useState(0)
 
   const {
     data: otpData,
@@ -42,6 +41,10 @@ export function CustomerDeliveryOtpCard({ orderId, className }) {
     enabled: Boolean(orderId),
     staleTime: 5000,
     refetchInterval: 15000,
+  })
+
+  const [remainingMs, setRemainingMs] = useState(() => {
+    return otpData?.expiresAt ? Math.max(0, otpData.expiresAt - Date.now()) : 0
   })
 
   // Expiry countdown timer
@@ -104,7 +107,7 @@ export function CustomerDeliveryOtpCard({ orderId, className }) {
 
   if (!otpData) return null
 
-  const isExpired = otpData.isExpired || remainingMs <= 0
+  const isExpired = Boolean(otpData.isExpired || (otpData.expiresAt && Date.now() > otpData.expiresAt))
   const isLocked = otpData.isLocked
   const otpDigits = String(otpData.otp || '------').slice(0, 6).split('')
 
@@ -226,16 +229,33 @@ export function CustomerDeliveryOtpCard({ orderId, className }) {
         /* Production Out-of-Band Delivery Display */
         <div className="space-y-2 text-center py-2" data-testid={`customer-otp-production-${orderId}`}>
           <div className="rounded-tile bg-surface border border-line p-3 space-y-1.5 text-center">
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-brand/10 text-brand text-xs font-semibold">
-              <Smartphone className="size-3.5" aria-hidden="true" />
-              <span>Dispatched via SMS</span>
-            </div>
-            <p className="text-xs text-ink">
-              Your 6-digit delivery verification code has been dispatched to your registered phone number.
-            </p>
-            <p className="text-[11px] text-ink-subtle">
-              Provide this OTP to your runner when they arrive to complete handover.
-            </p>
+            {otpData.deliveryChannelConfigured ? (
+              <>
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-brand/10 text-brand text-xs font-semibold">
+                  <Smartphone className="size-3.5" aria-hidden="true" />
+                  <span>Dispatched via SMS</span>
+                </div>
+                <p className="text-xs text-ink">
+                  Your 6-digit delivery verification code has been dispatched to your registered phone number.
+                </p>
+                <p className="text-[11px] text-ink-subtle">
+                  Provide this OTP to your runner when they arrive to complete handover.
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-amber-500/10 text-amber-700 dark:text-amber-400 text-xs font-semibold">
+                  <AlertTriangle className="size-3.5" aria-hidden="true" />
+                  <span>SMS Provider Pending Setup</span>
+                </div>
+                <p className="text-xs text-ink font-medium">
+                  Automated OTP dispatch is awaiting SMS provider setup.
+                </p>
+                <p className="text-[11px] text-ink-subtle">
+                  Server-side verification is active, but direct SMS transmission is blocked until a trusted messaging provider is configured.
+                </p>
+              </>
+            )}
           </div>
 
           <div className="flex items-center justify-center gap-1.5 text-xs text-ink-subtle pt-1">

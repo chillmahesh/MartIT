@@ -274,6 +274,47 @@ describe('Production Delivery OTP Backend Verification', () => {
       expect(res.status).toBe(400)
       expect(res.body.code).toBe('INVALID_ORDER_STATE')
     })
+
+    it('prohibits direct transition to DELIVERED via runner transition endpoint (400 OTP_VERIFICATION_REQUIRED)', async () => {
+      const res = await request(app)
+        .post('/runner/order/transition')
+        .set('Authorization', 'Bearer tok_runner_approved')
+        .send({ orderId: 'ord_transit_1', nextStatus: 'DELIVERED' })
+
+      expect(res.status).toBe(400)
+      expect(res.body.code).toBe('OTP_VERIFICATION_REQUIRED')
+      expect(res.body.message).toContain('Handover requires customer OTP verification')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_transit_1')
+      expect(dbOrder.status).toBe('ON_THE_WAY')
+    })
+
+    it('runner transition to ON_THE_WAY initializes fresh OTP challenge and 5-minute expiry', async () => {
+      mockState.orders.push({
+        id: 'ord_picked_up_2',
+        customer_id: 'usr_alice',
+        runner_id: 'usr_runner_approved',
+        status: 'PICKED_UP',
+        handover_otp_hash: null,
+        handover_attempts_count: 0,
+        handover_locked_until: null,
+        handover_otp_expires_at: null,
+      })
+
+      const res = await request(app)
+        .post('/runner/order/transition')
+        .set('Authorization', 'Bearer tok_runner_approved')
+        .send({ orderId: 'ord_picked_up_2', nextStatus: 'ON_THE_WAY' })
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('ON_THE_WAY')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_picked_up_2')
+      expect(dbOrder.status).toBe('ON_THE_WAY')
+      expect(dbOrder.handover_otp_hash).toBeDefined()
+      expect(dbOrder.handover_otp_hash.length).toBe(64)
+      expect(dbOrder.handover_otp_expires_at).toBeDefined()
+    })
   })
 
   // 7. Customer Delivery OTP Challenge Retrieval
@@ -344,6 +385,20 @@ describe('Production Delivery OTP Backend Verification', () => {
       expect(res2.body.code).toBe('RATE_LIMITED')
     })
 
+    it('handles concurrent refresh race safely (resend race)', async () => {
+      const [r1, r2] = await Promise.all([
+        request(app)
+          .post('/api/v1/orders/ord_transit_1/refresh-otp')
+          .set('Authorization', 'Bearer tok_alice'),
+        request(app)
+          .post('/api/v1/orders/ord_transit_1/refresh-otp')
+          .set('Authorization', 'Bearer tok_alice'),
+      ])
+
+      const statuses = [r1.status, r2.status].sort()
+      expect(statuses).toEqual([200, 429])
+    })
+
     it('prohibits refresh while verification is actively locked (429 OTP_LOCKED)', async () => {
       const dbOrder = mockState.orders.find((o) => o.id === 'ord_transit_1')
       dbOrder.handover_locked_until = new Date(Date.now() + 300000).toISOString()
@@ -403,6 +458,33 @@ describe('Production Delivery OTP Backend Verification', () => {
 
       const dbOrder = mockState.orders.find((o) => o.id === 'ord_transit_1')
       expect(dbOrder.status).toBe('DELIVERED')
+    })
+  })
+
+  // 11. Missing / Uninitialized Challenge Handling
+  describe('Missing / Uninitialized Challenge Handling', () => {
+    it('safely rejects verification when order is in ON_THE_WAY but handover_otp_hash is null', async () => {
+      mockState.orders.push({
+        id: 'ord_missing_hash',
+        customer_id: 'usr_alice',
+        runner_id: 'usr_runner_approved',
+        status: 'ON_THE_WAY',
+        handover_otp_hash: null, // Challenge never initialized
+        handover_attempts_count: 0,
+        handover_locked_until: null,
+      })
+
+      const res = await request(app)
+        .post('/api/v1/runner/orders/ord_missing_hash/verify-handover')
+        .set('Authorization', 'Bearer tok_runner_approved')
+        .send({ otp: '724915' })
+
+      expect(res.status).toBe(400)
+      expect(res.body.code).toBe('OTP_INVALID')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_missing_hash')
+      expect(dbOrder.status).toBe('ON_THE_WAY')
+      expect(dbOrder.handover_attempts_count).toBe(1)
     })
   })
 })

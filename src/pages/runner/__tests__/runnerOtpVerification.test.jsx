@@ -428,6 +428,35 @@ describe('Milestone 3: Secure Customer Delivery OTP Verification', () => {
       expect(html).toContain('data-testid="refresh-otp-btn-ord_sample_transit_3"')
     })
 
+    it('renders truthful provider pending setup notice in production mode when deliveryChannelConfigured is false', () => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      })
+
+      queryClient.setQueryData(['delivery-otp', 'ord_prod_1'], {
+        orderId: 'ord_prod_1',
+        demoMode: false,
+        otp: null, // Production: never exposed in API
+        expiresAt: Date.now() + 5 * 60 * 1000,
+        isExpired: false,
+        isLocked: false,
+        attemptsRemaining: 3,
+        deliveryChannel: 'SMS',
+        deliveryChannelConfigured: false,
+      })
+
+      const html = renderToString(
+        <QueryClientProvider client={queryClient}>
+          <CustomerDeliveryOtpCard orderId="ord_prod_1" />
+        </QueryClientProvider>,
+      )
+
+      expect(html).toContain('SMS Provider Pending Setup')
+      expect(html).toContain('Automated OTP dispatch is awaiting SMS provider setup')
+      expect(html).not.toContain('Dispatched via SMS')
+      expect(html).not.toContain('DEMO MODE')
+    })
+
 
     it('renders delivered confirmation and verified badge in DeliveryCard when DELIVERED', () => {
       const deliveredOrder = {

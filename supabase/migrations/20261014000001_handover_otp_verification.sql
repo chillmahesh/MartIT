@@ -282,3 +282,15 @@ BEGIN
   RETURN QUERY SELECT p_order_id, v_status, v_new_expires_at, GREATEST(0, 3 - COALESCE(v_attempts, 0));
 END;
 $$;
+
+-- ============================================================================
+-- 5. REVOKE PRIVILEGES FROM CLIENT ROLES & GRANT EXCLUSIVELY TO SERVICE ROLE
+-- Clients (anon / authenticated) CANNOT invoke these privileged functions directly
+-- ============================================================================
+
+REVOKE EXECUTE ON FUNCTION public.verify_delivery_otp(VARCHAR, VARCHAR, UUID) FROM PUBLIC, anon, authenticated;
+REVOKE EXECUTE ON FUNCTION public.reissue_delivery_otp(VARCHAR, VARCHAR, UUID, INTEGER) FROM PUBLIC, anon, authenticated;
+
+GRANT EXECUTE ON FUNCTION public.verify_delivery_otp(VARCHAR, VARCHAR, UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION public.reissue_delivery_otp(VARCHAR, VARCHAR, UUID, INTEGER) TO service_role;
+
