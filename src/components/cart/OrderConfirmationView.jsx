@@ -145,12 +145,19 @@ export function OrderConfirmationView({ order, onStartNew }) {
               <p className="text-xs font-medium text-ink-subtle">Delivery Destination</p>
               <p className="font-semibold text-ink">
                 {order.customerDetails?.deliveryLocation?.formattedAddress ||
+                  order.customerDetails?.selectedDestination ||
                   (location ? location.name : order.locationId)}
               </p>
+              {order.customerDetails?.detailedAddress && !order.customerDetails?.deliveryLocation?.formattedAddress?.includes(order.customerDetails.detailedAddress) && (
+                <p className="text-xs text-ink-muted mt-0.5">
+                  Landmark: {order.customerDetails.detailedAddress}
+                </p>
+              )}
               {order.customerDetails?.fullName && (
                 <p className="text-xs text-ink-subtle mt-0.5">
                   Recipient: {order.customerDetails.fullName}
-                  {order.customerDetails.mobileNumber && ` (${order.customerDetails.mobileNumber})`}
+                  {(order.customerDetails.phoneNumber || order.customerDetails.mobileNumber) &&
+                    ` (${order.customerDetails.phoneNumber || order.customerDetails.mobileNumber})`}
                 </p>
               )}
             </div>

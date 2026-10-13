@@ -20,7 +20,8 @@ export const PRESET_CAMPUS_LOCATIONS = [
 ]
 
 export const OTHER_LOCATION_VALUE = 'other'
-export const OTHER_LOCATION_LABEL = 'Other location / Hostel details'
+export const OTHER_LOCATION_LABEL = 'Other / Enter address'
+export const LEGACY_OTHER_LABEL = 'Other location / Hostel details'
 
 /**
  * Authoritative mapping from preset campus locations to registered delivery destination IDs.
@@ -184,7 +185,11 @@ export function validateCampusLocation({
   customLocation,
   deliveryInstructions,
 }) {
-  const isOther = presetLocation === OTHER_LOCATION_VALUE || presetLocation === OTHER_LOCATION_LABEL
+  const isOther =
+    presetLocation === OTHER_LOCATION_VALUE ||
+    presetLocation === OTHER_LOCATION_LABEL ||
+    presetLocation === LEGACY_OTHER_LABEL ||
+    presetLocation === 'Other / Enter address'
   const isPreset = PRESET_CAMPUS_LOCATIONS.includes(presetLocation)
 
   if (!isPreset && !isOther) {
@@ -202,14 +207,14 @@ export function validateCampusLocation({
       return {
         isValid: false,
         error: null,
-        customError: 'Please enter your hostel name, room number, or campus landmark.',
+        customError: 'Please enter your destination address.',
         data: null,
       }
     }
 
-    const instructionsTrimmed = (deliveryInstructions || '').trim()
-    const formattedAddress = instructionsTrimmed
-      ? `${trimmedCustom}, ${instructionsTrimmed}`
+    const detailedAddressTrimmed = (deliveryInstructions || '').trim()
+    const formattedAddress = detailedAddressTrimmed
+      ? `${trimmedCustom}, ${detailedAddressTrimmed}`
       : trimmedCustom
 
     return {
@@ -219,17 +224,20 @@ export function validateCampusLocation({
       data: {
         preset: OTHER_LOCATION_VALUE,
         isCustom: true,
+        selectedDestination: trimmedCustom,
+        customDestination: trimmedCustom,
         customLocation: trimmedCustom,
-        instructions: instructionsTrimmed,
+        detailedAddress: detailedAddressTrimmed,
+        instructions: detailedAddressTrimmed,
         formattedAddress,
       },
     }
   }
 
   // Valid preset location
-  const instructionsTrimmed = (deliveryInstructions || '').trim()
-  const formattedAddress = instructionsTrimmed
-    ? `${presetLocation}, ${instructionsTrimmed}`
+  const detailedAddressTrimmed = (deliveryInstructions || '').trim()
+  const formattedAddress = detailedAddressTrimmed
+    ? `${presetLocation}, ${detailedAddressTrimmed}`
     : presetLocation
 
   return {
@@ -239,8 +247,11 @@ export function validateCampusLocation({
     data: {
       preset: presetLocation,
       isCustom: false,
+      selectedDestination: presetLocation,
+      customDestination: '',
       customLocation: '',
-      instructions: instructionsTrimmed,
+      detailedAddress: detailedAddressTrimmed,
+      instructions: detailedAddressTrimmed,
       formattedAddress,
     },
   }
@@ -255,8 +266,14 @@ export function mapCampusLocationToDestinationId(
   availableLocations = [],
   fallbackId = 'loc_hostel_b',
 ) {
+  const isOther =
+    presetLocation === OTHER_LOCATION_VALUE ||
+    presetLocation === OTHER_LOCATION_LABEL ||
+    presetLocation === LEGACY_OTHER_LABEL ||
+    presetLocation === 'Other / Enter address'
+
   // If custom 'other', use the fallback registered campus location
-  if (presetLocation === OTHER_LOCATION_VALUE || presetLocation === OTHER_LOCATION_LABEL) {
+  if (isOther) {
     const fallbackMatch = availableLocations.find((l) => l.id === fallbackId)
     return fallbackMatch ? fallbackMatch.id : availableLocations[0]?.id || fallbackId
   }
@@ -293,6 +310,7 @@ export function mapCampusLocationToDestinationId(
 export function validateCheckoutDetails({
   fullName,
   mobileNumber,
+  phoneNumber,
   presetLocation,
   customLocation,
   deliveryInstructions,
@@ -300,7 +318,8 @@ export function validateCheckoutDetails({
   fallbackLocationId = 'loc_hostel_b',
 }) {
   const nameResult = validateFullName(fullName)
-  const mobileResult = normalizeIndianMobile(mobileNumber)
+  const mobileInput = phoneNumber || mobileNumber
+  const mobileResult = normalizeIndianMobile(mobileInput)
   const locationResult = validateCampusLocation({
     presetLocation,
     customLocation,
@@ -333,9 +352,12 @@ export function validateCheckoutDetails({
     data: isValid
       ? {
           fullName: nameResult.value,
+          phoneNumber: mobileResult.national,
           mobileNumber: mobileResult.national,
           phone: mobileResult.normalized,
           destinationLocationId,
+          selectedDestination: locationResult.data.selectedDestination,
+          detailedAddress: locationResult.data.detailedAddress,
           deliveryLocation: locationResult.data,
         }
       : null,

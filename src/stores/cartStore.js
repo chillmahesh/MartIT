@@ -72,7 +72,6 @@ export const useCartStore = create(
       partialize: (s) => ({
         storeId: s.storeId,
         lines: s.lines,
-        checkoutDetails: s.checkoutDetails,
       }),
       storage: createJSONStorage(() => zustandSafeStorage),
     },

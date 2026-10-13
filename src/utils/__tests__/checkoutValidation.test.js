@@ -145,7 +145,7 @@ describe('checkoutValidation — validateCampusLocation', () => {
     })
     expect(missingCustom.isValid).toBe(false)
     expect(missingCustom.customError).toBe(
-      'Please enter your hostel name, room number, or campus landmark.',
+      'Please enter your destination address.',
     )
 
     const whitespaceCustom = validateCampusLocation({
@@ -162,6 +162,8 @@ describe('checkoutValidation — validateCampusLocation', () => {
     })
     expect(validCustom.isValid).toBe(true)
     expect(validCustom.data.isCustom).toBe(true)
+    expect(validCustom.data.selectedDestination).toBe('Hostel 3, Room 204')
+    expect(validCustom.data.detailedAddress).toBe('Near the entrance')
     expect(validCustom.data.customLocation).toBe('Hostel 3, Room 204')
     expect(validCustom.data.instructions).toBe('Near the entrance')
     expect(validCustom.data.formattedAddress).toBe('Hostel 3, Room 204, Near the entrance')
@@ -215,13 +217,19 @@ describe('checkoutValidation — validateCheckoutDetails (Full)', () => {
     expect(result.errors).toEqual({})
     expect(result.data).toEqual({
       fullName: 'Aarav Patel',
+      phoneNumber: '9876543210',
       mobileNumber: '9876543210',
       phone: '+919876543210',
       destinationLocationId: 'loc_hostel_a',
+      selectedDestination: 'A Block',
+      detailedAddress: 'Leave with guard',
       deliveryLocation: {
         preset: 'A Block',
         isCustom: false,
+        selectedDestination: 'A Block',
+        customDestination: '',
         customLocation: '',
+        detailedAddress: 'Leave with guard',
         instructions: 'Leave with guard',
         formattedAddress: 'A Block, Leave with guard',
       },
@@ -244,7 +252,7 @@ describe('checkoutValidation — validateCheckoutDetails (Full)', () => {
       'Mobile number is too short. Please enter a 10-digit Indian mobile number.',
     )
     expect(result.errors.customLocation).toBe(
-      'Please enter your hostel name, room number, or campus landmark.',
+      'Please enter your destination address.',
     )
   })
 })

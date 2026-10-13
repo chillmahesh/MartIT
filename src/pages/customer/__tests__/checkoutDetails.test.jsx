@@ -43,19 +43,19 @@ describe('Checkout Customer Details and Campus Address Selection', () => {
       />,
     )
 
-    expect(html).toContain('Delivery Details')
+    expect(html).toContain('Customer Information')
     expect(html).toContain('Full Name')
-    expect(html).toContain('Mobile Number')
-    expect(html).toContain('Campus Location')
-    expect(html).toContain('Delivery Instructions')
+    expect(html).toContain('Phone Number')
+    expect(html).toContain('Delivery Destination')
+    expect(html).toContain('Detailed address / landmark')
 
     // Verify all 8 preset locations exist in the select / list
     for (const preset of PRESET_CAMPUS_LOCATIONS) {
       expect(html).toContain(preset)
     }
 
-    // Verify Other / Hostel details option is present
-    expect(html).toContain('Other location / Hostel details')
+    // Verify Other / Enter address option is present
+    expect(html).toContain('Other / Enter address')
   })
 
   // 2. Existing profile details prefill correctly
@@ -212,7 +212,7 @@ describe('Checkout Customer Details and Campus Address Selection', () => {
     })
     expect(resMissing.isValid).toBe(false)
     expect(resMissing.errors.customLocation).toBe(
-      'Please enter your hostel name, room number, or campus landmark.',
+      'Please enter your destination address.',
     )
 
     // Whitespace only

@@ -513,13 +513,14 @@ export default function CartPage() {
               disabled={!canSubmitOrder}
               loading={isSubmitting}
               onClick={handlePlaceOrder}
+              data-testid="continue-to-payment-button"
               className="text-base font-bold shadow-2 hover:scale-[1.01] active:scale-[0.99]"
             >
               {isStoreClosed
                 ? 'Store is Closed'
                 : isOutOfDeliveryArea
                 ? 'Outside Delivery Radius'
-                : `Place Order • ${formatINR(estimatedBaseAmount)}`}
+                : `Continue to Payment • ${formatINR(estimatedBaseAmount)}`}
             </Button>
 
             <p className="text-[11px] text-center text-ink-subtle">
