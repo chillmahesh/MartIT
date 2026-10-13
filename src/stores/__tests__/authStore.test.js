@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { useAuthStore } from '../authStore'
+import { useAuthStore, resetAuthSubscriptionForTesting } from '../authStore'
 import { authService } from '@/services/authService'
 import * as envConfig from '@/config/env'
 import * as supabaseClientConfig from '@/config/supabaseClient'
 
 describe('Auth Store & Session Lifecycle', () => {
   beforeEach(() => {
+    resetAuthSubscriptionForTesting()
     // Reset store state
     useAuthStore.setState({
       token: null,
@@ -13,6 +14,8 @@ describe('Auth Store & Session Lifecycle', () => {
       user: null,
       isInitialized: false,
       configError: null,
+      isPasswordRecovery: false,
+      recoveryEmail: null,
     })
     vi.restoreAllMocks()
   })
@@ -230,5 +233,253 @@ describe('Auth Store & Session Lifecycle', () => {
     await expect(
       useAuthStore.getState().forgotPassword('invalid-email-no-at')
     ).rejects.toThrow(/valid email/)
+  })
+
+  it('requests password recovery with exact /reset-password redirectTo URL in remote mode', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const mockReset = vi.fn().mockResolvedValue({ data: {}, error: null })
+    vi.spyOn(supabaseClientConfig, 'getSupabaseClient').mockReturnValue({
+      auth: { resetPasswordForEmail: mockReset },
+    })
+
+    const res = await authService.forgotPassword('student@campus.edu')
+    expect(res.ok).toBe(true)
+    expect(mockReset).toHaveBeenCalledWith(
+      'student@campus.edu',
+      expect.objectContaining({
+        redirectTo: expect.stringMatching(/\/reset-password$/),
+      })
+    )
+  })
+
+  it('handles PASSWORD_RECOVERY event, establishing recovery session without hydrating customer profile', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    vi.spyOn(supabaseClientConfig, 'validateSupabaseConfig').mockReturnValue({
+      valid: true,
+      error: null,
+      mode: 'remote',
+    })
+
+    let authCallback = null
+    vi.spyOn(authService, 'getSession').mockResolvedValue(null)
+    vi.spyOn(authService, 'onAuthStateChange').mockImplementation((cb) => {
+      authCallback = cb
+      return { data: { subscription: { unsubscribe: vi.fn() } } }
+    })
+    const meSpy = vi.spyOn(authService, 'me')
+
+    await useAuthStore.getState().initialize()
+
+    // Trigger PASSWORD_RECOVERY event
+    const recoverySession = {
+      access_token: 'tok_recovery_token',
+      user: { id: 'usr_recovering', email: 'recovery@campus.edu' },
+    }
+    await authCallback('PASSWORD_RECOVERY', recoverySession)
+
+    const state = useAuthStore.getState()
+    expect(state.isPasswordRecovery).toBe(true)
+    expect(state.recoveryEmail).toBe('recovery@campus.edu')
+    expect(state.session).toEqual(recoverySession)
+    expect(state.token).toBe('tok_recovery_token')
+    // Crucial: user profile is NOT hydrated; app area access is NOT granted
+    expect(state.user).toBeNull()
+    expect(meSpy).not.toHaveBeenCalled()
+  })
+
+  it('updates password successfully via updateUser and clears recovery state', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const mockUpdateUser = vi.fn().mockResolvedValue({
+      data: { user: { id: 'usr_recovering', email: 'recovery@campus.edu' } },
+      error: null,
+    })
+    vi.spyOn(supabaseClientConfig, 'getSupabaseClient').mockReturnValue({
+      auth: { updateUser: mockUpdateUser },
+    })
+
+    useAuthStore.setState({
+      token: 'tok_recovery',
+      session: { access_token: 'tok_recovery' },
+      isPasswordRecovery: true,
+      recoveryEmail: 'recovery@campus.edu',
+    })
+
+    const res = await useAuthStore.getState().updatePassword('BrandNewPassword123')
+    expect(res.ok).toBe(true)
+    expect(mockUpdateUser).toHaveBeenCalledWith({ password: 'BrandNewPassword123' })
+
+    useAuthStore.getState().clearRecoveryState()
+    expect(useAuthStore.getState().isPasswordRecovery).toBe(false)
+    expect(useAuthStore.getState().recoveryEmail).toBeNull()
+  })
+
+  it('validates password length and rejects too-short password in updatePassword', async () => {
+    await expect(
+      authService.updatePassword('123')
+    ).rejects.toThrow(/at least 6 characters/)
+  })
+
+  it('propagates Supabase invalid-password or same-password error in updatePassword', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    vi.spyOn(supabaseClientConfig, 'getSupabaseClient').mockReturnValue({
+      auth: {
+        updateUser: vi.fn().mockResolvedValue({
+          data: null,
+          error: { code: 'SAME_PASSWORD', message: 'New password should be different from the old password.' },
+        }),
+      },
+    })
+
+    await expect(
+      useAuthStore.getState().updatePassword('OldPassword123')
+    ).rejects.toThrow(/New password cannot be the same/)
+  })
+
+  it('handles Supabase invalid login credentials error with specific code and message', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    vi.spyOn(supabaseClientConfig, 'getSupabaseClient').mockReturnValue({
+      auth: {
+        signInWithPassword: vi.fn().mockResolvedValue({
+          data: null,
+          error: { message: 'Invalid login credentials', status: 400 },
+        }),
+      },
+    })
+
+    await expect(
+      useAuthStore.getState().login('user@campus.edu', 'wrong-pass')
+    ).rejects.toMatchObject({
+      code: 'INVALID_CREDENTIALS',
+      message: expect.stringContaining('Invalid email or password'),
+      authStage: 'supabase_auth',
+    })
+
+    // User must remain null and token must remain null
+    expect(useAuthStore.getState().user).toBeNull()
+    expect(useAuthStore.getState().token).toBeNull()
+  })
+
+  it('handles Supabase login success followed by Render network failure (API_UNREACHABLE)', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+
+    const mockSession = { access_token: 'jwt_valid', user: { id: 'usr_valid' } }
+    vi.spyOn(authService, 'login').mockResolvedValue({ session: mockSession, authUser: mockSession.user })
+    
+    // Simulate Render server sleeping or network offline
+    vi.spyOn(authService, 'me').mockRejectedValue({
+      code: 'API_UNREACHABLE',
+      message: 'Unable to reach the MartIT backend server.',
+      status: 0,
+      statusCode: 0,
+    })
+
+    await expect(
+      useAuthStore.getState().login('user@campus.edu', 'valid-pass')
+    ).rejects.toMatchObject({
+      code: 'API_UNREACHABLE',
+      authStage: 'profile_hydration',
+    })
+
+    const state = useAuthStore.getState()
+    // Session was established by Supabase, but user profile is NOT granted
+    expect(state.token).toBe('jwt_valid')
+    expect(state.user).toBeNull()
+    expect(state.hasRole('customer')).toBe(false)
+  })
+
+  it('provides safe retry path for profile hydration without granting app access until backend responds', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+
+    // Existing established Supabase session
+    useAuthStore.setState({
+      token: 'jwt_valid_waiting',
+      session: { access_token: 'jwt_valid_waiting' },
+      user: null,
+    })
+
+    const mockProfileUser = {
+      id: 'usr_retried',
+      name: 'Recovered User',
+      email: 'user@campus.edu',
+      roles: ['customer'],
+    }
+    vi.spyOn(authService, 'me').mockResolvedValue(mockProfileUser)
+
+    const user = await useAuthStore.getState().hydrateProfile()
+    expect(user).toEqual(mockProfileUser)
+    expect(useAuthStore.getState().user).toEqual(mockProfileUser)
+    expect(useAuthStore.getState().hasRole('customer')).toBe(true)
+  })
+
+  it('handles Render 401, 5xx, and profile-not-found responses during profile hydration', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+
+    // 1. Render 401 (UNAUTHENTICATED) - clears session
+    useAuthStore.setState({ token: 'jwt_stale', session: { access_token: 'jwt_stale' }, user: null })
+    vi.spyOn(authService, 'me').mockRejectedValue({ code: 'UNAUTHENTICATED', status: 401, statusCode: 401 })
+    const logoutSpy = vi.spyOn(authService, 'logout').mockResolvedValue(undefined)
+
+    await expect(useAuthStore.getState().hydrateProfile()).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+      authStage: 'profile_hydration',
+    })
+    expect(useAuthStore.getState().token).toBeNull()
+    expect(logoutSpy).toHaveBeenCalled()
+
+    // 2. Render 500 (DATABASE_ERROR) - does not swallow or grant access
+    useAuthStore.setState({ token: 'jwt_500', session: { access_token: 'jwt_500' }, user: null })
+    vi.spyOn(authService, 'me').mockRejectedValue({ code: 'DATABASE_ERROR', status: 500, statusCode: 500 })
+
+    await expect(useAuthStore.getState().hydrateProfile()).rejects.toMatchObject({
+      code: 'DATABASE_ERROR',
+      authStage: 'profile_hydration',
+    })
+    expect(useAuthStore.getState().user).toBeNull()
+
+    // 3. Render 403 (PROFILE_NOT_FOUND) - does not grant access
+    useAuthStore.setState({ token: 'jwt_404', session: { access_token: 'jwt_404' }, user: null })
+    vi.spyOn(authService, 'me').mockRejectedValue({ code: 'PROFILE_NOT_FOUND', status: 403, statusCode: 403 })
+
+    await expect(useAuthStore.getState().hydrateProfile()).rejects.toMatchObject({
+      code: 'PROFILE_NOT_FOUND',
+      authStage: 'profile_hydration',
+    })
+    expect(useAuthStore.getState().user).toBeNull()
+  })
+
+  it('does not silently fall back to mock mode in remote mode', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    vi.spyOn(supabaseClientConfig, 'getSupabaseClient').mockReturnValue({
+      auth: {
+        signInWithPassword: vi.fn().mockResolvedValue({
+          data: null,
+          error: { message: 'Invalid login credentials', status: 400 },
+        }),
+        resetPasswordForEmail: vi.fn().mockResolvedValue({
+          data: null,
+          error: { message: 'User not found', status: 404 },
+        }),
+      },
+    })
+
+    await expect(
+      useAuthStore.getState().login('remote@campus.edu', 'secret')
+    ).rejects.toThrow()
+    expect(useAuthStore.getState().user).toBeNull()
+
+    await expect(
+      useAuthStore.getState().forgotPassword('remote@campus.edu')
+    ).rejects.toThrow()
+  })
+
+  it('preserves existing mock account login in mock mode', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(true)
+
+    // Demo login for customer
+    const user = await useAuthStore.getState().demoLogin('customer')
+    expect(user).toBeDefined()
+    expect(user.roles).toContain('customer')
+    expect(useAuthStore.getState().token).toBeDefined()
+    expect(useAuthStore.getState().hasRole('customer')).toBe(true)
   })
 })

@@ -14,6 +14,7 @@ const RunnerLayout = lazy(() => import('./appLayouts').then((m) => ({ default: m
 const AdminLayout = lazy(() => import('./appLayouts').then((m) => ({ default: m.AdminLayout })))
 const LoginPage = lazy(() => import('@/pages/auth/LoginPage'))
 const SignupPage = lazy(() => import('@/pages/auth/SignupPage'))
+const ResetPasswordPage = lazy(() => import('@/pages/auth/ResetPasswordPage'))
 const CustomerHomePage = lazy(() => import('@/pages/customer/HomePage'))
 const CartPage = lazy(() => import('@/pages/customer/CartPage'))
 const OrderConfirmationPage = lazy(() => import('@/pages/customer/OrderConfirmationPage'))
@@ -46,6 +47,10 @@ export const routes = [
           { path: 'styleguide', element: <StyleguidePage /> },
           { path: '*', element: <NotFoundPage /> },
         ],
+      },
+      {
+        element: <AuthLayout />,
+        children: [{ path: 'reset-password', element: <ResetPasswordPage /> }],
       },
       {
         element: <RedirectIfAuthed />,

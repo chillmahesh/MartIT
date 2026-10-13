@@ -35,14 +35,32 @@ export async function request(name, payload = {}) {
     return structuredClone(result)
   }
 
-  const res = await fetch(`${env.apiBaseUrl}/${name.replace('.', '/')}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(payload),
-  })
+  const baseUrl = (env.apiBaseUrl || '').replace(/\/+$/, '')
+  const endpoint = name.replace('.', '/').replace(/^\/+/, '')
+  const fullUrl = `${baseUrl}/${endpoint}`
+
+  let res
+  try {
+    res = await fetch(fullUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(payload),
+    })
+  } catch (networkErr) {
+    throw new ApiError(
+      'API_UNREACHABLE',
+      'Unable to reach the MartIT backend server. The server may be waking up from sleep (Render free tier can take up to 60s) or unreachable. Please check your network connection and server status.',
+      0,
+      {
+        endpoint: name,
+        url: fullUrl,
+        originalMessage: networkErr.message,
+      }
+    )
+  }
 
   const body = await res.json().catch(() => ({}))
   if (!res.ok) {
@@ -54,10 +72,10 @@ export async function request(name, payload = {}) {
       }
     }
     throw new ApiError(
-      body.code || (res.status === 401 ? 'UNAUTHENTICATED' : 'HTTP_ERROR'),
+      body.code || (res.status === 401 ? 'UNAUTHENTICATED' : res.status >= 500 ? 'SERVER_ERROR' : 'HTTP_ERROR'),
       body.message || (res.status === 401 ? 'Session expired. Please log in again.' : 'Something went wrong. Please try again.'),
       res.status,
-      body.details
+      body.details || { endpoint: name, status: res.status }
     )
   }
   return body
