@@ -5,7 +5,6 @@ import {
   MapPin,
   Building,
   Compass,
-  Search,
   Check,
   ChevronDown,
   Navigation,
@@ -41,7 +40,6 @@ export function DeliveryDetailsForm({
   initialDropdownOpen = false,
 }) {
   const [isDropdownOpen, setIsDropdownOpen] = useState(initialDropdownOpen)
-  const [searchQuery, setSearchQuery] = useState('')
   const dropdownRef = useRef(null)
   const listboxRef = useRef(null)
 
@@ -93,19 +91,9 @@ export function DeliveryDetailsForm({
     }
   }, [isDropdownOpen])
 
-  // Filter preset locations by search query
-  const filteredPresets = useMemo(() => {
-    const q = searchQuery.trim().toLowerCase()
-    if (!q) return PRESET_CAMPUS_LOCATIONS
-    return PRESET_CAMPUS_LOCATIONS.filter((preset) =>
-      preset.toLowerCase().includes(q),
-    )
-  }, [searchQuery])
-
   const handleSelectLocation = (locationValue) => {
     onChange('presetLocation', locationValue)
     setIsDropdownOpen(false)
-    setSearchQuery('')
   }
 
   const selectedLocationDisplay = isOtherSelected
@@ -271,7 +259,7 @@ export function DeliveryDetailsForm({
                 />
               </button>
 
-              {/* Dropdown Menu Panel */}
+              {/* Dropdown Menu Panel (Max height set to show ~4 options at a time) */}
               {isDropdownOpen && (
                 <div
                   ref={listboxRef}
@@ -283,28 +271,11 @@ export function DeliveryDetailsForm({
                   data-lenis-prevent-touch
                   tabIndex={-1}
                   onWheel={(e) => e.stopPropagation()}
-                  className="absolute z-40 left-0 right-0 mt-1.5 max-h-80 overflow-y-auto overscroll-contain rounded-card border border-line bg-surface p-2 shadow-2 animate-fade-in focus:outline-none"
+                  className="absolute z-40 left-0 right-0 mt-1.5 max-h-48 overflow-y-auto overscroll-contain rounded-card border border-line bg-surface p-1.5 shadow-2 animate-fade-in focus:outline-none"
                 >
-                  {/* Search input for mobile filter */}
-                  <div className="relative mb-2 px-1">
-                    <Search
-                      className="pointer-events-none absolute left-3.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-subtle"
-                      aria-hidden="true"
-                    />
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      placeholder="Search destination..."
-                      className="h-9 w-full rounded-tile border border-line bg-surface-2 pl-9 pr-3 text-xs text-ink placeholder:text-ink-subtle focus:border-brand focus:outline-none"
-                      autoFocus
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  </div>
-
                   <div className="space-y-1">
                     {/* Preset Locations */}
-                    {filteredPresets.map((preset) => {
+                    {PRESET_CAMPUS_LOCATIONS.map((preset) => {
                       const isSelected = details.presetLocation === preset
                       return (
                         <button
@@ -328,12 +299,6 @@ export function DeliveryDetailsForm({
                         </button>
                       )
                     })}
-
-                    {filteredPresets.length === 0 && (
-                      <p className="px-3 py-2 text-xs text-ink-subtle italic">
-                        No matching preset destinations found.
-                      </p>
-                    )}
 
                     {/* Divider */}
                     <div className="my-1.5 border-t border-line/60" />

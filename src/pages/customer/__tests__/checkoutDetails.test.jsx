@@ -427,11 +427,12 @@ describe('Checkout Customer Details and Campus Address Selection', () => {
       />,
     )
 
-    // Verify dropdown listbox is open and has data-lenis-prevent attributes
+    // Verify dropdown listbox is open and has data-lenis-prevent attributes and compact max-h-48
     expect(html).toContain('data-testid="campus-locations-list"')
     expect(html).toContain('data-lenis-prevent')
     expect(html).toContain('data-lenis-prevent-wheel')
     expect(html).toContain('overscroll-contain')
     expect(html).toContain('overflow-y-auto')
+    expect(html).toContain('max-h-48')
   })
 })
