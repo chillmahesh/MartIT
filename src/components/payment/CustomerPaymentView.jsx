@@ -410,7 +410,16 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
                 <MapPin className="size-4 text-fresh-ink shrink-0 mt-0.5" aria-hidden="true" />
                 <div>
                   <p className="text-[11px] font-medium text-ink-subtle">Delivery Location</p>
-                  <p className="font-semibold text-ink">{location ? location.name : order.locationId}</p>
+                  <p className="font-semibold text-ink">
+                    {order.customerDetails?.deliveryLocation?.formattedAddress ||
+                      (location ? location.name : order.locationId)}
+                  </p>
+                  {order.customerDetails?.fullName && (
+                    <p className="text-[11px] text-ink-subtle mt-0.5">
+                      {order.customerDetails.fullName}
+                      {order.customerDetails.mobileNumber && ` (${order.customerDetails.mobileNumber})`}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

@@ -142,8 +142,17 @@ export function OrderConfirmationView({ order, onStartNew }) {
           <div className="flex items-start gap-2.5">
             <MapPin className="size-4 text-fresh-ink shrink-0 mt-0.5" aria-hidden="true" />
             <div>
-              <p className="text-xs font-medium text-ink-subtle">Delivery Location</p>
-              <p className="font-semibold text-ink">{location ? location.name : order.locationId}</p>
+              <p className="text-xs font-medium text-ink-subtle">Delivery Destination</p>
+              <p className="font-semibold text-ink">
+                {order.customerDetails?.deliveryLocation?.formattedAddress ||
+                  (location ? location.name : order.locationId)}
+              </p>
+              {order.customerDetails?.fullName && (
+                <p className="text-xs text-ink-subtle mt-0.5">
+                  Recipient: {order.customerDetails.fullName}
+                  {order.customerDetails.mobileNumber && ` (${order.customerDetails.mobileNumber})`}
+                </p>
+              )}
             </div>
           </div>
         </div>

@@ -17,6 +17,7 @@ const publicUser = (u) => ({
   id: u.id,
   name: u.name,
   email: u.email,
+  phone: u.phone ?? null,
   roles: [...u.roles],
   runnerStatus: u.runnerStatus ?? null,
   defaultLocationId: u.defaultLocationId ?? null,
@@ -148,7 +149,7 @@ export function createMockServer({ routingProvider = null } = {}) {
      * in the payload is ignored; everything is recomputed here and snapshotted so
      * later price/fee changes never alter this order.
      */
-    'orders.create': async ({ storeId, locationId, lines }, { token }) => {
+    'orders.create': async ({ storeId, locationId, lines, customerDetails }, { token }) => {
       const user = requirePermission(token, PERMISSIONS.SHOP)
       if (!Array.isArray(lines) || lines.length === 0) {
         throw new ApiError('EMPTY_CART', 'Your cart is empty.', 422)
@@ -187,6 +188,7 @@ export function createMockServer({ routingProvider = null } = {}) {
           storeId,
           locationId,
           lines: pricedLines,
+          customerDetails: customerDetails || null,
           pricing: {
             itemSubtotal: totals.itemSubtotal,
             deliveryFee: totals.deliveryFee,
