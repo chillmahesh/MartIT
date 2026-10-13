@@ -29,6 +29,9 @@ export const authService = {
     }
 
     const supabase = getSupabaseClient()
+    if (!supabase) {
+      throw new ApiError('CONFIG_ERROR', 'Supabase client is not configured.')
+    }
     const { data, error } = await supabase.auth.signInWithPassword({
       email: email.trim(),
       password,
@@ -36,12 +39,15 @@ export const authService = {
 
     if (error) {
       let message = error.message
+      let code = error.code || 'AUTH_ERROR'
       if (error.message?.toLowerCase().includes('invalid login credentials')) {
         message = 'Invalid email or password. Please verify your credentials and try again.'
+        code = 'INVALID_CREDENTIALS'
       } else if (error.message?.toLowerCase().includes('email not confirmed')) {
         message = 'Please confirm your email address before logging in.'
+        code = 'EMAIL_NOT_CONFIRMED'
       }
-      throw new ApiError(error.code || 'AUTH_ERROR', message, error.status || 400)
+      throw new ApiError(code, message, error.status || 400)
     }
 
     if (!data?.session) {
@@ -127,7 +133,7 @@ export const authService = {
   /**
    * Triggers password reset email workflow.
    * In mock mode: delegates to mock handler.
-   * In remote mode: calls Supabase auth.resetPasswordForEmail.
+   * In remote mode: calls Supabase auth.resetPasswordForEmail with /reset-password redirectTo.
    */
   async forgotPassword(email) {
     const cleanEmail = email?.trim()
@@ -143,7 +149,14 @@ export const authService = {
     }
 
     const supabase = getSupabaseClient()
-    const redirectTo = typeof window !== 'undefined' ? `${window.location.origin}/login` : undefined
+    if (!supabase) {
+      throw new ApiError('CONFIG_ERROR', 'Supabase client is not configured.')
+    }
+    const origin =
+      typeof window !== 'undefined' && window.location?.origin
+        ? window.location.origin
+        : 'http://localhost:5173'
+    const redirectTo = `${origin}/reset-password`
     const { data, error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
       redirectTo,
     })
@@ -153,6 +166,39 @@ export const authService = {
     }
 
     return { ok: true, data }
+  },
+
+  /**
+   * Updates user password using Supabase Auth updateUser.
+   * In mock mode: simulates success.
+   * In remote mode: calls supabase.auth.updateUser({ password }).
+   */
+  async updatePassword(newPassword) {
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
+      throw new ApiError('INVALID_PASSWORD', 'Password must be at least 6 characters long.', 400)
+    }
+
+    if (isMockBackend) {
+      return { ok: true }
+    }
+
+    const supabase = getSupabaseClient()
+    if (!supabase) {
+      throw new ApiError('CONFIG_ERROR', 'Supabase client is not configured.')
+    }
+
+    const { data, error } = await supabase.auth.updateUser({ password: newPassword })
+
+    if (error) {
+      let message = error.message
+      const lower = error.message?.toLowerCase() || ''
+      if (lower.includes('same as') || lower.includes('different from')) {
+        message = 'New password cannot be the same as your old password.'
+      }
+      throw new ApiError(error.code || 'UPDATE_PASSWORD_ERROR', message, error.status || 400)
+    }
+
+    return { ok: true, user: data.user }
   },
 
   /**

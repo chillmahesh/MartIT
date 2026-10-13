@@ -37,10 +37,10 @@ export function RequireRole({ role }) {
 
 /** Sends signed-in users away from login/signup to their home area. */
 export function RedirectIfAuthed() {
-  const { user, isInitialized } = useAuthStore()
+  const { user, isInitialized, isPasswordRecovery } = useAuthStore()
   if (!isInitialized) {
     return <RouteFallback />
   }
-  if (user) return <Navigate to={homePathFor(user)} replace />
+  if (user && !isPasswordRecovery) return <Navigate to={homePathFor(user)} replace />
   return <Outlet />
 }

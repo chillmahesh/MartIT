@@ -22,6 +22,8 @@ export const useAuthStore = create(
       user: null,
       isInitialized: false,
       configError: null,
+      isPasswordRecovery: false,
+      recoveryEmail: null,
 
       /**
        * Initializes session state on application mount or refresh.
@@ -44,6 +46,8 @@ export const useAuthStore = create(
             token: null,
             session: null,
             user: null,
+            isPasswordRecovery: false,
+            recoveryEmail: null,
           })
           return
         }
@@ -53,20 +57,35 @@ export const useAuthStore = create(
           const session = await authService.getSession()
           if (session?.access_token) {
             set({ session, token: session.access_token })
-            // Authoritative profile & role hydration from backend
-            try {
-              const profileUser = await authService.me()
-              set({ user: profileUser })
-            } catch (err) {
-              if (
-                err.statusCode === 401 ||
-                err.code === 'UNAUTHENTICATED' ||
-                err.code === 'PROFILE_NOT_FOUND' ||
-                err.code === 'ROLE_NOT_FOUND'
-              ) {
-                await authService.logout().catch(() => {})
-                set({ session: null, token: null, user: null })
+            // If on /reset-password, maintain recovery mode and do not hydrate customer profile
+            const isRecoveryPath =
+              typeof window !== 'undefined' &&
+              (window.location.pathname.includes('reset-password') ||
+                window.location.hash.includes('type=recovery'))
+
+            if (!isRecoveryPath && !get().isPasswordRecovery) {
+              // Authoritative profile & role hydration from backend
+              try {
+                const profileUser = await authService.me()
+                set({ user: profileUser })
+              } catch (err) {
+                if (
+                  err.statusCode === 401 ||
+                  err.status === 401 ||
+                  err.code === 'UNAUTHENTICATED' ||
+                  err.code === 'PROFILE_NOT_FOUND' ||
+                  err.code === 'ROLE_NOT_FOUND'
+                ) {
+                  await authService.logout().catch(() => {})
+                  set({ session: null, token: null, user: null })
+                }
               }
+            } else {
+              set({
+                user: null,
+                isPasswordRecovery: true,
+                recoveryEmail: session?.user?.email || null,
+              })
             }
           } else {
             set({ session: null, token: null, user: null })
@@ -78,18 +97,38 @@ export const useAuthStore = create(
         // 4. Set up onAuthStateChange listener
         if (!authSubscription) {
           const { data } = authService.onAuthStateChange(async (event, newSession) => {
+            if (event === 'PASSWORD_RECOVERY') {
+              // Supabase emitted recovery event
+              set({
+                session: newSession,
+                token: newSession?.access_token || null,
+                user: null, // Critical: do NOT treat recovery session as normal logged-in user
+                isPasswordRecovery: true,
+                recoveryEmail: newSession?.user?.email || null,
+              })
+              return
+            }
+
             if (newSession?.access_token) {
-              set({ session: newSession, token: newSession.access_token })
-              if (event === 'SIGNED_IN' || !get().user) {
-                try {
-                  const profileUser = await authService.me()
-                  set({ user: profileUser })
-                } catch {
-                  // Handled by 401 interceptor
+              if (!get().isPasswordRecovery) {
+                set({ session: newSession, token: newSession.access_token })
+                if (event === 'SIGNED_IN' || !get().user) {
+                  try {
+                    const profileUser = await authService.me()
+                    set({ user: profileUser })
+                  } catch {
+                    // Handled by 401 interceptor
+                  }
                 }
               }
             } else if (event === 'SIGNED_OUT') {
-              set({ session: null, token: null, user: null })
+              set({
+                session: null,
+                token: null,
+                user: null,
+                isPasswordRecovery: false,
+                recoveryEmail: null,
+              })
             }
           })
           authSubscription = data?.subscription
@@ -100,6 +139,7 @@ export const useAuthStore = create(
 
       /**
        * Email/password sign-in.
+       * Separates authoritative Supabase authentication from backend profile hydration.
        */
       async login(email, password) {
         if (isMockBackend) {
@@ -108,13 +148,62 @@ export const useAuthStore = create(
           return res.user
         }
 
-        const { session } = await authService.login(email, password)
-        set({ session, token: session.access_token })
+        // Stage 1: Supabase authentication
+        let authResult
+        try {
+          authResult = await authService.login(email, password)
+        } catch (authErr) {
+          authErr.authStage = 'supabase_auth'
+          throw authErr
+        }
 
-        // Authoritative hydration from backend
-        const profileUser = await authService.me()
-        set({ user: profileUser })
-        return profileUser
+        const { session } = authResult
+        set({ session, token: session.access_token, user: null, isPasswordRecovery: false })
+
+        // Stage 2: Authoritative profile & role hydration from backend
+        try {
+          const profileUser = await authService.me()
+          set({ user: profileUser })
+          return profileUser
+        } catch (hydrationErr) {
+          hydrationErr.authStage = 'profile_hydration'
+          if (
+            hydrationErr.status === 401 ||
+            hydrationErr.statusCode === 401 ||
+            hydrationErr.code === 'UNAUTHENTICATED'
+          ) {
+            await authService.logout().catch(() => {})
+            set({ session: null, token: null, user: null })
+          }
+          throw hydrationErr
+        }
+      },
+
+      /**
+       * Retries fetching profile from backend for an authenticated Supabase session.
+       */
+      async hydrateProfile() {
+        const token = get().getToken()
+        if (!token) {
+          throw new ApiError('NO_SESSION', 'No active authentication session to hydrate.', 401)
+        }
+
+        try {
+          const profileUser = await authService.me()
+          set({ user: profileUser })
+          return profileUser
+        } catch (err) {
+          err.authStage = 'profile_hydration'
+          if (
+            err.status === 401 ||
+            err.statusCode === 401 ||
+            err.code === 'UNAUTHENTICATED'
+          ) {
+            await authService.logout().catch(() => {})
+            set({ session: null, token: null, user: null })
+          }
+          throw err
+        }
       },
 
       /**
@@ -148,6 +237,20 @@ export const useAuthStore = create(
       },
 
       /**
+       * Submits new password via Supabase Auth updateUser.
+       */
+      async updatePassword(newPassword) {
+        return authService.updatePassword(newPassword)
+      },
+
+      /**
+       * Clears password recovery state.
+       */
+      clearRecoveryState() {
+        set({ isPasswordRecovery: false, recoveryEmail: null })
+      },
+
+      /**
        * Sign-out.
        */
       async logout() {
@@ -156,7 +259,13 @@ export const useAuthStore = create(
         } catch {
           // ignore
         }
-        set({ token: null, session: null, user: null })
+        set({
+          token: null,
+          session: null,
+          user: null,
+          isPasswordRecovery: false,
+          recoveryEmail: null,
+        })
       },
 
       /**
@@ -176,6 +285,13 @@ export const useAuthStore = create(
     },
   ),
 )
+
+export function resetAuthSubscriptionForTesting() {
+  if (authSubscription?.unsubscribe) {
+    authSubscription.unsubscribe()
+  }
+  authSubscription = null
+}
 
 // Register token provider with API transport
 setTokenProvider(() => useAuthStore.getState().getToken())

@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router'
-import { AlertCircle, Bike, CheckCircle2, Mail, Lock, ShieldCheck, ShoppingBasket } from 'lucide-react'
+import { Link, useNavigate, useLocation, useSearchParams } from 'react-router'
+import { AlertCircle, Bike, CheckCircle2, Mail, Lock, ShieldCheck, ShoppingBasket, RefreshCw } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -10,7 +10,7 @@ import { Input, PasswordInput } from '@/components/ui/Input'
 import { Spinner } from '@/components/ui/Spinner'
 import { toast } from '@/components/ui/Toaster'
 import { useAuthStore } from '@/stores/authStore'
-import { isMockBackend } from '@/config/env'
+import { env, isMockBackend } from '@/config/env'
 import { homePathFor } from '@/utils/permissions'
 
 /** Only allow same-site relative redirects (prevents open-redirects via ?next=). */
@@ -22,15 +22,22 @@ export default function LoginPage() {
   const login = useAuthStore((s) => s.login)
   const demoLogin = useAuthStore((s) => s.demoLogin)
   const forgotPassword = useAuthStore((s) => s.forgotPassword)
+  const hydrateProfile = useAuthStore((s) => s.hydrateProfile)
+  const logout = useAuthStore((s) => s.logout)
   const configError = useAuthStore((s) => s.configError) || useAuthStore.getState().configError
   const navigate = useNavigate()
+  const location = useLocation()
   const [params] = useSearchParams()
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
+  const [hydrationError, setHydrationError] = useState(null)
+  const [retryingHydration, setRetryingHydration] = useState(false)
   const [pendingDemo, setPendingDemo] = useState(null)
+
+  const noticeMessage = location.state?.notice || params.get('notice')
 
   // Forgot password modal state
   const [forgotOpen, setForgotOpen] = useState(false)
@@ -74,6 +81,7 @@ export default function LoginPage() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setFormError(null)
+    setHydrationError(null)
 
     const cleanEmail = email.trim()
     if (!cleanEmail) {
@@ -91,15 +99,41 @@ export default function LoginPage() {
       toast.success(`Welcome back, ${user.name}!`)
       navigate(safeNext(params.get('next')) ?? homePathFor(user), { replace: true })
     } catch (err) {
-      setFormError(err.message || 'Failed to log in. Please try again.')
+      if (err.authStage === 'profile_hydration') {
+        setHydrationError(err)
+      } else {
+        setFormError(err.message || 'Failed to log in. Please try again.')
+      }
     } finally {
       setSubmitting(false)
     }
   }
 
+  const handleRetryHydration = async () => {
+    setRetryingHydration(true)
+    try {
+      const user = await hydrateProfile()
+      toast.success(`Welcome back, ${user.name}!`)
+      setHydrationError(null)
+      navigate(safeNext(params.get('next')) ?? homePathFor(user), { replace: true })
+    } catch (err) {
+      setHydrationError(err)
+      toast.error(err.message || 'Retry failed. Server may still be waking up.')
+    } finally {
+      setRetryingHydration(false)
+    }
+  }
+
+  const handleCancelHydration = async () => {
+    await logout().catch(() => {})
+    setHydrationError(null)
+    setFormError(null)
+  }
+
   const handleDemoSignIn = async (role) => {
     setPendingDemo(role)
     setFormError(null)
+    setHydrationError(null)
     try {
       const user = await demoLogin(role)
       toast.success(`Signed in as ${user.name}`)
@@ -135,6 +169,17 @@ export default function LoginPage() {
           : 'Welcome back to MartIT. Log in to track orders and delivery.'}
       </p>
 
+      {/* Confirmation notice (e.g. from password reset) */}
+      {noticeMessage && (
+        <div
+          role="status"
+          className="mt-6 flex items-start gap-3 rounded-card border border-emerald-500/30 bg-emerald-500/10 p-3.5 text-sm text-emerald-800 dark:text-emerald-300"
+        >
+          <CheckCircle2 className="size-5 shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" aria-hidden="true" />
+          <p className="font-medium">{noticeMessage}</p>
+        </div>
+      )}
+
       {/* Remote mode missing configuration alert */}
       {hasConfigError && (
         <div
@@ -149,14 +194,79 @@ export default function LoginPage() {
         </div>
       )}
 
-      {/* Error alert */}
-      {formError && (
+      {/* Profile hydration error alert with safe retry path */}
+      {hydrationError && (
+        <div
+          role="alert"
+          className="mt-6 rounded-card border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-900 dark:text-amber-200"
+        >
+          <div className="flex items-start gap-3">
+            <AlertCircle className="size-5 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" aria-hidden="true" />
+            <div className="flex-1 space-y-1">
+              <p className="font-semibold text-amber-900 dark:text-amber-200">
+                Authentication Succeeded, Backend Verification Pending
+              </p>
+              <p className="text-ink">
+                {hydrationError.code === 'API_UNREACHABLE'
+                  ? 'Your credentials were accepted by Supabase, but the MartIT backend server could not be reached. If hosted on Render free tier, the server takes 45-60s to wake from sleep. Please wait a moment and click Retry.'
+                  : hydrationError.code === 'PROFILE_NOT_FOUND'
+                  ? 'Your account was verified by Supabase, but no user profile was found in the database. Account may be uninitialized.'
+                  : hydrationError.code === 'ROLE_NOT_FOUND'
+                  ? 'Your account was verified by Supabase, but no roles are assigned in the database.'
+                  : hydrationError.code === 'DATABASE_ERROR'
+                  ? 'A database error occurred on the backend server while retrieving your profile.'
+                  : hydrationError.message || 'Failed to verify user profile with backend server.'}
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-2 pt-1">
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  loading={retryingHydration}
+                  onClick={handleRetryHydration}
+                >
+                  Retry verification
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleCancelHydration}
+                >
+                  Sign out & reset
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          {/* Safe developer diagnostics (development only, never logs secrets/passwords/tokens) */}
+          {import.meta.env.DEV && (
+            <div className="mt-3 border-t border-amber-500/20 pt-2 text-xs text-ink-muted">
+              <p className="font-semibold text-ink">Developer Diagnostics (DEV mode):</p>
+              <p>Stage: {hydrationError.authStage || 'profile_hydration'}</p>
+              <p>Code: {hydrationError.code || 'UNKNOWN'}</p>
+              <p>Status: {hydrationError.status || hydrationError.statusCode || '0'}</p>
+              {hydrationError.details?.url && <p>URL: {hydrationError.details.url}</p>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Form Error alert (credential, validation, etc.) */}
+      {formError && !hydrationError && (
         <div
           role="alert"
           className="mt-6 flex items-start gap-3 rounded-card border border-danger/30 bg-danger/10 p-3.5 text-sm text-danger"
         >
           <AlertCircle className="size-5 shrink-0 text-danger mt-0.5" aria-hidden="true" />
-          <p className="font-medium text-danger">{formError}</p>
+          <div>
+            <p className="font-medium text-danger">{formError}</p>
+            {import.meta.env.DEV && (
+              <p className="mt-1 text-xs text-ink-muted">
+                Developer Diagnostics: Stage: supabase_auth
+              </p>
+            )}
+          </div>
         </div>
       )}
 
