@@ -5,8 +5,10 @@ import { Button } from '@/components/ui/Button'
 import { Price } from '@/components/ui/Price'
 import { formatINR } from '@/utils/currency'
 import { formatDistanceKm } from '@/utils/distance'
+import { ORDER_STATUS } from '@/utils/orderMachine'
 import { SAMPLE_STORES } from '@/mocks/campus'
 import { useLocations } from '@/hooks/useLocations'
+import { CustomerDeliveryOtpCard } from '@/components/customer/CustomerDeliveryOtpCard'
 
 /**
  * OrderConfirmationView displays the authoritative order confirmation
@@ -112,6 +114,8 @@ export function OrderConfirmationView({ order, onStartNew }) {
             </Link>
           </Button>
         </div>
+      ) : order.status === ORDER_STATUS.ON_THE_WAY ? (
+        <CustomerDeliveryOtpCard orderId={order.id} />
       ) : (
         <div className="flex items-center gap-2.5 rounded-tile border border-emerald-500/40 bg-emerald-500/10 p-3.5 text-xs text-ink">
           <CheckCircle2 className="size-4 shrink-0 text-emerald-600" aria-hidden="true" />
@@ -119,6 +123,7 @@ export function OrderConfirmationView({ order, onStartNew }) {
           <span className="text-ink-muted">A student runner will pick up your items shortly.</span>
         </div>
       )}
+
 
       {/* Order Details & Authoritative Pricing */}
       <div className="rounded-card border border-line bg-surface p-5 sm:p-6 shadow-2 space-y-6">

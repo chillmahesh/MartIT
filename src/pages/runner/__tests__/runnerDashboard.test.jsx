@@ -242,7 +242,7 @@ describe('Runner Dashboard UI — Milestone 1', () => {
       )
 
       expect(html).toContain('Runner Dashboard')
-      expect(html).toContain('Milestone 2')
+      expect(html).toContain('Milestone 3')
       expect(html).toContain('Mock Environment')
       expect(html).toContain('Delivery Activity Summary')
       expect(html).toContain('Online')

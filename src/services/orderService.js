@@ -32,4 +32,20 @@ export const orderService = {
    * Explicitly retries payment for an expired order by allocating a new dynamic platform fee.
    */
   retryPayment: (orderId) => request('orders.retryPayment', { orderId }),
+
+  /**
+   * Retrieves delivery OTP verification challenge for an authenticated customer's order.
+   */
+  getDeliveryOtp: (orderId) => request('customer.order.getDeliveryOtp', { orderId }),
+
+  /**
+   * Requests a fresh delivery OTP challenge for the authenticated customer's order.
+   */
+  refreshDeliveryOtp: (orderId) => request('customer.order.refreshOtp', { orderId }),
+
+  /**
+   * Lists authoritative orders belonging to the authenticated customer.
+   */
+  listMyOrders: () => request('customer.orders.list'),
 }
+

@@ -119,8 +119,17 @@ export default function RunnerDashboardPage() {
         refetch()
         return
       }
+
+      if (actionType === 'verify-otp') {
+        const verified = await runnerService.verifyOtp(order.id, payload.otp)
+        toast.success(`Delivery #${order.id} verified and completed!`)
+        await queryClient.invalidateQueries({ queryKey: ['runner-orders'] })
+        refetch()
+        return verified
+      }
     } catch (err) {
       toast.error(err.message || 'Operation failed. Please try again.')
+      throw err
     } finally {
       setActionInProgress(false)
     }
@@ -136,7 +145,7 @@ export default function RunnerDashboardPage() {
               Runner Dashboard
             </h1>
             <Badge tone="brand" size="md">
-              Milestone 2
+              Milestone 3
             </Badge>
           </div>
           <p className="text-xs sm:text-sm text-ink-subtle mt-1">
@@ -163,9 +172,10 @@ export default function RunnerDashboardPage() {
       <div className="flex items-start gap-2.5 rounded-tile border border-info/30 bg-info/10 p-3 text-xs text-info">
         <Info className="size-4 shrink-0 mt-0.5" aria-hidden="true" />
         <p>
-          <strong>Mock Environment:</strong> Runner assignment, multi-store pickup, and lifecycle transitions are backed by mock server state in this milestone. Customer OTP verification and driver earnings will connect in Milestone 3.
+          <strong>Mock Environment:</strong> Runner assignment, multi-store pickup, and customer delivery OTP verification are backed by mock server state in this milestone. Driver wallet and earnings will connect in subsequent phases.
         </p>
       </div>
+
 
       {/* 1. Runner Availability Toggle */}
       <RunnerAvailabilityToggle

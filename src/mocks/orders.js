@@ -132,6 +132,11 @@ export const SAMPLE_ORDERS = [
     },
     status: ORDER_STATUS.ON_THE_WAY,
     paymentStatus: PAYMENT_STATUS.PAID,
+    handoverOtpHash: '79e4429cf7c2764f8569af4f3bc1975e4570be6ed104488a9a36b65bb949164c',
+    _mockOtp: '724915',
+    handoverOtpExpiresAt: 253402300799000, // Year 9999 for test stability
+    handoverAttemptsCount: 0,
+    handoverLockedUntil: null,
     createdAt: '2026-10-14T01:30:00.000Z',
   },
   {

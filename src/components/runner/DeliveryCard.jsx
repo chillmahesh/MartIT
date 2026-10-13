@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   Store,
   MapPin,
@@ -6,6 +7,8 @@ import {
   ArrowRight,
   User,
   CheckCircle2,
+  KeyRound,
+  AlertCircle,
 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { OrderStatusPill } from '@/components/ui/Badge'
@@ -15,7 +18,9 @@ import { splitDeliveryFee } from '@/utils/deliveryFee'
 import { formatINR } from '@/utils/currency'
 import { SAMPLE_DELIVERY_LOCATIONS } from '@/mocks/campus'
 import { getOrderPickups, areAllPickupsComplete, getStoreDisplayName } from '@/utils/runnerOrders'
+import { useAuthStore } from '@/stores/authStore'
 import { cn } from '@/utils/cn'
+
 
 /**
  * Formats order creation timestamp into readable relative or absolute time.
@@ -38,7 +43,7 @@ function formatOrderTime(dateStr) {
  * Displays order reference, store(s), destination, items, authoritative delivery fee,
  * multi-store pickup progress, and state-appropriate actions.
  */
-export function DeliveryCard({ order, onAction, isOnline = true, className }) {
+export function DeliveryCard({ order, onAction, isOnline = true, currentRunnerId, className }) {
   if (!order) return null
 
   // Resolve pickup store(s)
@@ -79,6 +84,36 @@ export function DeliveryCard({ order, onAction, isOnline = true, className }) {
   const isPickedUp = order.status === ORDER_STATUS.PICKED_UP
   const isOnTheWay = order.status === ORDER_STATUS.ON_THE_WAY
   const isDelivered = order.status === ORDER_STATUS.DELIVERED
+
+  // OTP verification state (Milestone 3)
+  const [otpInput, setOtpInput] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [otpError, setOtpError] = useState('')
+
+  const authUserId = useAuthStore((s) => s.user?.id)
+  const currentUserId = currentRunnerId ?? authUserId
+  const isAssignedToCaller = order.runnerId ? currentUserId === order.runnerId : true
+
+
+  const handleOtpSubmit = async (e) => {
+    e?.preventDefault()
+    const cleanOtp = otpInput.trim()
+    if (!/^\d{6}$/.test(cleanOtp)) {
+      setOtpError('OTP must contain exactly six numeric digits.')
+      return
+    }
+    setIsSubmitting(true)
+    setOtpError('')
+    try {
+      await onAction?.(order, 'verify-otp', { otp: cleanOtp })
+      setOtpInput('')
+    } catch (err) {
+      setOtpError(err.message || 'OTP verification failed. Please try again.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
 
   return (
     <Card
@@ -227,6 +262,76 @@ export function DeliveryCard({ order, onAction, isOnline = true, className }) {
         </p>
       </div>
 
+      {/* Handover OTP Verification Panel (Milestone 3) */}
+      {isOnTheWay && isAssignedToCaller && (
+        <div
+          className="rounded-tile border border-brand/40 bg-brand-soft/20 p-3 space-y-2.5"
+          data-testid={`runner-otp-section-${order.id}`}
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-ink">
+              <KeyRound className="size-3.5 text-brand" aria-hidden="true" />
+              <span>Customer Handover Verification</span>
+            </div>
+            <span className="text-[10px] font-semibold text-brand bg-brand-soft px-2 py-0.5 rounded">
+              OTP Required
+            </span>
+          </div>
+
+          <p className="text-[11px] text-ink-muted">
+            Ask the recipient for their 6-digit delivery OTP at physical handover to confirm completion.
+          </p>
+
+          <form onSubmit={handleOtpSubmit} className="space-y-2">
+            <div className="flex items-center gap-2">
+              <label htmlFor={`otp-input-${order.id}`} className="sr-only">
+                6-digit Handover OTP
+              </label>
+              <input
+                id={`otp-input-${order.id}`}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                value={otpInput}
+                onChange={(e) => {
+                  const clean = e.target.value.replace(/\D/g, '').slice(0, 6)
+                  setOtpInput(clean)
+                  if (otpError) setOtpError('')
+                }}
+                placeholder="6-digit OTP"
+                disabled={isSubmitting || !isOnline}
+                aria-label="6-digit Handover OTP"
+                data-testid={`otp-input-${order.id}`}
+                className="flex-1 rounded-tile border border-line bg-surface px-3 py-1.5 text-center font-mono text-sm font-bold tracking-widest text-ink focus:border-brand focus:outline-none"
+              />
+              <Button
+                type="submit"
+                size="sm"
+                tone="brand"
+                loading={isSubmitting}
+                disabled={otpInput.trim().length !== 6 || isSubmitting || !isOnline}
+                data-testid={`action-verify-otp-${order.id}`}
+                className="text-xs font-semibold shrink-0"
+              >
+                Verify & Deliver
+              </Button>
+            </div>
+
+            {otpError && (
+              <p
+                role="alert"
+                className="text-[11px] font-medium text-danger flex items-center gap-1"
+                data-testid={`otp-error-${order.id}`}
+              >
+                <AlertCircle className="size-3 shrink-0" aria-hidden="true" />
+                <span>{otpError}</span>
+              </p>
+            )}
+          </form>
+        </div>
+      )}
+
       {/* Payout & Fee Footer */}
       <div className="border-t border-line/60 pt-3 flex flex-wrap items-center justify-between gap-3 text-xs">
         <div>
@@ -319,18 +424,27 @@ export function DeliveryCard({ order, onAction, isOnline = true, className }) {
                 Out for Delivery
               </span>
               <span className="text-[10px] text-ink-subtle mt-0.5">
-                OTP verification in M3
+                {isAssignedToCaller ? 'Awaiting handover OTP' : 'Assigned to another runner'}
               </span>
             </div>
           )}
 
           {isDelivered && (
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-fresh-ink bg-fresh-soft rounded px-2.5 py-1">
-              Delivered
-            </span>
+            <div className="flex flex-col items-end">
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-fresh-ink bg-fresh-soft rounded px-2.5 py-1">
+                <CheckCircle2 className="size-3 text-fresh" aria-hidden="true" />
+                <span>Delivered</span>
+              </span>
+              {order.handoverVerifiedAt && (
+                <span className="text-[10px] text-ink-subtle mt-0.5">
+                  OTP Verified
+                </span>
+              )}
+            </div>
           )}
         </div>
       </div>
     </Card>
   )
 }
+

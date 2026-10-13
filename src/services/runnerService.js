@@ -28,4 +28,12 @@ export const runnerService = {
    */
   transitionOrder: (orderId, nextStatus) =>
     request('runner.order.transition', { orderId, nextStatus }),
+
+  /**
+   * Submits a 6-digit handover OTP to atomically verify and complete delivery.
+   * Enforces runner assignment, order status (ON_THE_WAY), expiry, and lockout limits.
+   */
+  verifyOtp: (orderId, otp) =>
+    request('runner.order.verifyOtp', { orderId, otp }),
 }
+
