@@ -141,7 +141,7 @@ export function CustomerDeliveryOtpCard({ orderId, className }) {
         </div>
 
         {/* DEMO MODE Badge */}
-        {otpData.demoMode && (
+        {(otpData.demoMode || otpData.isDemoMode) && (
           <span
             className="inline-flex items-center gap-1 rounded bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:text-amber-400 uppercase tracking-wider"
             data-testid={`demo-otp-badge-${orderId}`}
@@ -153,11 +153,11 @@ export function CustomerDeliveryOtpCard({ orderId, className }) {
       </div>
 
       {/* Demo Mode Notice */}
-      {otpData.demoMode && (
+      {(otpData.demoMode || otpData.isDemoMode) && (
         <div className="rounded-tile bg-surface border border-line/70 p-2.5 text-[11px] text-ink-muted flex items-start gap-2">
           <AlertTriangle className="size-3.5 text-warning shrink-0 mt-0.5" aria-hidden="true" />
           <p>
-            <strong>Simulated Customer Interface:</strong> In production, this OTP is dispatched via an authenticated delivery channel (SMS / Email / Push Notification). For this demo, it is shown securely to the authenticated order owner.
+            <strong>Simulated Customer Interface:</strong> In demo mode, this OTP challenge is simulated for testing. In production, this OTP is generated cryptographically and shown securely in-app exclusively to the authenticated order owner.
           </p>
         </div>
       )}
@@ -225,8 +225,8 @@ export function CustomerDeliveryOtpCard({ orderId, className }) {
             )}
           </div>
         </div>
-      ) : (
-        /* Production Out-of-Band Delivery Display */
+      ) : otpData.deliveryChannel === 'SMS' ? (
+        /* Legacy / Out-of-Band SMS Channel Display if delivery channel is SMS */
         <div className="space-y-2 text-center py-2" data-testid={`customer-otp-production-${orderId}`}>
           <div className="rounded-tile bg-surface border border-line p-3 space-y-1.5 text-center">
             {otpData.deliveryChannelConfigured ? (
@@ -256,6 +256,37 @@ export function CustomerDeliveryOtpCard({ orderId, className }) {
                 </p>
               </>
             )}
+          </div>
+
+          <div className="flex items-center justify-center gap-1.5 text-xs text-ink-subtle pt-1">
+            <Clock className="size-3.5 text-ink-muted" aria-hidden="true" />
+            <span>
+              Expires in{' '}
+              <strong className="font-mono text-ink">
+                {formatTimeRemaining(remainingMs)}
+              </strong>
+            </span>
+            {otpData.attemptsRemaining != null && otpData.attemptsRemaining < 3 && (
+              <span className="text-[11px] text-danger font-medium ml-1">
+                ({otpData.attemptsRemaining} {otpData.attemptsRemaining === 1 ? 'attempt' : 'attempts'} remaining)
+              </span>
+            )}
+          </div>
+        </div>
+      ) : (
+        /* In-App Delivery OTP Pending/Active Display */
+        <div className="space-y-2 text-center py-2" data-testid={`customer-otp-production-${orderId}`}>
+          <div className="rounded-tile bg-surface border border-line p-3 space-y-1.5 text-center">
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded bg-brand/10 text-brand text-xs font-semibold">
+              <KeyRound className="size-3.5" aria-hidden="true" />
+              <span>In-App Delivery OTP Active</span>
+            </div>
+            <p className="text-xs text-ink">
+              Your delivery verification challenge is active. Click below to generate or refresh your 6-digit code.
+            </p>
+            <p className="text-[11px] text-ink-subtle">
+              Provide this code to your runner when they arrive to complete handover.
+            </p>
           </div>
 
           <div className="flex items-center justify-center gap-1.5 text-xs text-ink-subtle pt-1">

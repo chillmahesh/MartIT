@@ -457,6 +457,38 @@ describe('Milestone 3: Secure Customer Delivery OTP Verification', () => {
       expect(html).not.toContain('DEMO MODE')
     })
 
+    it('renders clear in-app OTP digits panel in production mode for authenticated customer without demo badge', () => {
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false } },
+      })
+
+      queryClient.setQueryData(['delivery-otp', 'ord_prod_in_app'], {
+        orderId: 'ord_prod_in_app',
+        demoMode: false,
+        otp: '849201',
+        expiresAt: Date.now() + 5 * 60 * 1000,
+        isExpired: false,
+        isLocked: false,
+        attemptsRemaining: 3,
+        deliveryChannel: 'IN_APP',
+        deliveryChannelConfigured: true,
+      })
+
+      const html = renderToString(
+        <QueryClientProvider client={queryClient}>
+          <CustomerDeliveryOtpCard orderId="ord_prod_in_app" />
+        </QueryClientProvider>,
+      )
+
+      expect(html).toContain('8')
+      expect(html).toContain('4')
+      expect(html).toContain('9')
+      expect(html).toContain('2')
+      expect(html).toContain('0')
+      expect(html).toContain('1')
+      expect(html).not.toContain('DEMO MODE')
+      expect(html).not.toContain('SMS Provider Pending Setup')
+    })
 
     it('renders delivered confirmation and verified badge in DeliveryCard when DELIVERED', () => {
       const deliveredOrder = {

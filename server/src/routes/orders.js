@@ -473,9 +473,49 @@ async function handleRunnerAssignedOrders(req, res, next) {
 }
 
 /**
+ * Ephemeral in-memory store for active delivery OTP challenges.
+ * Plaintext OTPs are kept strictly in server process memory (RAM).
+ * Plaintext OTPs are NEVER persisted to database tables, logs, analytics, or browser storage.
+ */
+class ActiveDeliveryOtpStore {
+  constructor() {
+    this.cache = new Map()
+  }
+
+  set(orderId, { otp, customerId, expiresAt }) {
+    this.cache.set(orderId, {
+      otp: String(otp),
+      customerId: String(customerId),
+      expiresAt: Number(expiresAt),
+      createdAt: Date.now(),
+    })
+  }
+
+  get(orderId) {
+    const item = this.cache.get(orderId)
+    if (!item) return null
+    if (Date.now() > item.expiresAt) {
+      this.cache.delete(orderId)
+      return null
+    }
+    return item
+  }
+
+  delete(orderId) {
+    this.cache.delete(orderId)
+  }
+
+  clear() {
+    this.cache.clear()
+  }
+}
+
+export const activeOtpStore = new ActiveDeliveryOtpStore()
+
+/**
  * Runner Order State Transition endpoint.
  * Enforces permitted state transitions, runner assignment, and strict OTP requirement for DELIVERED.
- * When transitioning to ON_THE_WAY, atomically initializes the OTP challenge hash and 5-minute expiry.
+ * When transitioning to ON_THE_WAY, atomically initializes the OTP challenge in PostgreSQL via stored procedure.
  */
 async function handleRunnerTransitionOrder(req, res, next) {
   try {
@@ -505,6 +545,91 @@ async function handleRunnerTransitionOrder(req, res, next) {
     }
 
     const supabase = getSupabaseAdmin()
+
+    if (nextStatus === 'ON_THE_WAY') {
+      // Initialize cryptographically secure OTP challenge for customer handover
+      const otp = String(crypto.randomInt(100000, 1000000))
+      const otpHash = crypto.createHash('sha256').update(otp).digest('hex')
+
+      if (typeof supabase.rpc !== 'function') {
+        throw ApiError.internal('Database transaction engine unavailable.', 'RPC_UNAVAILABLE')
+      }
+
+      // Concurrency-safe atomic transition & challenge initialization in PostgreSQL
+      const { data, error } = await supabase.rpc('transition_order_to_on_the_way', {
+        p_order_id: orderId,
+        p_runner_id: req.user.id,
+        p_otp_hash: otpHash,
+        p_expiry_seconds: 300,
+      })
+
+      if (error) {
+        const msg = error.message || ''
+        if (msg.includes('ORDER_NOT_FOUND')) {
+          throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+        }
+        if (msg.includes('FORBIDDEN_RUNNER_NOT_APPROVED')) {
+          throw ApiError.forbidden('Runner application is pending approval or suspended.')
+        }
+        if (msg.includes('ORDER_NOT_ASSIGNED_TO_RUNNER') || msg.includes('FORBIDDEN_CALLER_NOT_RUNNER')) {
+          throw ApiError.forbidden('You are not assigned to this delivery.')
+        }
+        if (msg.includes('OTP_LOCKED')) {
+          throw ApiError.tooManyRequests('Order verification is locked due to multiple failed attempts.', 'OTP_LOCKED')
+        }
+        if (msg.includes('INVALID_ORDER_STATE') || msg.includes('INVALID_TRANSITION')) {
+          throw ApiError.badRequest('Invalid status transition.', 'INVALID_ORDER_STATE')
+        }
+        throw ApiError.internal(`Failed to transition order: ${msg}`)
+      }
+
+      const resRow = Array.isArray(data) ? data[0] : data
+      if (!resRow || (resRow.success === false)) {
+        const code = resRow?.result_code || 'TRANSITION_FAILED'
+        if (code === 'ORDER_NOT_FOUND') {
+          throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+        }
+        if (code === 'FORBIDDEN_RUNNER_NOT_APPROVED') {
+          throw ApiError.forbidden('Runner application is pending approval or suspended.')
+        }
+        if (code === 'ORDER_NOT_ASSIGNED_TO_RUNNER' || code === 'FORBIDDEN_CALLER_NOT_RUNNER') {
+          throw ApiError.forbidden('You are not assigned to this delivery.')
+        }
+        if (code === 'OTP_LOCKED') {
+          throw ApiError.tooManyRequests('Order verification is locked due to multiple failed attempts.', 'OTP_LOCKED')
+        }
+        if (code === 'INVALID_ORDER_STATE' || code === 'INVALID_TRANSITION') {
+          throw ApiError.badRequest('Invalid status transition.', 'INVALID_ORDER_STATE')
+        }
+        throw ApiError.internal(`Order transition failed: ${code}`)
+      }
+
+      // If new challenge was initialized, store plaintext OTP strictly in ephemeral RAM for customer retrieval
+      if (resRow.challenge_initialized) {
+        const { data: customerOrder } = await supabase
+          .from('orders')
+          .select('customer_id')
+          .eq('id', orderId)
+          .maybeSingle()
+
+        if (customerOrder?.customer_id) {
+          activeOtpStore.set(orderId, {
+            otp,
+            customerId: customerOrder.customer_id,
+            expiresAt: resRow.expires_at ? new Date(resRow.expires_at).getTime() : Date.now() + 300000,
+          })
+        }
+      }
+
+      // Response to runner strictly excludes plaintext OTP or internal hash
+      return res.status(200).json({
+        orderId,
+        status: 'ON_THE_WAY',
+        message: 'Order status successfully updated to ON_THE_WAY.',
+      })
+    }
+
+    // Other transitions (e.g. PREPARING, PICKED_UP)
     const { data: order, error } = await supabase
       .from('orders')
       .select('*')
@@ -523,20 +648,6 @@ async function handleRunnerTransitionOrder(req, res, next) {
     const updatePayload = {
       status: nextStatus,
       updated_at: now,
-    }
-
-    if (nextStatus === 'ON_THE_WAY') {
-      // Initialize cryptographically secure OTP challenge for customer handover
-      const otp = String(crypto.randomInt(100000, 1000000))
-      const otpHash = crypto.createHash('sha256').update(otp).digest('hex')
-      const expiresAt = new Date(Date.now() + 300000).toISOString()
-
-      updatePayload.handover_otp_hash = otpHash
-      updatePayload.handover_otp_expires_at = expiresAt
-      updatePayload.handover_attempts_count = 0
-      updatePayload.handover_locked_until = null
-
-      console.info(`[HandoverOTP] Order ${orderId} transitioned to ON_THE_WAY. Delivery OTP challenge initialized. Dispatch pending SMS provider setup.`)
     }
 
     const { error: updateErr } = await supabase
@@ -623,6 +734,35 @@ async function handleVerifyDeliveryOtp(req, res, next) {
     }
 
     const verifiedRow = Array.isArray(data) ? data[0] : data
+    if (!verifiedRow || (verifiedRow.success === false)) {
+      const code = verifiedRow?.result_code || 'TRANSACTION_FAILED'
+      if (code === 'ORDER_NOT_FOUND') {
+        throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+      }
+      if (code === 'ORDER_NOT_ASSIGNED_TO_RUNNER' || code === 'FORBIDDEN_CALLER_NOT_RUNNER') {
+        throw ApiError.forbidden('You are not assigned to this delivery.', 'FORBIDDEN')
+      }
+      if (code === 'OTP_ALREADY_USED') {
+        throw ApiError.conflict('This delivery has already been verified and completed.', 'OTP_ALREADY_USED')
+      }
+      if (code === 'INVALID_ORDER_STATE') {
+        throw ApiError.badRequest('Delivery verification is only permitted when order is out for delivery.', 'INVALID_ORDER_STATE')
+      }
+      if (code === 'OTP_LOCKED') {
+        throw ApiError.tooManyRequests('Maximum verification attempts exceeded. Verification locked for 5 minutes.', 'OTP_LOCKED')
+      }
+      if (code === 'OTP_EXPIRED') {
+        throw ApiError.badRequest('Delivery verification challenge has expired. Ask customer to refresh code.', 'OTP_EXPIRED')
+      }
+      if (code === 'OTP_INVALID') {
+        throw ApiError.badRequest('Invalid OTP entered.', 'OTP_INVALID')
+      }
+      throw ApiError.internal(`Delivery verification transaction failed: ${code}`, 'TRANSACTION_FAILED')
+    }
+
+    // Purge completed challenge from ephemeral memory
+    activeOtpStore.delete(orderId)
+
     const verifiedTimestamp = verifiedRow?.verified_at || new Date().toISOString()
 
     res.status(200).json({
@@ -639,7 +779,8 @@ async function handleVerifyDeliveryOtp(req, res, next) {
 
 /**
  * Customer Delivery OTP Challenge retrieval endpoint.
- * Never exposes the plaintext OTP or hash; returns challenge metadata and delivery status.
+ * Plaintext OTP is returned EXCLUSIVELY to the authenticated customer owner while challenge is active.
+ * Never exposed to runners, admin/staff elevated roles, general order endpoints, or logs.
  */
 async function handleGetDeliveryOtp(req, res, next) {
   try {
@@ -651,7 +792,7 @@ async function handleGetDeliveryOtp(req, res, next) {
     const supabase = getSupabaseAdmin()
     const { data: order, error } = await supabase
       .from('orders')
-      .select('id, customer_id, status, handover_attempts_count, handover_locked_until, handover_otp_expires_at, handover_verified_at')
+      .select('id, customer_id, status, handover_otp_hash, handover_attempts_count, handover_locked_until, handover_otp_expires_at, handover_verified_at')
       .eq('id', orderId)
       .maybeSingle()
 
@@ -659,14 +800,9 @@ async function handleGetDeliveryOtp(req, res, next) {
       throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
     }
 
-    // Customer ownership & staff check
-    const isOwner = order.customer_id === req.user.id
-    const hasStaffAccess =
-      req.user.roles.includes(ROLES.ADMIN) ||
-      req.user.roles.includes(ROLES.SUPER_ADMIN)
-
-    if (!isOwner && !hasStaffAccess) {
-      throw ApiError.forbidden('You do not have permission to view delivery challenge for this order.', 'FORBIDDEN')
+    // Strict customer ownership check: elevated admin/staff roles CANNOT bypass ownership
+    if (order.customer_id !== req.user.id) {
+      throw ApiError.forbidden('You do not have permission to view delivery OTP for this order.', 'FORBIDDEN')
     }
 
     if (order.status !== 'ON_THE_WAY' && order.status !== 'OUT_FOR_DELIVERY') {
@@ -681,17 +817,28 @@ async function handleGetDeliveryOtp(req, res, next) {
     const isExpired = Boolean(order.handover_otp_expires_at && now > new Date(order.handover_otp_expires_at).getTime())
     const attemptsRemaining = Math.max(0, 3 - (order.handover_attempts_count || 0))
 
+    let plaintextOtp = null
+    if (!isLocked && !isExpired && order.handover_otp_hash) {
+      const activeEntry = activeOtpStore.get(order.id)
+      if (activeEntry && activeEntry.customerId === req.user.id) {
+        plaintextOtp = activeEntry.otp
+      }
+    }
+
     res.status(200).json({
       orderId: order.id,
       status: order.status,
+      otp: plaintextOtp,
       expiresAt: order.handover_otp_expires_at ? new Date(order.handover_otp_expires_at).getTime() : null,
       isExpired,
       isLocked,
       lockedUntil: order.handover_locked_until ? new Date(order.handover_locked_until).getTime() : null,
       attemptsRemaining,
-      deliveryChannel: 'SMS',
-      deliveryChannelConfigured: false,
-      message: 'Production OTP verification active. Automated SMS dispatch is pending messaging provider setup.',
+      deliveryChannel: 'IN_APP',
+      deliveryChannelConfigured: true,
+      message: plaintextOtp
+        ? 'Delivery verification OTP active. Share this code with your runner upon delivery.'
+        : 'Active delivery challenge is in progress. Click refresh if you need a new code.',
     })
   } catch (err) {
     next(err)
@@ -701,6 +848,7 @@ async function handleGetDeliveryOtp(req, res, next) {
 /**
  * Customer Delivery OTP Refresh endpoint.
  * Generates fresh cryptographically secure random 6-digit OTP, updates database hash, and enforces rate-limiting.
+ * Discloses the new plaintext OTP strictly to the authenticated order owner.
  */
 async function handleRefreshDeliveryOtp(req, res, next) {
   try {
@@ -709,11 +857,28 @@ async function handleRefreshDeliveryOtp(req, res, next) {
       throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
     }
 
+    const supabase = getSupabaseAdmin()
+
+    // 1. Fetch order for strict ownership check before calling reissue
+    const { data: order, error: queryErr } = await supabase
+      .from('orders')
+      .select('id, customer_id, status')
+      .eq('id', orderId)
+      .maybeSingle()
+
+    if (queryErr || !order) {
+      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+    }
+
+    // Strict customer ownership check: elevated admin/staff roles CANNOT bypass ownership
+    if (order.customer_id !== req.user.id) {
+      throw ApiError.forbidden('You do not have permission to refresh delivery OTP for this order.', 'FORBIDDEN')
+    }
+
     // Cryptographically secure 6-digit numeric OTP generation
     const newOtp = String(crypto.randomInt(100000, 1000000))
     const newOtpHash = crypto.createHash('sha256').update(newOtp).digest('hex')
 
-    const supabase = getSupabaseAdmin()
     if (typeof supabase.rpc !== 'function') {
       throw ApiError.internal('Database transaction engine unavailable.', 'RPC_UNAVAILABLE')
     }
@@ -746,20 +911,49 @@ async function handleRefreshDeliveryOtp(req, res, next) {
     }
 
     const reissuedRow = Array.isArray(data) ? data[0] : data
+    if (!reissuedRow || (reissuedRow.success === false)) {
+      const code = reissuedRow?.result_code || 'TRANSACTION_FAILED'
+      if (code === 'ORDER_NOT_FOUND') {
+        throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+      }
+      if (code === 'FORBIDDEN_CALLER_NOT_ORDER_OWNER' || code === 'FORBIDDEN_ORDER_ACCESS') {
+        throw ApiError.forbidden('You do not have permission to refresh delivery OTP for this order.', 'FORBIDDEN')
+      }
+      if (code === 'INVALID_ORDER_STATE') {
+        throw ApiError.badRequest('Cannot refresh OTP for order that is not out for delivery.', 'INVALID_ORDER_STATE')
+      }
+      if (code === 'OTP_LOCKED') {
+        throw ApiError.tooManyRequests('Order verification is locked due to too many failed attempts.', 'OTP_LOCKED')
+      }
+      if (code === 'RATE_LIMITED') {
+        throw ApiError.tooManyRequests('Please wait at least 15 seconds before requesting a new delivery OTP.', 'RATE_LIMITED')
+      }
+      throw ApiError.internal(`Failed to reissue delivery OTP: ${code}`, 'TRANSACTION_FAILED')
+    }
+
+    const expiresAtMs = reissuedRow?.expires_at ? new Date(reissuedRow.expires_at).getTime() : Date.now() + 300000
+
+    // Store new OTP strictly in ephemeral memory for the authenticated customer owner
+    activeOtpStore.set(orderId, {
+      otp: newOtp,
+      customerId: req.user.id,
+      expiresAt: expiresAtMs,
+    })
 
     // Safe server audit note: never log the plaintext OTP value
-    console.info(`[HandoverOTP] Delivery OTP challenge reissued for order ${orderId}. Production delivery channel dispatch pending provider setup.`)
+    console.info(`[HandoverOTP] Delivery OTP challenge reissued for order ${orderId}. In-app disclosure active.`)
 
     res.status(200).json({
       orderId,
       status: reissuedRow?.status || 'ON_THE_WAY',
-      expiresAt: reissuedRow?.expires_at ? new Date(reissuedRow.expires_at).getTime() : Date.now() + 300000,
+      otp: newOtp,
+      expiresAt: expiresAtMs,
       isExpired: false,
       isLocked: false,
       attemptsRemaining: reissuedRow?.attempts_remaining ?? 3,
-      deliveryChannel: 'SMS',
-      deliveryChannelConfigured: false,
-      message: 'Delivery OTP challenge reissued. Automated SMS dispatch is pending messaging provider setup.',
+      deliveryChannel: 'IN_APP',
+      deliveryChannelConfigured: true,
+      message: 'New delivery OTP generated. Share this code with your runner upon delivery.',
     })
   } catch (err) {
     next(err)

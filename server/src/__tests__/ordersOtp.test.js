@@ -4,6 +4,7 @@ import request from 'supertest'
 import { createApp } from '../app.js'
 import { createMockSupabaseClient } from './testHelpers.js'
 import { ROLES } from '../utils/permissions.js'
+import { activeOtpStore } from '../routes/orders.js'
 
 describe('Production Delivery OTP Backend Verification', () => {
   let app
@@ -35,6 +36,13 @@ describe('Production Delivery OTP Backend Verification', () => {
   }
 
   beforeEach(() => {
+    activeOtpStore.clear()
+    activeOtpStore.set('ord_transit_1', {
+      otp: validOtp,
+      customerId: 'usr_alice',
+      expiresAt: Date.now() + 300000,
+    })
+
     const mock = createMockSupabaseClient({
       users: [
         { id: 'usr_alice', token: 'tok_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
@@ -87,6 +95,9 @@ describe('Production Delivery OTP Backend Verification', () => {
       expect(dbOrder.delivered_at).toBeDefined()
       expect(dbOrder.handover_otp_hash).toBeNull()
       expect(dbOrder.handover_attempts_count).toBe(0)
+
+      // In-memory challenge is purged on verification
+      expect(activeOtpStore.get('ord_transit_1')).toBeNull()
     })
 
     it('approved assigned runner verifies correct OTP via frontend-mapped endpoint', async () => {
@@ -105,7 +116,7 @@ describe('Production Delivery OTP Backend Verification', () => {
 
   // 2. Failed Verification & Attempt Tracking
   describe('Failed OTP Verification & Lockout', () => {
-    it('rejects incorrect OTP with 400 OTP_INVALID and increments failed attempts', async () => {
+    it('rejects incorrect OTP with 400 OTP_INVALID and persists incremented failed attempts', async () => {
       const res = await request(app)
         .post('/api/v1/runner/orders/ord_transit_1/verify-handover')
         .set('Authorization', 'Bearer tok_runner_approved')
@@ -213,7 +224,7 @@ describe('Production Delivery OTP Backend Verification', () => {
     })
   })
 
-  // 5. Authorization & Permissions
+  // 5. Strict Authorization Enforcement
   describe('Strict Authorization Enforcement', () => {
     it('unauthenticated caller cannot verify OTP (401)', async () => {
       const res = await request(app)
@@ -250,7 +261,7 @@ describe('Production Delivery OTP Backend Verification', () => {
       expect(res.status).toBe(403)
     })
 
-    it('unauthorized user cannot view another customer delivery OTP challenge (403)', async () => {
+    it('unauthorized customer cannot view another customer delivery OTP challenge (403)', async () => {
       const res = await request(app)
         .get('/api/v1/orders/ord_transit_1/delivery-otp')
         .set('Authorization', 'Bearer tok_bob')
@@ -258,10 +269,28 @@ describe('Production Delivery OTP Backend Verification', () => {
       expect(res.status).toBe(403)
       expect(res.body.code).toBe('FORBIDDEN')
     })
+
+    it('runner cannot view customer delivery OTP from customer challenge endpoint (403)', async () => {
+      const res = await request(app)
+        .get('/api/v1/orders/ord_transit_1/delivery-otp')
+        .set('Authorization', 'Bearer tok_runner_approved')
+
+      expect(res.status).toBe(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+    })
+
+    it('admin staff cannot view customer delivery OTP merely because of elevated admin role (403)', async () => {
+      const res = await request(app)
+        .get('/api/v1/orders/ord_transit_1/delivery-otp')
+        .set('Authorization', 'Bearer tok_admin')
+
+      expect(res.status).toBe(403)
+      expect(res.body.code).toBe('FORBIDDEN')
+    })
   })
 
-  // 6. Order State Guards
-  describe('Order State Machine Guards', () => {
+  // 6. Order State Guards & Transition Atomicity
+  describe('Order State Machine Guards & Transition Atomicity', () => {
     it('rejects OTP verification if order is not in ON_THE_WAY state (400)', async () => {
       const dbOrder = mockState.orders.find((o) => o.id === 'ord_transit_1')
       dbOrder.status = 'CONFIRMED'
@@ -289,7 +318,7 @@ describe('Production Delivery OTP Backend Verification', () => {
       expect(dbOrder.status).toBe('ON_THE_WAY')
     })
 
-    it('runner transition to ON_THE_WAY initializes fresh OTP challenge and 5-minute expiry', async () => {
+    it('runner transition to ON_THE_WAY initializes fresh OTP challenge atomically and exposes plaintext to customer', async () => {
       mockState.orders.push({
         id: 'ord_picked_up_2',
         customer_id: 'usr_alice',
@@ -308,18 +337,81 @@ describe('Production Delivery OTP Backend Verification', () => {
 
       expect(res.status).toBe(200)
       expect(res.body.status).toBe('ON_THE_WAY')
+      // Runner never receives plaintext OTP or hash
+      expect(res.body.otp).toBeUndefined()
+      expect(res.body.handover_otp_hash).toBeUndefined()
 
       const dbOrder = mockState.orders.find((o) => o.id === 'ord_picked_up_2')
       expect(dbOrder.status).toBe('ON_THE_WAY')
       expect(dbOrder.handover_otp_hash).toBeDefined()
       expect(dbOrder.handover_otp_hash.length).toBe(64)
       expect(dbOrder.handover_otp_expires_at).toBeDefined()
+
+      // Customer Alice retrieves the plaintext OTP and its hash matches the database
+      const customerRes = await request(app)
+        .get('/api/v1/orders/ord_picked_up_2/delivery-otp')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(customerRes.status).toBe(200)
+      expect(customerRes.body.otp).toMatch(/^\d{6}$/)
+      const expectedHash = crypto.createHash('sha256').update(customerRes.body.otp).digest('hex')
+      expect(dbOrder.handover_otp_hash).toBe(expectedHash)
+    })
+
+    it('repeated transition to ON_THE_WAY does not replace an active unexpired code or reset attempts/lockout', async () => {
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_transit_1')
+      const initialHash = dbOrder.handover_otp_hash
+      const initialExpires = dbOrder.handover_otp_expires_at
+      dbOrder.handover_attempts_count = 1
+
+      const res = await request(app)
+        .post('/runner/order/transition')
+        .set('Authorization', 'Bearer tok_runner_approved')
+        .send({ orderId: 'ord_transit_1', nextStatus: 'ON_THE_WAY' })
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('ON_THE_WAY')
+
+      // Assert hash and attempts count were NOT overwritten or reset
+      expect(dbOrder.handover_otp_hash).toBe(initialHash)
+      expect(dbOrder.handover_otp_expires_at).toBe(initialExpires)
+      expect(dbOrder.handover_attempts_count).toBe(1)
+
+      // Plaintext OTP remains the same validOtp for customer
+      const customerRes = await request(app)
+        .get('/api/v1/orders/ord_transit_1/delivery-otp')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(customerRes.status).toBe(200)
+      expect(customerRes.body.otp).toBe(validOtp)
+    })
+
+    it('failed transition attempts do not create an OTP challenge', async () => {
+      mockState.orders.push({
+        id: 'ord_cancelled_test',
+        customer_id: 'usr_alice',
+        runner_id: 'usr_runner_approved',
+        status: 'CANCELLED',
+        handover_otp_hash: null,
+      })
+
+      const res = await request(app)
+        .post('/runner/order/transition')
+        .set('Authorization', 'Bearer tok_runner_approved')
+        .send({ orderId: 'ord_cancelled_test', nextStatus: 'ON_THE_WAY' })
+
+      expect(res.status).toBe(400)
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_cancelled_test')
+      expect(dbOrder.status).toBe('CANCELLED')
+      expect(dbOrder.handover_otp_hash).toBeNull()
+      expect(activeOtpStore.get('ord_cancelled_test')).toBeNull()
     })
   })
 
-  // 7. Customer Delivery OTP Challenge Retrieval
-  describe('Customer Delivery OTP Retrieval', () => {
-    it('allows authenticated owner (Alice) to retrieve challenge metadata without exposing plaintext OTP or hash', async () => {
+  // 7. Customer Delivery OTP Plaintext Retrieval
+  describe('Customer In-App Delivery OTP Plaintext Retrieval', () => {
+    it('allows authenticated owner (Alice) to fetch the plaintext OTP while challenge is active', async () => {
       const res = await request(app)
         .get('/api/v1/orders/ord_transit_1/delivery-otp')
         .set('Authorization', 'Bearer tok_alice')
@@ -327,13 +419,13 @@ describe('Production Delivery OTP Backend Verification', () => {
       expect(res.status).toBe(200)
       expect(res.body.orderId).toBe('ord_transit_1')
       expect(res.body.status).toBe('ON_THE_WAY')
+      expect(res.body.otp).toBe('724915')
       expect(res.body.isExpired).toBe(false)
       expect(res.body.isLocked).toBe(false)
       expect(res.body.attemptsRemaining).toBe(3)
-      expect(res.body.deliveryChannel).toBe('SMS')
+      expect(res.body.deliveryChannel).toBe('IN_APP')
 
-      // Plaintext OTP and internal hash are NEVER exposed
-      expect(res.body.otp).toBeUndefined()
+      // Internal database hash is NEVER exposed
       expect(res.body.handover_otp_hash).toBeUndefined()
       expect(res.body.handoverOtpHash).toBeUndefined()
     })
@@ -346,18 +438,47 @@ describe('Production Delivery OTP Backend Verification', () => {
 
       expect(res.status).toBe(200)
       expect(res.body.orderId).toBe('ord_transit_1')
+      expect(res.body.otp).toBe('724915')
+    })
+
+    it('customer cannot fetch code after delivery is already verified (consumption guard)', async () => {
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_transit_1')
+      dbOrder.status = 'DELIVERED'
+      dbOrder.handover_verified_at = new Date().toISOString()
+      activeOtpStore.delete('ord_transit_1')
+
+      const res = await request(app)
+        .get('/api/v1/orders/ord_transit_1/delivery-otp')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(400)
+      expect(res.body.code).toBe('INVALID_ORDER_STATE')
+    })
+
+    it('customer receives otp: null and isExpired: true when challenge has expired', async () => {
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_transit_1')
+      dbOrder.handover_otp_expires_at = new Date(Date.now() - 1000).toISOString()
+
+      const res = await request(app)
+        .get('/api/v1/orders/ord_transit_1/delivery-otp')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.otp).toBeNull()
+      expect(res.body.isExpired).toBe(true)
     })
   })
 
-  // 8. Customer OTP Refresh & Rate Limiting
-  describe('Customer OTP Refresh & Rate Limiting', () => {
-    it('allows owner to refresh delivery challenge and sets fresh expiry', async () => {
+  // 8. Customer OTP Refresh & Matching Stored Hash
+  describe('Customer OTP Refresh & Matching Stored Hash', () => {
+    it('allows owner to refresh challenge, returns new plaintext OTP that matches stored hash', async () => {
       const res = await request(app)
         .post('/api/v1/orders/ord_transit_1/refresh-otp')
         .set('Authorization', 'Bearer tok_alice')
 
       expect(res.status).toBe(200)
       expect(res.body.orderId).toBe('ord_transit_1')
+      expect(res.body.otp).toMatch(/^\d{6}$/)
       expect(res.body.expiresAt).toBeDefined()
       expect(res.body.attemptsRemaining).toBe(3)
 
@@ -365,8 +486,19 @@ describe('Production Delivery OTP Backend Verification', () => {
       const dbOrder = mockState.orders.find((o) => o.id === 'ord_transit_1')
       expect(dbOrder.handover_otp_last_resend_at).toBeDefined()
       expect(dbOrder.handover_otp_hash).toBeDefined()
-      // Plaintext OTP is NOT in the response
-      expect(res.body.otp).toBeUndefined()
+
+      // Exact match: the returned plaintext OTP hashes to the stored DB hash
+      const computedHash = crypto.createHash('sha256').update(res.body.otp).digest('hex')
+      expect(dbOrder.handover_otp_hash).toBe(computedHash)
+
+      // Runner can now verify using this exact new code
+      const verifyRes = await request(app)
+        .post('/api/v1/runner/orders/ord_transit_1/verify-handover')
+        .set('Authorization', 'Bearer tok_runner_approved')
+        .send({ otp: res.body.otp })
+
+      expect(verifyRes.status).toBe(200)
+      expect(verifyRes.body.status).toBe('DELIVERED')
     })
 
     it('enforces 15-second cooldown on consecutive refresh requests with 429 RATE_LIMITED', async () => {
@@ -436,6 +568,16 @@ describe('Production Delivery OTP Backend Verification', () => {
       expect(JSON.stringify(res.body)).not.toContain(validOtpHash)
       expect(JSON.stringify(res.body)).not.toContain(validOtp)
     })
+
+    it('runner assigned orders endpoint does not leak handover_otp_hash or plaintext OTP', async () => {
+      const res = await request(app)
+        .get('/api/v1/runner/orders')
+        .set('Authorization', 'Bearer tok_runner_approved')
+
+      expect(res.status).toBe(200)
+      expect(JSON.stringify(res.body)).not.toContain(validOtpHash)
+      expect(JSON.stringify(res.body)).not.toContain(validOtp)
+    })
   })
 
   // 10. Concurrency-Safe Handover
@@ -463,7 +605,7 @@ describe('Production Delivery OTP Backend Verification', () => {
 
   // 11. Missing / Uninitialized Challenge Handling
   describe('Missing / Uninitialized Challenge Handling', () => {
-    it('safely rejects verification when order is in ON_THE_WAY but handover_otp_hash is null', async () => {
+    it('safely rejects verification when order is in ON_THE_WAY but handover_otp_hash is null and increments attempts', async () => {
       mockState.orders.push({
         id: 'ord_missing_hash',
         customer_id: 'usr_alice',

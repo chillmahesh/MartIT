@@ -940,6 +940,7 @@ export function createMockServer({ routingProvider = null } = {}) {
         lockedUntil: order.handoverLockedUntil || null,
         isExpired,
         isDemoMode: true,
+        demoMode: true,
         attemptsRemaining: Math.max(0, 3 - (order.handoverAttemptsCount || 0)),
       }
     },
@@ -1006,6 +1007,7 @@ export function createMockServer({ routingProvider = null } = {}) {
         otp: newOtp,
         expiresAt: order.handoverOtpExpiresAt,
         isDemoMode: true,
+        demoMode: true,
       }
     },
 
