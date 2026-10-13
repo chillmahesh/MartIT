@@ -8,6 +8,7 @@ import { calculateOrderTotals } from '@/utils/orderTotals'
 import { ORDER_STATUS, transitionOrder } from '@/utils/orderMachine'
 import { PAYMENT_STATUS, PAYMENT_SOURCE, transitionPayment } from '@/utils/paymentMachine'
 import { SAMPLE_CATEGORIES } from '@/mocks/categories'
+import { SAMPLE_ORDERS } from '@/mocks/orders'
 import { createDb } from './db'
 import { ApiError } from './errors'
 import { getDistanceKm } from './routing'
@@ -510,6 +511,30 @@ export function createMockServer({ routingProvider = null } = {}) {
 
       const { ledger: _ledger, ...customerView } = order
       return customerView
+    },
+
+    // ---- runner orders ------------------------------------------------------
+    /**
+     * Lists assigned and available delivery orders for an authenticated runner.
+     * Requires the runner.deliver permission (approved runner).
+     */
+    'runner.orders.assigned': (_payload, { token }) => {
+      const user = requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      const source = db.orders.length > 0 ? db.orders : SAMPLE_ORDERS
+      return source.filter(
+        (o) =>
+          o.runnerId === user.id ||
+          !o.runnerId ||
+          o.status === ORDER_STATUS.CONFIRMED ||
+          o.status === ORDER_STATUS.PREPARING ||
+          o.status === ORDER_STATUS.PICKED_UP ||
+          o.status === ORDER_STATUS.ON_THE_WAY ||
+          o.status === ORDER_STATUS.DELIVERED,
+      )
+    },
+    'runner.orders': (_payload, { token }) => {
+      requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      return db.orders.length > 0 ? db.orders : SAMPLE_ORDERS
     },
   }
 

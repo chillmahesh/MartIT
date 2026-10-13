@@ -25,10 +25,11 @@ function persistedSessions() {
 function persistedOrders() {
   try {
     const raw = safeStorage.get(ORDERS_KEY)
-    return raw ? JSON.parse(raw) : []
+    if (raw) return JSON.parse(raw)
   } catch {
-    return []
+    // fallback
   }
+  return []
 }
 
 /** In-memory tables standing in for the backend database with session & order persistence. */
