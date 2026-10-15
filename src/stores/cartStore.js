@@ -15,6 +15,13 @@ export const useCartStore = create(
     (set, get) => ({
       storeId: null, // which store the current items belong to
       lines: [],     // [{ productId, quantity }]
+      checkoutDetails: {
+        fullName: '',
+        mobileNumber: '',
+        presetLocation: 'A Block',
+        customLocation: '',
+        deliveryInstructions: '',
+      },
 
       setQuantity(productId, quantity, storeId) {
         const productStoreId = storeId || SAMPLE_PRODUCTS.find((p) => p.id === productId)?.storeId || null
@@ -37,11 +44,35 @@ export const useCartStore = create(
         })
       },
 
+      setCheckoutDetails(details) {
+        set((s) => ({
+          checkoutDetails: {
+            ...s.checkoutDetails,
+            ...details,
+          },
+        }))
+      },
+
+      resetCheckoutDetails() {
+        set({
+          checkoutDetails: {
+            fullName: '',
+            mobileNumber: '',
+            presetLocation: 'A Block',
+            customLocation: '',
+            deliveryInstructions: '',
+          },
+        })
+      },
+
       clear: () => set({ storeId: null, lines: [] }),
     }),
     {
       name: 'martit-cart',
-      partialize: (s) => ({ storeId: s.storeId, lines: s.lines }),
+      partialize: (s) => ({
+        storeId: s.storeId,
+        lines: s.lines,
+      }),
       storage: createJSONStorage(() => zustandSafeStorage),
     },
   ),

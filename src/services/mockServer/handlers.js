@@ -5,9 +5,12 @@
  */
 import { calculateDeliveryFee, splitDeliveryFee, DELIVERY_FEE_MESSAGES } from '@/utils/deliveryFee'
 import { calculateOrderTotals } from '@/utils/orderTotals'
-import { ORDER_STATUS, transitionOrder } from '@/utils/orderMachine'
+import { ORDER_STATUS, canTransitionOrder, transitionOrder } from '@/utils/orderMachine'
 import { PAYMENT_STATUS, PAYMENT_SOURCE, transitionPayment } from '@/utils/paymentMachine'
 import { SAMPLE_CATEGORIES } from '@/mocks/categories'
+import { SAMPLE_ORDERS } from '@/mocks/orders'
+import { getOrderStoreIds, getOrderPickups } from '@/utils/runnerOrders'
+import { generateOtp, hashOtp, isValidOtpFormat } from '@/utils/cryptoOtp'
 import { createDb } from './db'
 import { ApiError } from './errors'
 import { getDistanceKm } from './routing'
@@ -17,6 +20,7 @@ const publicUser = (u) => ({
   id: u.id,
   name: u.name,
   email: u.email,
+  phone: u.phone ?? null,
   roles: [...u.roles],
   runnerStatus: u.runnerStatus ?? null,
   defaultLocationId: u.defaultLocationId ?? null,
@@ -148,7 +152,7 @@ export function createMockServer({ routingProvider = null } = {}) {
      * in the payload is ignored; everything is recomputed here and snapshotted so
      * later price/fee changes never alter this order.
      */
-    'orders.create': async ({ storeId, locationId, lines }, { token }) => {
+    'orders.create': async ({ storeId, locationId, lines, customerDetails }, { token }) => {
       const user = requirePermission(token, PERMISSIONS.SHOP)
       if (!Array.isArray(lines) || lines.length === 0) {
         throw new ApiError('EMPTY_CART', 'Your cart is empty.', 422)
@@ -187,6 +191,7 @@ export function createMockServer({ routingProvider = null } = {}) {
           storeId,
           locationId,
           lines: pricedLines,
+          customerDetails: customerDetails || null,
           pricing: {
             itemSubtotal: totals.itemSubtotal,
             deliveryFee: totals.deliveryFee,
@@ -255,7 +260,7 @@ export function createMockServer({ routingProvider = null } = {}) {
         order.payment?.windowExpiresAt && now >= order.payment.windowExpiresAt,
       )
 
-      const { ledger: _ledger, ...customerView } = order
+      const { ledger: _ledger, handoverOtpHash: _hash, _mockOtp: _otp, ...customerView } = order
       return {
         ...customerView,
         isWindowExpired,
@@ -508,6 +513,530 @@ export function createMockServer({ routingProvider = null } = {}) {
 
       const { ledger: _ledger, ...customerView } = order
       return customerView
+    },
+
+    // ---- runner orders & workflow -------------------------------------------
+    /**
+     * Lists assigned and available delivery orders for an authenticated runner.
+     * When isOnline is false, unassigned available requests are not offered.
+     */
+    'runner.orders.assigned': ({ isOnline = true } = {}, { token }) => {
+      const user = requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+      return db.orders
+        .filter((o) => {
+          if (o.runnerId === user.id) {
+            return (
+              o.status === ORDER_STATUS.PREPARING ||
+              o.status === ORDER_STATUS.PICKED_UP ||
+              o.status === ORDER_STATUS.ON_THE_WAY ||
+              o.status === ORDER_STATUS.DELIVERED
+            )
+          }
+          // Unassigned requests: offered only when runner is online
+          if (!o.runnerId && o.status === ORDER_STATUS.CONFIRMED) {
+            return Boolean(isOnline)
+          }
+          return false
+        })
+        .map((o) => {
+          const sanitized = structuredClone(o)
+          delete sanitized.handoverOtpHash
+          delete sanitized._mockOtp
+          return sanitized
+        })
+    },
+
+
+    /**
+     * Accepts a delivery request for the calling runner.
+     * Prevents duplicate acceptance, concurrent claims by two runners, and offline acceptance.
+     */
+    'runner.order.accept': ({ orderId, isOnline = true } = {}, { token }) => {
+      const user = requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      if (!orderId) {
+        throw new ApiError('INVALID_ORDER_ID', 'Order reference is required.', 400)
+      }
+      if (isOnline === false) {
+        throw new ApiError('RUNNER_OFFLINE', 'Runner must be online to accept delivery requests.', 400)
+      }
+
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+
+      const order = db.orders.find((o) => o.id === orderId)
+      if (!order) {
+        throw new ApiError('ORDER_NOT_FOUND', 'Order not found.', 404)
+      }
+
+      // Check if already accepted by this runner
+      if (order.runnerId === user.id) {
+        throw new ApiError(
+          'ORDER_ALREADY_ACCEPTED',
+          'You have already accepted this delivery request.',
+          400,
+          { orderId },
+        )
+      }
+
+      // Check if already assigned to someone else
+      if (order.runnerId && order.runnerId !== user.id) {
+        throw new ApiError(
+          'ORDER_ALREADY_ASSIGNED',
+          'This delivery request has already been assigned to another runner.',
+          409,
+          { orderId, assignedRunnerId: order.runnerId },
+        )
+      }
+
+      // Check if order is available for acceptance (must be CONFIRMED)
+      if (order.status !== ORDER_STATUS.CONFIRMED) {
+        throw new ApiError(
+          'UNAVAILABLE_REQUEST',
+          `Order is in ${order.status} status and is no longer available for acceptance.`,
+          409,
+          { orderId, status: order.status },
+        )
+      }
+
+      // Atomic transition to PREPARING
+      transitionOrder(order.status, ORDER_STATUS.PREPARING)
+      order.status = ORDER_STATUS.PREPARING
+      order.runnerId = user.id
+      order.assignedAt = new Date().toISOString()
+
+      // Multi-store initialization
+      const storeIds = getOrderStoreIds(order)
+      if (storeIds.length > 0 && (!order.pickups || order.pickups.length === 0)) {
+        order.pickups = storeIds.map((sid) => ({
+          storeId: sid,
+          status: 'PENDING',
+          pickedUpAt: null,
+        }))
+      }
+
+      db.saveOrders?.()
+      const { ledger: _ledger, ...customerView } = order
+      return customerView
+    },
+
+    /**
+     * Confirms pickup of an individual store in a (potentially multi-store) order.
+     * When all required stores are picked up, advances order status to PICKED_UP.
+     */
+    'runner.order.pickupStore': ({ orderId, storeId }, { token }) => {
+      const user = requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      if (!orderId || !storeId) {
+        throw new ApiError('INVALID_INPUT', 'Order ID and Store ID are required.', 400)
+      }
+
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+
+      const order = db.orders.find((o) => o.id === orderId)
+      if (!order) {
+        throw new ApiError('ORDER_NOT_FOUND', 'Order not found.', 404)
+      }
+      if (order.runnerId !== user.id) {
+        throw new ApiError('FORBIDDEN', 'You are not assigned to this delivery.', 403)
+      }
+      if (order.status !== ORDER_STATUS.PREPARING) {
+        throw new ApiError(
+          'INVALID_ORDER_STATE',
+          `Store pickups can only be confirmed while order is preparing (current: ${order.status}).`,
+          400,
+        )
+      }
+
+      const storeIds = getOrderStoreIds(order)
+      if (!storeIds.includes(storeId)) {
+        throw new ApiError('INVALID_STORE', 'Store is not part of this order.', 400)
+      }
+
+      if (!order.pickups || order.pickups.length === 0) {
+        order.pickups = storeIds.map((sid) => ({
+          storeId: sid,
+          status: 'PENDING',
+          pickedUpAt: null,
+        }))
+      }
+
+      const pickup = order.pickups.find((p) => p.storeId === storeId)
+      if (pickup) {
+        pickup.status = 'PICKED_UP'
+        pickup.pickedUpAt = new Date().toISOString()
+      }
+
+      // Check if all stores are now picked up
+      const allPickedUp = order.pickups.every((p) => p.status === 'PICKED_UP')
+      if (allPickedUp) {
+        transitionOrder(order.status, ORDER_STATUS.PICKED_UP)
+        order.status = ORDER_STATUS.PICKED_UP
+        order.pickedUpAt = new Date().toISOString()
+      }
+
+      db.saveOrders?.()
+      const { ledger: _ledger, ...customerView } = order
+      return customerView
+    },
+
+    /**
+     * Transitions an order forward along the state machine.
+     * Prevents skipping states, repeating states, incomplete multi-store pickups,
+     * and premature delivery without OTP.
+     */
+    'runner.order.transition': async ({ orderId, nextStatus }, { token }) => {
+
+      const user = requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      if (!orderId || !nextStatus) {
+        throw new ApiError('INVALID_INPUT', 'Order ID and target status are required.', 400)
+      }
+
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+
+      const order = db.orders.find((o) => o.id === orderId)
+      if (!order) {
+        throw new ApiError('ORDER_NOT_FOUND', 'Order not found.', 404)
+      }
+      if (order.runnerId !== user.id) {
+        throw new ApiError('FORBIDDEN', 'You are not assigned to this delivery.', 403)
+      }
+
+      if (order.status === nextStatus) {
+        throw new ApiError(
+          'INVALID_TRANSITION',
+          `Order is already in ${nextStatus} status.`,
+          400,
+        )
+      }
+
+      // Multi-store pickup validation
+      if (nextStatus === ORDER_STATUS.PICKED_UP) {
+        const pickups = getOrderPickups(order)
+        if (pickups.length > 1) {
+          const pendingPickups = pickups.filter((p) => p.status !== 'PICKED_UP')
+          if (pendingPickups.length > 0) {
+            throw new ApiError(
+              'PICKUPS_INCOMPLETE',
+              `All store pickups must be complete before marking order as picked up. Pending stores: ${pendingPickups.map((p) => p.storeName).join(', ')}.`,
+              400,
+              { pendingStoreIds: pendingPickups.map((p) => p.storeId) },
+            )
+          }
+        } else if (order.pickups && order.pickups.length === 1) {
+          order.pickups[0].status = 'PICKED_UP'
+          order.pickups[0].pickedUpAt = new Date().toISOString()
+        }
+      }
+
+      // OTP verification restriction in Milestone 2
+      if (nextStatus === ORDER_STATUS.DELIVERED) {
+        throw new ApiError(
+          'OTP_VERIFICATION_REQUIRED',
+          'Customer OTP verification is required to complete delivery (Milestone 3).',
+          400,
+        )
+      }
+
+      // State machine validation
+      if (!canTransitionOrder(order.status, nextStatus)) {
+        throw new ApiError(
+          'INVALID_TRANSITION',
+          `Illegal order transition: cannot transition from ${order.status} to ${nextStatus}.`,
+          400,
+        )
+      }
+
+      transitionOrder(order.status, nextStatus)
+      order.status = nextStatus
+
+      if (nextStatus === ORDER_STATUS.PICKED_UP) {
+        order.pickedUpAt = new Date().toISOString()
+      } else if (nextStatus === ORDER_STATUS.ON_THE_WAY) {
+        order.departedAt = new Date().toISOString()
+        const otp = generateOtp()
+        const otpHash = await hashOtp(otp)
+        order.handoverOtpHash = otpHash
+        order._mockOtp = otp
+        order.handoverOtpExpiresAt = Date.now() + 5 * 60 * 1000
+        order.handoverAttemptsCount = 0
+        order.handoverLockedUntil = null
+        order.handoverVerifiedAt = null
+        order.lastOtpGeneratedAt = Date.now()
+      }
+
+      db.saveOrders?.()
+      const { ledger: _ledger, ...customerView } = order
+      return customerView
+    },
+
+    /**
+     * Atomically verifies the customer delivery OTP and marks the order DELIVERED.
+     * Enforces assigned runner authorization, ON_THE_WAY state, exact 6 digits,
+     * SHA-256 hash matching, 5-minute expiry, and 3-attempt lockout.
+     */
+    'runner.order.verifyOtp': async ({ orderId, otp }, { token }) => {
+      const user = requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      if (!orderId) {
+        throw new ApiError('INVALID_ORDER_ID', 'Order reference is required.', 400)
+      }
+
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+
+      const order = db.orders.find((o) => o.id === orderId)
+      if (!order) {
+        throw new ApiError('ORDER_NOT_FOUND', 'Order not found.', 404)
+      }
+
+      // 1. Caller must be the assigned runner
+      if (order.runnerId !== user.id) {
+        throw new ApiError('FORBIDDEN', 'You are not assigned to this delivery.', 403)
+      }
+
+      // 2. Order must be ON_THE_WAY
+      if (order.status !== ORDER_STATUS.ON_THE_WAY) {
+        if (order.status === ORDER_STATUS.DELIVERED) {
+          throw new ApiError('OTP_ALREADY_USED', 'This delivery has already been verified and completed.', 409)
+        }
+        throw new ApiError(
+          'INVALID_ORDER_STATE',
+          `Delivery verification is only permitted when order is out for delivery (current: ${order.status}).`,
+          400,
+        )
+      }
+
+      // 3. Challenge must not be already consumed
+      if (order.handoverVerifiedAt) {
+        throw new ApiError('OTP_ALREADY_USED', 'This delivery challenge has already been consumed.', 409)
+      }
+
+      const now = Date.now()
+
+      // 4. Lockout check (5 minutes after 3 failed attempts)
+      if (order.handoverLockedUntil && now < order.handoverLockedUntil) {
+        const remainingSeconds = Math.ceil((order.handoverLockedUntil - now) / 1000)
+        throw new ApiError(
+          'OTP_LOCKED',
+          `Verification is locked due to too many failed attempts. Try again in ${Math.ceil(remainingSeconds / 60)} minute(s).`,
+          429,
+          { lockedUntil: order.handoverLockedUntil, remainingSeconds },
+        )
+      }
+
+      // 5. Expiry check (5-minute window)
+      if (order.handoverOtpExpiresAt && now > order.handoverOtpExpiresAt) {
+        throw new ApiError(
+          'OTP_EXPIRED',
+          'Delivery OTP has expired. Please ask the customer to refresh their code.',
+          410,
+        )
+      }
+
+
+      // 6. Format validation: exactly 6 numeric digits
+      if (!isValidOtpFormat(otp)) {
+        throw new ApiError(
+          'OTP_INVALID_FORMAT',
+          'OTP must contain exactly 6 numeric digits.',
+          400,
+        )
+      }
+
+      // 7. Hash comparison
+      const submittedHash = await hashOtp(otp)
+      if (!order.handoverOtpHash || submittedHash !== order.handoverOtpHash) {
+        order.handoverAttemptsCount = (order.handoverAttemptsCount || 0) + 1
+        if (order.handoverAttemptsCount >= 3) {
+          order.handoverLockedUntil = now + 5 * 60 * 1000 // Lock for 5 minutes
+          db.saveOrders?.()
+          throw new ApiError(
+            'OTP_LOCKED',
+            'Maximum verification attempts exceeded. Verification is locked for 5 minutes.',
+            429,
+            { attemptsRemaining: 0, lockedUntil: order.handoverLockedUntil },
+          )
+        }
+
+        const remaining = 3 - order.handoverAttemptsCount
+        db.saveOrders?.()
+        throw new ApiError(
+          'OTP_INVALID',
+          `Incorrect OTP. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining before lockout.`,
+          400,
+          { attemptsRemaining: remaining },
+        )
+      }
+
+      // 8. Atomic verification & transition
+      transitionOrder(order.status, ORDER_STATUS.DELIVERED)
+      order.status = ORDER_STATUS.DELIVERED
+      order.handoverVerifiedAt = new Date().toISOString()
+      order.deliveredAt = new Date().toISOString()
+      order.handoverOtpHash = null
+      order._mockOtp = null
+
+      db.saveOrders?.()
+      const { ledger: _ledger, ...customerView } = order
+      return customerView
+    },
+
+    // ---- customer order & delivery OTP endpoints ----------------------------
+    /**
+     * Retrieves the delivery OTP challenge for the authenticated customer.
+     * Strictly restricted to the order's owner and only when ON_THE_WAY.
+     */
+    'customer.order.getDeliveryOtp': ({ orderId }, { token }) => {
+      const user = requireUser(token)
+      if (!orderId) {
+        throw new ApiError('INVALID_ORDER_ID', 'Order reference is required.', 400)
+      }
+
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+
+      const order = db.orders.find((o) => o.id === orderId)
+      if (!order) {
+        throw new ApiError('ORDER_NOT_FOUND', 'Order not found.', 404)
+      }
+
+      if (order.customerId !== user.id) {
+        throw new ApiError('FORBIDDEN', 'You do not have permission to view delivery OTP for this order.', 403)
+      }
+
+      if (order.status !== ORDER_STATUS.ON_THE_WAY) {
+        throw new ApiError('OTP_NOT_AVAILABLE', 'Delivery OTP is only available when the order is out for delivery.', 400)
+      }
+
+      const now = Date.now()
+      const isLocked = Boolean(order.handoverLockedUntil && now < order.handoverLockedUntil)
+      const isExpired = Boolean(order.handoverOtpExpiresAt && now > order.handoverOtpExpiresAt)
+
+      return {
+        orderId: order.id,
+        otp: isLocked || isExpired ? null : (order._mockOtp || '724915'),
+        expiresAt: order.handoverOtpExpiresAt || (now + 300000),
+        isLocked,
+        lockedUntil: order.handoverLockedUntil || null,
+        isExpired,
+        isDemoMode: true,
+        demoMode: true,
+        attemptsRemaining: Math.max(0, 3 - (order.handoverAttemptsCount || 0)),
+      }
+    },
+
+    /**
+     * Customer refresh/resend endpoint for delivery OTP.
+     * Generates a fresh challenge without resetting active lockouts.
+     */
+    'customer.order.refreshOtp': async ({ orderId }, { token }) => {
+      const user = requireUser(token)
+      if (!orderId) {
+        throw new ApiError('INVALID_ORDER_ID', 'Order reference is required.', 400)
+      }
+
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+
+      const order = db.orders.find((o) => o.id === orderId)
+      if (!order) {
+        throw new ApiError('ORDER_NOT_FOUND', 'Order not found.', 404)
+      }
+
+      if (order.customerId !== user.id) {
+        throw new ApiError('FORBIDDEN', 'You do not have permission to refresh OTP for this order.', 403)
+      }
+
+      if (order.status !== ORDER_STATUS.ON_THE_WAY) {
+        throw new ApiError('OTP_NOT_AVAILABLE', 'Delivery OTP can only be refreshed when order is out for delivery.', 400)
+      }
+
+      const now = Date.now()
+      // Lockout persistence: resend must NOT clear active lockout!
+      if (order.handoverLockedUntil && now < order.handoverLockedUntil) {
+        const remainingSeconds = Math.ceil((order.handoverLockedUntil - now) / 1000)
+        throw new ApiError(
+          'OTP_LOCKED',
+          `Cannot regenerate OTP while verification is locked. Try again in ${Math.ceil(remainingSeconds / 60)} minute(s).`,
+          429,
+          { lockedUntil: order.handoverLockedUntil, remainingSeconds },
+        )
+      }
+
+      // Rate limit resend (minimum 5s in demo)
+      if (order.lastOtpGeneratedAt && now - order.lastOtpGeneratedAt < 5000) {
+        throw new ApiError('OTP_RATE_LIMITED', 'Please wait before requesting another OTP.', 429)
+      }
+
+      const newOtp = generateOtp()
+      const newHash = await hashOtp(newOtp)
+
+      order.handoverOtpHash = newHash
+      order._mockOtp = newOtp
+      order.handoverOtpExpiresAt = now + 5 * 60 * 1000
+      order.handoverAttemptsCount = 0
+      order.lastOtpGeneratedAt = now
+
+      db.saveOrders?.()
+
+      return {
+        orderId: order.id,
+        otp: newOtp,
+        expiresAt: order.handoverOtpExpiresAt,
+        isDemoMode: true,
+        demoMode: true,
+      }
+    },
+
+    /**
+     * Lists orders belonging to the authenticated customer.
+     */
+    'customer.orders.list': (_payload, { token }) => {
+      const user = requireUser(token)
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+      return db.orders
+        .filter((o) => o.customerId === user.id)
+        .map((o) => {
+          const { ledger: _ledger, handoverOtpHash: _hash, _mockOtp: _otp, ...view } = o
+          return view
+        })
+    },
+
+    'runner.orders': (_payload, { token }) => {
+      requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+      return db.orders
     },
   }
 

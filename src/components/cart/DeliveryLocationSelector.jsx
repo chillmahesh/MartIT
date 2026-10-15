@@ -78,7 +78,10 @@ export function DeliveryLocationSelector({
           <DropdownMenu.Content
             align="start"
             sideOffset={6}
-            className="z-50 w-[min(380px,calc(100vw-32px))] max-h-80 overflow-y-auto rounded-card border border-line bg-surface p-1.5 shadow-2 data-[state=open]:animate-fade-in"
+            data-lenis-prevent
+            data-lenis-prevent-wheel
+            onWheel={(e) => e.stopPropagation()}
+            className="z-50 w-[min(380px,calc(100vw-32px))] max-h-80 overflow-y-auto overscroll-contain rounded-card border border-line bg-surface p-1.5 shadow-2 data-[state=open]:animate-fade-in"
           >
             <div className="px-3 py-2 border-b border-line/60">
               <p className="text-xs font-bold uppercase tracking-wider text-ink-subtle">Campus Locations</p>

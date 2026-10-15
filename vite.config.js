@@ -10,6 +10,6 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    include: ['src/**/*.test.js', 'server/**/*.test.js'],
+    include: ['src/**/*.test.{js,jsx}', 'server/**/*.test.js'],
   },
 })

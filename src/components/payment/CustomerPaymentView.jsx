@@ -409,8 +409,24 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
               <div className="flex items-start gap-2">
                 <MapPin className="size-4 text-fresh-ink shrink-0 mt-0.5" aria-hidden="true" />
                 <div>
-                  <p className="text-[11px] font-medium text-ink-subtle">Delivery Location</p>
-                  <p className="font-semibold text-ink">{location ? location.name : order.locationId}</p>
+                  <p className="text-[11px] font-medium text-ink-subtle">Delivery Destination</p>
+                  <p className="font-semibold text-ink">
+                    {order.customerDetails?.deliveryLocation?.formattedAddress ||
+                      order.customerDetails?.selectedDestination ||
+                      (location ? location.name : order.locationId)}
+                  </p>
+                  {order.customerDetails?.detailedAddress && !order.customerDetails?.deliveryLocation?.formattedAddress?.includes(order.customerDetails.detailedAddress) && (
+                    <p className="text-[11px] text-ink-muted mt-0.5">
+                      Landmark: {order.customerDetails.detailedAddress}
+                    </p>
+                  )}
+                  {order.customerDetails?.fullName && (
+                    <p className="text-[11px] text-ink-subtle mt-0.5">
+                      {order.customerDetails.fullName}
+                      {(order.customerDetails.phoneNumber || order.customerDetails.mobileNumber) &&
+                        ` (${order.customerDetails.phoneNumber || order.customerDetails.mobileNumber})`}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>

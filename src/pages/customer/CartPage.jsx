@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router'
 import {
   ShoppingBag,
@@ -19,8 +19,13 @@ import { useLocations } from '@/hooks/useLocations'
 import { useDeliveryQuote } from '@/hooks/useDeliveryQuote'
 import { orderService } from '@/services/orderService'
 import { CartLineItem } from '@/components/cart/CartLineItem'
-import { DeliveryLocationSelector } from '@/components/cart/DeliveryLocationSelector'
+import { DeliveryDetailsForm } from '@/components/cart/DeliveryDetailsForm'
 import { OrderConfirmationView } from '@/components/cart/OrderConfirmationView'
+import {
+  validateCheckoutDetails,
+  mapCampusLocationToDestinationId,
+  OTHER_LOCATION_VALUE,
+} from '@/utils/checkoutValidation'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Price } from '@/components/ui/Price'
@@ -40,6 +45,8 @@ export default function CartPage() {
   const cartCount = useCartStore(selectCartCount)
   const setQuantity = useCartStore((s) => s.setQuantity)
   const clearCart = useCartStore((s) => s.clear)
+  const checkoutDetails = useCartStore((s) => s.checkoutDetails)
+  const setCheckoutDetails = useCartStore((s) => s.setCheckoutDetails)
 
   // Stores & Products
   const { data: stores = [], isLoading: isLoadingStores } = useStores()
@@ -50,10 +57,33 @@ export default function CartPage() {
   const { data: products = SAMPLE_PRODUCTS, isLoading: isLoadingProducts } = useProducts()
   const { data: locations = [] } = useLocations()
 
-  // Selected delivery location
-  const [selectedLocationId, setSelectedLocationId] = useState(
-    () => user?.defaultLocationId || 'loc_hostel_b',
-  )
+  // Form validation errors state
+  const [fieldErrors, setFieldErrors] = useState({})
+
+  // Prefill authenticated profile details without overwriting existing user edits
+  useEffect(() => {
+    if (!user) return
+    const updates = {}
+    if (!checkoutDetails?.fullName && user.name) {
+      updates.fullName = user.name
+    }
+    if (!checkoutDetails?.mobileNumber && user.phone) {
+      updates.mobileNumber = user.phone
+    }
+    if (Object.keys(updates).length > 0) {
+      setCheckoutDetails(updates)
+    }
+  }, [user, checkoutDetails?.fullName, checkoutDetails?.mobileNumber, setCheckoutDetails])
+
+  // Map selected campus preset / other to authoritative registered delivery destination ID
+  const selectedLocationId = useMemo(() => {
+    const preset = checkoutDetails?.presetLocation || 'A Block'
+    return mapCampusLocationToDestinationId(
+      preset,
+      locations,
+      user?.defaultLocationId || 'loc_hostel_b',
+    )
+  }, [checkoutDetails?.presetLocation, locations, user?.defaultLocationId])
 
   // Order submission state
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -124,9 +154,54 @@ export default function CartPage() {
     clearCart()
   }
 
+  const handleDetailChange = (field, value) => {
+    setSubmissionError(null)
+    setFieldErrors((prev) => ({ ...prev, [field]: null, location: null }))
+    setCheckoutDetails({ [field]: value })
+  }
+
+  const formattedAddressPreview = useMemo(() => {
+    const isOther =
+      checkoutDetails?.presetLocation === OTHER_LOCATION_VALUE ||
+      checkoutDetails?.presetLocation === 'other'
+    if (isOther) {
+      const custom = checkoutDetails?.customLocation?.trim()
+      if (!custom) return 'Other (enter hostel/landmark details)'
+      return checkoutDetails?.deliveryInstructions?.trim()
+        ? `${custom}, ${checkoutDetails.deliveryInstructions.trim()}`
+        : custom
+    }
+    const preset = checkoutDetails?.presetLocation || 'A Block'
+    return checkoutDetails?.deliveryInstructions?.trim()
+      ? `${preset}, ${checkoutDetails.deliveryInstructions.trim()}`
+      : preset
+  }, [
+    checkoutDetails?.presetLocation,
+    checkoutDetails?.customLocation,
+    checkoutDetails?.deliveryInstructions,
+  ])
+
   // Handle Order Placement
   const handlePlaceOrder = async () => {
     if (!canSubmitOrder) return
+
+    // 1. Authoritative validation of customer delivery details
+    const validation = validateCheckoutDetails({
+      fullName: checkoutDetails?.fullName,
+      mobileNumber: checkoutDetails?.mobileNumber,
+      presetLocation: checkoutDetails?.presetLocation,
+      customLocation: checkoutDetails?.customLocation,
+      deliveryInstructions: checkoutDetails?.deliveryInstructions,
+      availableLocations: locations,
+      fallbackLocationId: user?.defaultLocationId || 'loc_hostel_b',
+    })
+
+    if (!validation.isValid) {
+      setFieldErrors(validation.errors)
+      return
+    }
+
+    setFieldErrors({})
     setIsSubmitting(true)
     setSubmissionError(null)
 
@@ -139,6 +214,7 @@ export default function CartPage() {
         storeId: effectiveStoreId,
         locationId: selectedLocationId,
         lines: lines.map((l) => ({ productId: l.productId, quantity: l.quantity })),
+        customerDetails: validation.data,
       }
 
       // Submit through the existing order service
@@ -293,29 +369,13 @@ export default function CartPage() {
             </div>
           </section>
 
-          {/* Delivery Location Selector Card */}
-          <section
-            aria-label="Delivery location"
-            className="rounded-card border border-line bg-surface p-4 sm:p-5 shadow-1 space-y-3"
-          >
-            <div className="flex items-center gap-2 text-ink">
-              <MapPin className="size-4 text-fresh-ink shrink-0" aria-hidden="true" />
-              <h2 className="text-sm font-bold">Delivery Location</h2>
-            </div>
-
-            <DeliveryLocationSelector
-              selectedLocationId={selectedLocationId}
-              onSelectLocation={(newId) => {
-                setSelectedLocationId(newId)
-                setSubmissionError(null)
-              }}
-              disabled={isSubmitting}
-            />
-
-            <p className="text-xs text-ink-subtle">
-              MartIT runners deliver directly to campus hostel blocks, libraries, and designated campus spots.
-            </p>
-          </section>
+          {/* Delivery Details Form */}
+          <DeliveryDetailsForm
+            details={checkoutDetails}
+            errors={fieldErrors}
+            onChange={handleDetailChange}
+            disabled={isSubmitting}
+          />
         </div>
 
         {/* Right: Sticky Order Summary & Authoritative Pricing */}
@@ -324,6 +384,28 @@ export default function CartPage() {
             <h2 className="font-display text-lg font-bold text-ink border-b border-line/60 pb-3">
               Order Summary
             </h2>
+
+            {/* Delivery Destination Snapshot */}
+            <div className="rounded-tile bg-surface-2/60 border border-line/70 p-3 space-y-1 text-xs">
+              <div className="flex items-center justify-between text-ink-subtle font-medium">
+                <span className="flex items-center gap-1.5">
+                  <MapPin className="size-3.5 text-fresh-ink shrink-0" aria-hidden="true" />
+                  <span>Delivery Destination</span>
+                </span>
+                <span className="text-[11px] font-semibold text-brand">
+                  {checkoutDetails?.presetLocation === OTHER_LOCATION_VALUE ? 'Custom' : 'Preset'}
+                </span>
+              </div>
+              <p className="font-semibold text-ink truncate">
+                {formattedAddressPreview}
+              </p>
+              {checkoutDetails?.fullName && (
+                <p className="text-[11px] text-ink-subtle truncate">
+                  Recipient: <span className="font-medium text-ink">{checkoutDetails.fullName}</span>
+                  {checkoutDetails?.mobileNumber && ` • ${checkoutDetails.mobileNumber}`}
+                </p>
+              )}
+            </div>
 
             {/* Delivery Quote Snapshot Box */}
             <div className="rounded-tile bg-surface-2/70 border border-line/70 p-3.5 space-y-2 text-xs">
@@ -431,13 +513,14 @@ export default function CartPage() {
               disabled={!canSubmitOrder}
               loading={isSubmitting}
               onClick={handlePlaceOrder}
+              data-testid="continue-to-payment-button"
               className="text-base font-bold shadow-2 hover:scale-[1.01] active:scale-[0.99]"
             >
               {isStoreClosed
                 ? 'Store is Closed'
                 : isOutOfDeliveryArea
                 ? 'Outside Delivery Radius'
-                : `Place Order • ${formatINR(estimatedBaseAmount)}`}
+                : `Continue to Payment • ${formatINR(estimatedBaseAmount)}`}
             </Button>
 
             <p className="text-[11px] text-center text-ink-subtle">
