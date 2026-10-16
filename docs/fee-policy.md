@@ -5,13 +5,14 @@
 ## MVP Customer delivery fee: Flat ₹10
 - **Flat ₹10 delivery is the MVP policy:** MartIT charges a single flat ₹10 delivery fee per eligible parent order across all valid supported campus delivery destinations.
 - **Distance-based delivery pricing and route optimization are deferred:** Checkout eliminates the dependency on route-distance quotes or walking routing services for delivery-fee calculation. For any valid, supported campus destination, checkout displays a flat ₹10 delivery fee directly.
-- **Supported delivery-area restrictions still apply:** Removing distance-based pricing does not allow unsupported destinations. The maximum delivery radius remains 5 km (`MAX_SERVICE_KM = 5`). Outside the service radius or for unsupported/inactive destinations, checkout is blocked with an explicit error.
+- **Supported delivery-area restrictions still apply:** Removing distance-based pricing does not allow unsupported destinations. The maximum delivery radius remains 5 km (`MAX_SERVICE_KM = 5`). Both store and destination must have valid, finite geographic coordinates; missing or invalid coordinates are rejected with HTTP 422 `INVALID_COORDINATES` without fabricating default distances. Outside the service radius or for unsupported/inactive destinations, checkout is blocked with an explicit error.
 - **No free delivery:** There is no free delivery threshold, regardless of cart value.
 
 ## Multi-store parent orders
 - Exactly **one delivery fee applies per parent order:** When a customer orders items across multiple stores in a single checkout, exactly one flat ₹10 delivery fee is charged at the parent-order level.
 - Store fulfillment groups do not each add a delivery fee.
 - Item subtotals and fulfillment-group records remain consistent with existing data contracts.
+- **Current MVP status:** Multi-store checkout remains **unsupported and not enabled** in the current release. The cart enforces single-store shopping, and multi-store quote requests fail-closed with HTTP 422 `MULTI_STORE_ROUTING_UNAVAILABLE`. The single-parent-fee invariant defines the contract for future multi-store releases.
 
 ## Customer total calculation
 The authoritative total calculation follows the established rule:

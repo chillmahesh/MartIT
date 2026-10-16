@@ -8,6 +8,7 @@ import {
   MAX_SERVICE_KM,
   PRICING_VERSION,
 } from '../../../src/config/fees.js'
+import { parseCoordinate, straightLineKm } from '../../../src/utils/distance.js'
 
 export const deliveryRouter = Router()
 
@@ -21,20 +22,6 @@ const singleStoreQuoteSchema = z
     message: 'Store ID is required',
   })
 
-// Haversine straight-line distance in km (strictly labeled as straight-line estimate)
-function calculateHaversineKm(lat1, lon1, lat2, lon2) {
-  const R = 6371 // Earth radius in km
-  const dLat = ((lat2 - lat1) * Math.PI) / 180
-  const dLon = ((lon2 - lon1) * Math.PI) / 180
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2)
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
-  return R * c
-}
 
 function calculateTierDeliveryFee(km) {
   if (km <= 0) return { ok: false, reason: 'INVALID_DISTANCE' }
@@ -88,19 +75,45 @@ async function handleQuote(req, res, next) {
       throw ApiError.notFound('Choose a valid delivery spot first.', 'LOCATION_NOT_FOUND')
     }
 
-    const distanceKm = calculateHaversineKm(
-      Number(store.latitude),
-      Number(store.longitude),
-      Number(location.latitude),
-      Number(location.longitude),
-    )
+    const storeCoords = parseCoordinate({
+      latitude: store.latitude,
+      longitude: store.longitude,
+    })
+    if (!storeCoords) {
+      throw ApiError.unprocessable(
+        'Store coordinates are missing or invalid.',
+        'INVALID_COORDINATES',
+        { entity: 'store', storeId },
+      )
+    }
+
+    const locationCoords = parseCoordinate({
+      latitude: location.latitude,
+      longitude: location.longitude,
+    })
+    if (!locationCoords) {
+      throw ApiError.unprocessable(
+        'Delivery destination coordinates are missing or invalid.',
+        'INVALID_COORDINATES',
+        { entity: 'location', locationId },
+      )
+    }
+
+    const distanceKm = straightLineKm(storeCoords, locationCoords)
 
     const feeResult = calculateTierDeliveryFee(distanceKm)
     if (!feeResult.ok) {
+      if (feeResult.reason === 'INVALID_DISTANCE') {
+        throw ApiError.unprocessable(
+          "We couldn't work out the distance for that drop point. Please re-pick your location.",
+          'INVALID_DISTANCE',
+          { distanceKm },
+        )
+      }
       throw ApiError.unprocessable(
         'Delivery location is outside our 5 km service radius.',
         'MAX_DISTANCE_EXCEEDED',
-        { distanceKm, maxKm: 5 },
+        { distanceKm, maxKm: MAX_SERVICE_KM },
       )
     }
 

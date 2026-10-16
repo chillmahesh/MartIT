@@ -14,7 +14,7 @@ import { generateOtp, hashOtp, isValidOtpFormat } from '@/utils/cryptoOtp'
 import { createDb } from './db'
 import { ApiError } from './errors'
 import { getDistanceKm } from './routing'
-import { DISTANCE_METHOD, straightLineKm } from '@/utils/distance'
+import { DISTANCE_METHOD, straightLineKm, parseCoordinate } from '@/utils/distance'
 import { PERMISSIONS, ROLES, hasPermission } from '@/utils/permissions'
 
 const publicUser = (u) => ({
@@ -58,19 +58,31 @@ export function createMockServer({ routingProvider = null } = {}) {
     const location = db.locations.find((l) => l.id === locationId)
     if (!location) throw new ApiError('LOCATION_NOT_FOUND', 'Choose a delivery spot first.', 404)
 
+    const storeCoords = parseCoordinate(store.coords)
+    if (!storeCoords) {
+      throw new ApiError('INVALID_COORDINATES', 'Store coordinates are missing or invalid.', 422, {
+        entity: 'store',
+        storeId,
+      })
+    }
+
+    const locationCoords = parseCoordinate(location.coords)
+    if (!locationCoords) {
+      throw new ApiError('INVALID_COORDINATES', 'Delivery destination coordinates are missing or invalid.', 422, {
+        entity: 'location',
+        locationId,
+      })
+    }
+
     let km = null
     let method = DISTANCE_METHOD.STRAIGHT_LINE
-    if (store.coords && location.coords) {
-      try {
-        const distResult = await getDistanceKm(store.coords, location.coords, { routingProvider })
-        km = distResult.km
-        method = distResult.method
-      } catch {
-        km = straightLineKm(store.coords, location.coords)
-        method = DISTANCE_METHOD.STRAIGHT_LINE
-      }
-    } else {
-      km = 0.5
+    try {
+      const distResult = await getDistanceKm(storeCoords, locationCoords, { routingProvider })
+      km = distResult.km
+      method = distResult.method
+    } catch {
+      km = straightLineKm(storeCoords, locationCoords)
+      method = DISTANCE_METHOD.STRAIGHT_LINE
     }
 
     const fee = calculateDeliveryFee(km)

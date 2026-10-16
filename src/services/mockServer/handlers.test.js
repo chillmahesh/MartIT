@@ -34,6 +34,59 @@ describe('delivery.quote (server-authoritative)', () => {
     const q = await server.handle('delivery.quote', { storeId: 'store_campus_mart', locationId: 'loc_hostel_a' })
     expect(q).toMatchObject({ distanceMethod: 'route', distanceKm: 1.001, deliveryFee: 10 })
   })
+
+  it('rejects quote when store coordinates are missing with 422 INVALID_COORDINATES', async () => {
+    server.db.stores.find((s) => s.id === 'store_campus_mart').coords = null
+    await expect(
+      call('delivery.quote', { storeId: 'store_campus_mart', locationId: 'loc_hostel_a' }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_COORDINATES',
+      status: 422,
+    })
+  })
+
+  it('rejects quote when destination coordinates are missing with 422 INVALID_COORDINATES', async () => {
+    server.db.locations.find((l) => l.id === 'loc_hostel_a').coords = null
+    await expect(
+      call('delivery.quote', { storeId: 'store_campus_mart', locationId: 'loc_hostel_a' }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_COORDINATES',
+      status: 422,
+    })
+  })
+
+  it('rejects quote when coordinates are non-finite or invalid with 422 INVALID_COORDINATES', async () => {
+    server.db.locations.find((l) => l.id === 'loc_hostel_a').coords = { lat: 'invalid_lat', lng: 77.59 }
+    await expect(
+      call('delivery.quote', { storeId: 'store_campus_mart', locationId: 'loc_hostel_a' }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_COORDINATES',
+      status: 422,
+    })
+
+    server.db.stores.find((s) => s.id === 'store_campus_mart').coords = { lat: NaN, lng: 77.59 }
+    await expect(
+      call('delivery.quote', { storeId: 'store_campus_mart', locationId: 'loc_hostel_b' }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_COORDINATES',
+      status: 422,
+    })
+  })
+
+  it('falls back to straight-line distance when routing provider fails while coordinates are valid', async () => {
+    server = createMockServer({
+      routingProvider: {
+        routeKm: async () => {
+          throw new Error('Routing service unreachable')
+        },
+      },
+    })
+    const q = await server.handle('delivery.quote', { storeId: 'store_campus_mart', locationId: 'loc_hostel_a' })
+    expect(q.deliveryFee).toBe(10)
+    expect(q.distanceMethod).toBe('straight_line')
+    expect(q.distanceKm).toBeGreaterThan(0)
+    expect(q.distanceKm).toBeLessThan(5)
+  })
 })
 
 describe('orders.create', () => {
@@ -78,5 +131,16 @@ describe('orders.create', () => {
     await expect(call('orders.create', { ...base, lines: [{ productId: 'p_maggi', quantity: 1 }] })).rejects.toMatchObject({ code: 'OUT_OF_STOCK' })
     await expect(call('orders.create', { ...base, locationId: 'loc_outside', lines: line })).rejects.toMatchObject({ code: 'OUT_OF_SERVICE_AREA' })
     await expect(server.handle('orders.create', { ...base, lines: line }, {})).rejects.toMatchObject({ code: 'UNAUTHENTICATED' })
+  })
+
+  it('rejects order creation when destination coordinates are missing or invalid', async () => {
+    server.db.locations.find((l) => l.id === 'loc_hostel_a').coords = null
+    await expect(
+      call('orders.create', {
+        ...base,
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_bread', quantity: 1 }],
+      }),
+    ).rejects.toMatchObject({ code: 'INVALID_COORDINATES' })
   })
 })

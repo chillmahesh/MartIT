@@ -166,9 +166,71 @@ describe('MartIT — Flat ₹10 Delivery Fee for MVP (Authoritative Policy Tests
     expect(feeBeyond.maxKm).toBe(MAX_SERVICE_KM)
   })
 
-  // 5. A multi-store parent order incurs exactly one ₹10 fee
-  it('5. charges exactly one ₹10 delivery fee at the parent-order level for multi-store fulfillment', () => {
-    // Multi-store parent order simulation: items across 2 fulfillment groups
+  // 4b. Missing or invalid coordinates rejected without fabricating distance
+  it('4b. rejects missing or invalid coordinates with 422 INVALID_COORDINATES and supports straight-line fallback on provider failure', async () => {
+    // Missing store coordinates
+    server.db.stores.find((s) => s.id === 'store_campus_mart').coords = null
+    await expect(
+      server.handle('delivery.quote', {
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_COORDINATES',
+      status: 422,
+    })
+
+    // Restore store, set invalid destination coordinates
+    server.db.stores.find((s) => s.id === 'store_campus_mart').coords = { lat: 12.97, lng: 77.59 }
+    server.db.locations.find((l) => l.id === 'loc_hostel_a').coords = { lat: 'invalid_lat', lng: 77.59 }
+    await expect(
+      server.handle('delivery.quote', {
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+      }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_COORDINATES',
+      status: 422,
+    })
+
+    // Also rejected on order creation
+    await expect(
+      server.handle(
+        'orders.create',
+        {
+          storeId: 'store_campus_mart',
+          locationId: 'loc_hostel_a',
+          lines: [{ productId: 'p_bread', quantity: 1 }],
+        },
+        { token },
+      ),
+    ).rejects.toMatchObject({
+      code: 'INVALID_COORDINATES',
+      status: 422,
+    })
+
+    // Restore valid coords, simulate routing provider failure -> straight-line fallback remains for 5km check
+    server.db.locations.find((l) => l.id === 'loc_hostel_a').coords = { lat: 12.9733, lng: 77.59 }
+    const serverWithFailingRoute = createMockServer({
+      routingProvider: {
+        routeKm: async () => {
+          throw new Error('Routing provider unavailable')
+        },
+      },
+    })
+    const quoteFallback = await serverWithFailingRoute.handle('delivery.quote', {
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_a',
+    })
+    expect(quoteFallback.deliveryFee).toBe(10)
+    expect(quoteFallback.distanceMethod).toBe('straight_line')
+    expect(quoteFallback.distanceKm).toBeGreaterThan(0)
+    expect(quoteFallback.distanceKm).toBeLessThan(5)
+  })
+
+  // 5. Parent-order fee calculation contract (multi-store checkout remains unsupported)
+  it('5. verifies parent-order fee calculation contract (one ₹10 fee across fulfillment groups; multi-store checkout remains unsupported)', () => {
+    // Multi-store parent order contract simulation: items across 2 fulfillment groups
     const group1Lines = [{ unitPrice: 50, quantity: 2 }] // Store A subtotal = 100
     const group2Lines = [{ unitPrice: 40, quantity: 1 }] // Store B subtotal = 40
     const allLines = [...group1Lines, ...group2Lines]     // Total itemSubtotal = 140
@@ -188,8 +250,11 @@ describe('MartIT — Flat ₹10 Delivery Fee for MVP (Authoritative Policy Tests
     expect(parentTotals.total).toBe(150.25)
 
     // Verify parent order structure data contract
-    const multiStoreOrder = {
-      id: 'ord_multistore_test_1',
+    // NOTE: Multi-store checkout remains unsupported and not enabled in the current release.
+    // End-to-end multi-store checkout must not be claimed as verified until real multi-store order creation exists.
+    // This assertion confirms the relational contract invariant: when enabled, one delivery fee applies to the parent order.
+    const multiStoreOrderContract = {
+      id: 'ord_multistore_contract_test',
       combined_delivery_fee: FLAT_DELIVERY_FEE,
       item_subtotal: parentTotals.itemSubtotal,
       base_amount: parentTotals.baseAmount,
@@ -201,9 +266,9 @@ describe('MartIT — Flat ₹10 Delivery Fee for MVP (Authoritative Policy Tests
       ],
     }
 
-    expect(multiStoreOrder.combined_delivery_fee).toBe(10)
-    // Fulfillment groups do not have their own delivery fees
-    for (const group of multiStoreOrder.order_fulfillment_groups) {
+    expect(multiStoreOrderContract.combined_delivery_fee).toBe(10)
+    // Fulfillment groups must not define their own independent delivery fees
+    for (const group of multiStoreOrderContract.order_fulfillment_groups) {
       expect(group.delivery_fee).toBeUndefined()
       expect(group.combined_delivery_fee).toBeUndefined()
     }

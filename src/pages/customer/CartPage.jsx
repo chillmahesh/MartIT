@@ -122,21 +122,26 @@ export default function CartPage() {
     }, 0)
   }, [cartItemsWithProduct])
 
+  const isOutOfDeliveryArea =
+    isQuoteError &&
+    (quoteError?.code === 'OUT_OF_SERVICE_AREA' || quoteError?.code === 'MAX_DISTANCE_EXCEEDED')
+  const isLocationNotFound = isQuoteError && quoteError?.code === 'LOCATION_NOT_FOUND'
+  const isCoordinateError =
+    isQuoteError &&
+    (quoteError?.code === 'INVALID_COORDINATES' || quoteError?.code === 'INVALID_DISTANCE')
+
   // Estimated base amount before checkout platform fee (Flat ₹10 delivery policy)
   const estimatedBaseAmount = useMemo(() => {
-    const deliveryFee = selectedLocationId ? (quote?.deliveryFee ?? FLAT_DELIVERY_FEE) : 0
+    const isBlocked = isOutOfDeliveryArea || isLocationNotFound || isCoordinateError
+    const deliveryFee = (selectedLocationId && !isBlocked) ? (quote?.deliveryFee ?? FLAT_DELIVERY_FEE) : 0
     return Math.round(itemSubtotal + deliveryFee)
-  }, [itemSubtotal, quote?.deliveryFee, selectedLocationId])
+  }, [itemSubtotal, quote?.deliveryFee, selectedLocationId, isOutOfDeliveryArea, isLocationNotFound, isCoordinateError])
 
   // Validation checks
   const hasUnavailableItems = cartItemsWithProduct.some(({ product }) => !product)
   const hasOutOfStockItems = cartItemsWithProduct.some(
     ({ line, product }) => product && (product.stock <= 0 || line.quantity > product.stock),
   )
-  const isOutOfDeliveryArea =
-    isQuoteError &&
-    (quoteError?.code === 'OUT_OF_SERVICE_AREA' || quoteError?.code === 'MAX_DISTANCE_EXCEEDED')
-  const isLocationNotFound = isQuoteError && quoteError?.code === 'LOCATION_NOT_FOUND'
 
   const canSubmitOrder =
     lines.length > 0 &&
@@ -144,6 +149,7 @@ export default function CartPage() {
     Boolean(selectedLocationId) &&
     !isOutOfDeliveryArea &&
     !isLocationNotFound &&
+    !isCoordinateError &&
     !hasUnavailableItems &&
     !hasOutOfStockItems &&
     !isSubmitting
@@ -448,6 +454,16 @@ export default function CartPage() {
                   </div>
                   <p className="text-[11px] text-ink-muted">
                     {quoteError?.message || 'Choose a valid delivery spot first.'}
+                  </p>
+                </div>
+              ) : isCoordinateError ? (
+                <div className="rounded border border-red-500/30 bg-red-500/10 p-2.5 text-danger space-y-1">
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <ShieldAlert className="size-4 shrink-0" />
+                    <span>Location Coordinates Unavailable</span>
+                  </div>
+                  <p className="text-[11px] text-ink-muted">
+                    {quoteError?.message || "We couldn't verify the location coordinates. Please pick another spot."}
                   </p>
                 </div>
               ) : (
