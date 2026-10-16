@@ -341,17 +341,17 @@ describe('Checkout Customer Details and Campus Address Selection', () => {
 
     const order = await server.handle('orders.create', payload, { token })
 
-    // Expected exact pricing:
+    // Expected exact pricing (MVP flat ₹10 delivery fee):
     // Subtotal: 101
-    // Delivery fee: 15 (loc_hostel_b ~0.8 km)
-    // Base amount: 116
+    // Delivery fee: 10
+    // Base amount: 111
     // Dynamic platform fee: 0.01 (paise allocation)
-    // Total: 116.01
+    // Total: 111.01
     expect(order.pricing.itemSubtotal).toBe(101)
-    expect(order.pricing.deliveryFee).toBe(15)
-    expect(order.pricing.baseAmount).toBe(116)
+    expect(order.pricing.deliveryFee).toBe(10)
+    expect(order.pricing.baseAmount).toBe(111)
     expect(order.pricing.platformFee).toBe(0.01)
-    expect(order.pricing.total).toBe(116.01)
+    expect(order.pricing.total).toBe(111.01)
   })
 
   // 12. Displays customer delivery details in order confirmation and payment views

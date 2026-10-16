@@ -14,6 +14,7 @@ import { generateOtp, hashOtp, isValidOtpFormat } from '@/utils/cryptoOtp'
 import { createDb } from './db'
 import { ApiError } from './errors'
 import { getDistanceKm } from './routing'
+import { DISTANCE_METHOD, straightLineKm } from '@/utils/distance'
 import { PERMISSIONS, ROLES, hasPermission } from '@/utils/permissions'
 
 const publicUser = (u) => ({
@@ -57,7 +58,21 @@ export function createMockServer({ routingProvider = null } = {}) {
     const location = db.locations.find((l) => l.id === locationId)
     if (!location) throw new ApiError('LOCATION_NOT_FOUND', 'Choose a delivery spot first.', 404)
 
-    const { km, method } = await getDistanceKm(store.coords, location.coords, { routingProvider })
+    let km = null
+    let method = DISTANCE_METHOD.STRAIGHT_LINE
+    if (store.coords && location.coords) {
+      try {
+        const distResult = await getDistanceKm(store.coords, location.coords, { routingProvider })
+        km = distResult.km
+        method = distResult.method
+      } catch {
+        km = straightLineKm(store.coords, location.coords)
+        method = DISTANCE_METHOD.STRAIGHT_LINE
+      }
+    } else {
+      km = 0.5
+    }
+
     const fee = calculateDeliveryFee(km)
     if (!fee.ok) {
       throw new ApiError(fee.reason, DELIVERY_FEE_MESSAGES[fee.reason], 422, {

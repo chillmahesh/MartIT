@@ -1,9 +1,7 @@
 import { Accordion } from 'radix-ui'
 import { Plus } from 'lucide-react'
-import { DELIVERY_FEE_BANDS, EXTENDED_DELIVERY, MAX_SERVICE_KM } from '@/config/fees'
+import { FLAT_DELIVERY_FEE, MAX_SERVICE_KM } from '@/config/fees'
 import { SectionHeading } from './SectionHeading'
-
-const [b1, b2, b3] = DELIVERY_FEE_BANDS
 
 const FAQS = [
   {
@@ -12,7 +10,7 @@ const FAQS = [
   },
   {
     q: 'How much does delivery cost?',
-    a: `It depends on the distance from the store to your saved delivery spot: ₹${b1.fee} up to ${b1.maxKm * 1000} m, ₹${b2.fee} up to ${b2.maxKm} km, ₹${b3.fee} up to ${b3.maxKm} km, then ₹${EXTENDED_DELIVERY.perStartedKm} more for every started kilometre after that. We don’t deliver beyond ${MAX_SERVICE_KM} km. You’ll always see the exact fee before you pay.`,
+    a: `Delivery is a flat ₹${FLAT_DELIVERY_FEE} for all eligible orders across our campus delivery area. We don’t deliver beyond ${MAX_SERVICE_KM} km. You’ll always see the exact fee before you pay.`,
   },
   {
     q: 'How do I pay?',

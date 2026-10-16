@@ -72,14 +72,14 @@ describe('Catalogue & Authoritative Delivery Quote Endpoints', () => {
     expect(res.body[1].isOpen).toBe(false)
   })
 
-  it('calculates short delivery fee (₹10 for <= 0.5 km) and clearly marks as straight-line estimate', async () => {
+  it('calculates flat delivery fee (₹10 for valid campus destination) and clearly marks as straight-line estimate', async () => {
     const res = await request(app)
       .post('/api/v1/delivery/quote')
       .send({ storeId: 'store_open', locationId: 'loc_close' })
 
     expect(res.status).toBe(200)
     expect(res.body.deliveryFee).toBe(10)
-    expect(res.body.feeLabel).toBe('Short campus delivery')
+    expect(res.body.feeLabel).toBe('Flat campus delivery')
     expect(res.body.distanceKm).toBeLessThanOrEqual(0.5)
     expect(res.body.isEstimate).toBe(true)
     expect(res.body.quoteType).toBe('single_store_straight_line_estimate')
@@ -95,14 +95,14 @@ describe('Catalogue & Authoritative Delivery Quote Endpoints', () => {
     expect(res.body.code).toBe('MULTI_STORE_ROUTING_UNAVAILABLE')
   })
 
-  it('calculates mid-distance delivery fee (₹15 for 0.5 - 1.0 km)', async () => {
+  it('calculates flat delivery fee (₹10 across all eligible campus distances up to 5 km)', async () => {
     const res = await request(app)
       .post('/api/v1/delivery/quote')
       .send({ storeId: 'store_open', locationId: 'loc_1km' })
 
     expect(res.status).toBe(200)
-    expect(res.body.deliveryFee).toBe(15)
-    expect(res.body.feeLabel).toBe('Nearby hostel or campus location')
+    expect(res.body.deliveryFee).toBe(10)
+    expect(res.body.feeLabel).toBe('Flat campus delivery')
     expect(res.body.distanceKm).toBeGreaterThan(0.5)
     expect(res.body.distanceKm).toBeLessThanOrEqual(1.0)
     expect(res.body.isEstimate).toBe(true)

@@ -7,25 +7,38 @@
  * they were priced with, so later changes never alter existing orders.
  */
 
-export const PRICING_VERSION = '2026-10-09.1'
+export const PRICING_VERSION = '2026-10-16.1'
 
-/** Flat bands. Upper bound inclusive (boundary distances get the lower fee). */
+/**
+ * MVP Flat Delivery Fee Policy.
+ * Distance-tier pricing is replaced with a flat ₹10 delivery fee for new eligible orders.
+ */
+export const FLAT_DELIVERY_FEE = 10
+export const FLAT_DELIVERY_FEE_LABEL = 'Flat campus delivery'
+
+/**
+ * Maximum delivery radius. Beyond this, checkout is blocked.
+ * Supported campus delivery-area restrictions still apply.
+ */
+export const MAX_SERVICE_KM = 5
+
+/**
+ * Legacy distance bands and extended pricing (deferred beyond MVP).
+ * Preserved for historical orders and backward compatibility.
+ */
 export const DELIVERY_FEE_BANDS = Object.freeze([
   Object.freeze({ maxKm: 0.5, fee: 10, label: 'Short campus delivery' }),
   Object.freeze({ maxKm: 1, fee: 15, label: 'Nearby hostel or campus location' }),
   Object.freeze({ maxKm: 2, fee: 20, label: 'Longer delivery' }),
 ])
 
-/** Beyond the last flat band: base fee + per started kilometre. */
+/** Beyond the last flat band: base fee + per started kilometre (deferred). */
 export const EXTENDED_DELIVERY = Object.freeze({
   fromKm: 2,
   baseFee: 20,
   perStartedKm: 5,
   label: 'Extended delivery',
 })
-
-/** Maximum delivery radius. Beyond this, checkout is blocked. */
-export const MAX_SERVICE_KM = 5
 
 /** No free delivery regardless of cart value (confirmed). */
 export const FREE_DELIVERY_THRESHOLD = null

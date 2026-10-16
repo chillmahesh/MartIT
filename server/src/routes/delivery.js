@@ -2,10 +2,14 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { getSupabaseAdmin } from '../config/supabase.js'
 import { ApiError } from '../utils/errors.js'
+import {
+  FLAT_DELIVERY_FEE,
+  FLAT_DELIVERY_FEE_LABEL,
+  MAX_SERVICE_KM,
+  PRICING_VERSION,
+} from '../../../src/config/fees.js'
 
 export const deliveryRouter = Router()
-
-const PRICING_VERSION = '2026-10-09.1'
 
 const singleStoreQuoteSchema = z
   .object({
@@ -35,19 +39,8 @@ function calculateHaversineKm(lat1, lon1, lat2, lon2) {
 function calculateTierDeliveryFee(km) {
   if (km <= 0) return { ok: false, reason: 'INVALID_DISTANCE' }
   const eps = 1e-9
-  if (km <= 0.5 + eps) {
-    return { ok: true, fee: 10, label: 'Short campus delivery' }
-  }
-  if (km <= 1.0 + eps) {
-    return { ok: true, fee: 15, label: 'Nearby hostel or campus location' }
-  }
-  if (km <= 2.0 + eps) {
-    return { ok: true, fee: 20, label: 'Longer delivery' }
-  }
-  if (km <= 5.0 + eps) {
-    const startedKm = Math.ceil(km - 2.0 - eps)
-    const fee = 20 + 5 * startedKm
-    return { ok: true, fee, label: 'Extended delivery' }
+  if (km <= MAX_SERVICE_KM + eps) {
+    return { ok: true, fee: FLAT_DELIVERY_FEE, label: FLAT_DELIVERY_FEE_LABEL }
   }
   return { ok: false, reason: 'MAX_DISTANCE_EXCEEDED' }
 }

@@ -11,14 +11,14 @@ beforeEach(async () => {
 
 describe('delivery.quote (server-authoritative)', () => {
   it.each([
-    ['loc_hostel_a', 10],
-    ['loc_hostel_b', 15],
-    ['loc_library', 20],
-    ['loc_faculty', 25],
-    ['loc_far_gate', 35],
-  ])('%s → ₹%s, straight-line disclosed', async (locationId, expected) => {
+    'loc_hostel_a',
+    'loc_hostel_b',
+    'loc_library',
+    'loc_faculty',
+    'loc_far_gate',
+  ])('%s → ₹10 flat fee, straight-line disclosed', async (locationId) => {
     const q = await call('delivery.quote', { storeId: 'store_campus_mart', locationId })
-    expect(q.deliveryFee).toBe(expected)
+    expect(q.deliveryFee).toBe(10)
     expect(q.distanceMethod).toBe('straight_line')
   })
 
@@ -29,10 +29,10 @@ describe('delivery.quote (server-authoritative)', () => {
     })
   })
 
-  it('uses route distance when a routing provider is available', async () => {
+  it('uses route distance when a routing provider is available while charging flat ₹10', async () => {
     server = createMockServer({ routingProvider: { routeKm: async () => 1.001 } })
     const q = await server.handle('delivery.quote', { storeId: 'store_campus_mart', locationId: 'loc_hostel_a' })
-    expect(q).toMatchObject({ distanceMethod: 'route', distanceKm: 1.001, deliveryFee: 20 })
+    expect(q).toMatchObject({ distanceMethod: 'route', distanceKm: 1.001, deliveryFee: 10 })
   })
 })
 
@@ -47,7 +47,7 @@ describe('orders.create', () => {
       platformFee: 0,
       total: 1,
     })
-    expect(order.pricing).toMatchObject({ itemSubtotal: 56, deliveryFee: 15, baseAmount: 71, platformFee: 0.01, total: 71.01 })
+    expect(order.pricing).toMatchObject({ itemSubtotal: 56, deliveryFee: 10, baseAmount: 66, platformFee: 0.01, total: 66.01 })
     expect(order.lines[0].unitPrice).toBe(28)
   })
 
@@ -66,11 +66,11 @@ describe('orders.create', () => {
     expect(server.db.orders.find((o) => o.id === order.id).pricing.total).toBe(order.pricing.total)
   })
 
-  it('recalculates when the location changes', async () => {
+  it('charges flat ₹10 fee regardless of campus location', async () => {
     const line = [{ productId: 'p_bread', quantity: 1 }]
     const near = await call('orders.create', { ...base, locationId: 'loc_hostel_a', lines: line })
     const far = await call('orders.create', { ...base, locationId: 'loc_faculty', lines: line })
-    expect([near.pricing.deliveryFee, far.pricing.deliveryFee]).toEqual([10, 25])
+    expect([near.pricing.deliveryFee, far.pricing.deliveryFee]).toEqual([10, 10])
   })
 
   it('rejects out-of-stock, out-of-area and unauthenticated requests', async () => {

@@ -75,11 +75,12 @@ The product owner has confirmed the following multi-store policies, detailed ful
    - One customer checkout, one combined payable total, and one customer payment transaction.
    - Parent order total = authoritative sum of all item subtotals + one combined delivery fee + one dynamic platform fee.
    - Dynamic platform fee (₹0.01–₹0.99) is allocated once for the parent payment, with atomic reservation and existing 2-min window / 5-min cooldown rules.
-5. **Combined Delivery Fee on Complete Multi-Stop Route:**
-   - Exactly one delivery fee is charged based on the complete multi-stop route (originating from pickup stops to customer dropoff).
-   - Distance must be derived from a real routing service (walking/road), never straight-line estimates or fabricated values.
-   - Standard fee tiers apply: ₹10 ($\le 0.5$ km), ₹15 ($\le 1$ km), ₹20 ($\le 2$ km), ₹5 per started km up to 5 km. Routes $> 5$ km are blocked.
-   - If the routing provider fails or cannot compute the route reliably, checkout is blocked with an explicit error (fail-closed; zero fee fabrication).
+5. **Combined Delivery Fee on Multi-Store Route (Flat ₹10 MVP Policy):**
+   - Flat ₹10 delivery is the MVP policy for all new eligible orders.
+   - Distance-based delivery pricing and route optimization are deferred beyond MVP.
+   - Exactly one delivery fee applies per parent order (never charged per store or fulfillment group).
+   - Supported delivery-area restrictions still apply: destinations exceeding 5 km remain blocked.
+   - The existing dynamic platform fee (₹0.01–₹0.99) and runner payout rule (₹8 payout for ₹10 delivery fee) are unchanged.
 6. **Delivery Handover Invariants:**
    - The parent order cannot advance to `OUT_FOR_DELIVERY` until **all** store fulfillment groups are confirmed `PICKED_UP`.
    - Handover requires server-authoritative, rate-limited OTP verification (max 3 failed attempts, 5-minute lockout).
@@ -145,11 +146,10 @@ The product owner has confirmed the following multi-store policies, detailed ful
     - Admin user listing, runner approval, and role assignment endpoints (`/api/v1/admin/*`).
     - Automated unit and integration test suite: 25 tests passing in Vitest.
     - Render deployment blueprint (`render.yaml`).
-- [ ] **Milestone 5.2B: Multi-Stop Routing & Auditable Fee Calculation Engine:**
-  - Connect authoritative routing service (Mapbox Directions / OpenRouteService walking profile).
-  - Implement multi-stop waypoint sequencing visiting all stores then customer destination.
-  - Apply fee tiers strictly: ₹10 ($\le 0.5$ km), ₹15 ($\le 1$ km), ₹20 ($\le 2$ km), ₹5 per started km up to 5 km; $>5$ km blocked.
-  - Enforce fail-closed handling: return HTTP 503 if routing fails, never fabricate distance/fee.
+- [ ] **Milestone 5.2B: Multi-Stop Routing & Auditable Fee Engine (Deferred beyond MVP):**
+  - Flat ₹10 delivery is the authoritative MVP policy; distance-based delivery pricing and route optimization are deferred beyond MVP.
+  - Future phase: connect authoritative routing service (Mapbox Directions / OpenRouteService walking profile) for runner navigation and route visualization.
+  - Supported service radius restrictions (up to 5 km) remain enforced.
   - Persist route distance, stop sequence, routing provider, and fee policy version with each order.
 - [ ] **Milestone 5.3: Server-Authoritative Multi-Store Order Creation:**
   - Implement `POST /api/v1/orders/create-multistore` in Render Node.js/Express.

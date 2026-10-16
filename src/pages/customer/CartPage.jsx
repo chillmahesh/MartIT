@@ -32,6 +32,11 @@ import { Price } from '@/components/ui/Price'
 import { formatINR } from '@/utils/currency'
 import { formatDistanceKm } from '@/utils/distance'
 import { SAMPLE_PRODUCTS } from '@/mocks/catalogue'
+import {
+  FLAT_DELIVERY_FEE,
+  FLAT_DELIVERY_FEE_LABEL,
+  PRICING_VERSION,
+} from '@/config/fees'
 import { cn } from '@/utils/cn'
 
 export default function CartPage() {
@@ -117,24 +122,28 @@ export default function CartPage() {
     }, 0)
   }, [cartItemsWithProduct])
 
-  // Estimated base amount before checkout platform fee
+  // Estimated base amount before checkout platform fee (Flat ₹10 delivery policy)
   const estimatedBaseAmount = useMemo(() => {
-    return Math.round(itemSubtotal + (quote?.deliveryFee ?? 0))
-  }, [itemSubtotal, quote?.deliveryFee])
+    const deliveryFee = selectedLocationId ? (quote?.deliveryFee ?? FLAT_DELIVERY_FEE) : 0
+    return Math.round(itemSubtotal + deliveryFee)
+  }, [itemSubtotal, quote?.deliveryFee, selectedLocationId])
 
   // Validation checks
   const hasUnavailableItems = cartItemsWithProduct.some(({ product }) => !product)
   const hasOutOfStockItems = cartItemsWithProduct.some(
     ({ line, product }) => product && (product.stock <= 0 || line.quantity > product.stock),
   )
-  const isOutOfDeliveryArea = isQuoteError && quoteError?.code === 'OUT_OF_SERVICE_AREA'
+  const isOutOfDeliveryArea =
+    isQuoteError &&
+    (quoteError?.code === 'OUT_OF_SERVICE_AREA' || quoteError?.code === 'MAX_DISTANCE_EXCEEDED')
+  const isLocationNotFound = isQuoteError && quoteError?.code === 'LOCATION_NOT_FOUND'
 
   const canSubmitOrder =
     lines.length > 0 &&
     !isStoreClosed &&
     Boolean(selectedLocationId) &&
-    Boolean(quote) &&
-    !isQuoteError &&
+    !isOutOfDeliveryArea &&
+    !isLocationNotFound &&
     !hasUnavailableItems &&
     !hasOutOfStockItems &&
     !isSubmitting
@@ -415,41 +424,53 @@ export default function CartPage() {
                   <span>Delivery Estimate</span>
                 </span>
                 <span className="text-[11px] uppercase tracking-wider font-bold">
-                  {quote?.pricingVersion || 'Policy 2026-10-09.1'}
+                  {quote?.pricingVersion || `Policy ${PRICING_VERSION}`}
                 </span>
               </div>
 
-              {isLoadingQuote ? (
-                <div className="text-ink-subtle animate-pulse">Calculating campus delivery quote...</div>
-              ) : isQuoteError ? (
+              {!selectedLocationId ? (
+                <div className="text-ink-subtle">Select a delivery spot to get quote.</div>
+              ) : isOutOfDeliveryArea ? (
                 <div className="rounded border border-red-500/30 bg-red-500/10 p-2.5 text-danger space-y-1">
                   <div className="flex items-center gap-1.5 font-bold">
                     <ShieldAlert className="size-4 shrink-0" />
-                    <span>
-                      {isOutOfDeliveryArea ? 'Outside 5 km Delivery Radius' : 'Quote Unavailable'}
-                    </span>
+                    <span>Outside 5 km Delivery Radius</span>
                   </div>
                   <p className="text-[11px] text-ink-muted">
-                    {isOutOfDeliveryArea
-                      ? `This location is outside our 5 km service area (${formatDistanceKm(quoteError?.distanceKm)} km straight-line distance). Checkout blocked.`
-                      : quoteError?.message || 'Unable to quote for this location.'}
+                    {`This location is outside our 5 km service area${quoteError?.distanceKm ? ` (${formatDistanceKm(quoteError.distanceKm)} km)` : ''}. Checkout blocked.`}
                   </p>
                 </div>
-              ) : quote ? (
-                <div className="space-y-1 text-ink">
-                  <div className="flex justify-between items-center">
-                    <span className="text-ink-muted">Distance:</span>
-                    <span className="font-semibold tabular">
-                      {`${formatDistanceKm(quote.distanceKm)} km ${quote.distanceMethod === 'straight_line' ? 'straight-line distance' : 'route distance'}`}
-                    </span>
+              ) : isLocationNotFound ? (
+                <div className="rounded border border-red-500/30 bg-red-500/10 p-2.5 text-danger space-y-1">
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <ShieldAlert className="size-4 shrink-0" />
+                    <span>Choose a valid delivery spot</span>
                   </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-ink-muted">Fee Tier:</span>
-                    <span className="font-medium text-ink-subtle">{quote.feeLabel}</span>
-                  </div>
+                  <p className="text-[11px] text-ink-muted">
+                    {quoteError?.message || 'Choose a valid delivery spot first.'}
+                  </p>
                 </div>
               ) : (
-                <div className="text-ink-subtle">Select a delivery spot to get quote.</div>
+                <div className="space-y-1 text-ink">
+                  <div className="flex justify-between items-center">
+                    <span className="text-ink-muted">Delivery Fee:</span>
+                    <span className="font-semibold tabular text-brand">
+                      {formatINR(quote?.deliveryFee ?? FLAT_DELIVERY_FEE)} (Flat fee)
+                    </span>
+                  </div>
+                  {quote?.distanceKm ? (
+                    <div className="flex justify-between items-center text-ink-subtle">
+                      <span className="text-ink-muted">Distance:</span>
+                      <span className="tabular">
+                        {`${formatDistanceKm(quote.distanceKm)} km ${quote.distanceMethod === 'straight_line' ? 'straight-line distance' : 'route distance'}`}
+                      </span>
+                    </div>
+                  ) : null}
+                  <div className="flex justify-between items-center">
+                    <span className="text-ink-muted">Policy:</span>
+                    <span className="font-medium text-ink-subtle">{quote?.feeLabel || FLAT_DELIVERY_FEE_LABEL}</span>
+                  </div>
+                </div>
               )}
             </div>
 
@@ -463,14 +484,18 @@ export default function CartPage() {
               <div className="flex justify-between text-ink-muted">
                 <div>
                   <span>Delivery Fee</span>
-                  {quote && (
+                  {quote?.distanceKm ? (
                     <span className="text-[11px] text-ink-subtle block">
                       {`(${formatDistanceKm(quote.distanceKm)} km ${quote.distanceMethod === 'straight_line' ? 'straight-line distance' : 'route distance'})`}
                     </span>
-                  )}
+                  ) : null}
                 </div>
                 <span className="tabular font-medium text-ink">
-                  {quote ? formatINR(quote.deliveryFee) : isQuoteError ? 'Blocked' : 'Calculating...'}
+                  {isOutOfDeliveryArea
+                    ? 'Blocked'
+                    : selectedLocationId
+                      ? formatINR(quote?.deliveryFee ?? FLAT_DELIVERY_FEE)
+                      : 'Select location'}
                 </span>
               </div>
 
