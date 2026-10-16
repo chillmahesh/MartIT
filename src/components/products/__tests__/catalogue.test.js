@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import React from 'react'
 import { renderToString } from 'react-dom/server'
 import { MemoryRouter } from 'react-router'
@@ -12,6 +12,9 @@ import { SAMPLE_STORES } from '@/mocks/campus'
 import { ProductCard } from '@/components/products/ProductCard'
 import { ProductGrid } from '@/components/products/ProductGrid'
 import { CategoryPills } from '@/components/products/CategoryPills'
+import * as authStoreModule from '@/stores/authStore'
+import { StoreHeader } from '@/components/products/StoreHeader'
+import * as deliveryQuoteModule from '@/hooks/useDeliveryQuote'
 import HomePage from '@/pages/customer/HomePage'
 
 describe('Catalogue & Store Selection Mock Handlers', () => {
@@ -276,3 +279,107 @@ describe('HomePage Product-First Shopping Experience', () => {
     expect(html).not.toContain('Select a store to view its local inventory')
   })
 })
+
+describe('StoreHeader Delivery Radius Error Handling', () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+  it('renders "Outside 5 km delivery radius" for OUT_OF_SERVICE_AREA', () => {
+    const authSpy = vi.spyOn(authStoreModule, 'useAuthStore').mockImplementation((selector) => {
+      const state = {
+        user: { id: 'usr_test_1', name: 'Devendra Patel', roles: ['customer'], defaultLocationId: 'loc_hostel_b' },
+        token: 'tok_test',
+      }
+      return selector ? selector(state) : state
+    })
+    const quoteSpy = vi.spyOn(deliveryQuoteModule, 'useDeliveryQuote').mockReturnValue({
+      data: null,
+      isError: true,
+      error: { code: 'OUT_OF_SERVICE_AREA', message: 'Delivery location exceeds 5 km' },
+    })
+
+    try {
+      const html = renderToString(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(MemoryRouter, null, React.createElement(StoreHeader, {
+            stores: SAMPLE_STORES,
+            selectedStoreId: 'store_campus_mart',
+          })),
+        ),
+      )
+      expect(html).toContain('Outside 5 km delivery radius')
+      expect(html).not.toContain('Cannot deliver here')
+    } finally {
+      quoteSpy.mockRestore()
+      authSpy.mockRestore()
+    }
+  })
+
+  it('renders "Outside 5 km delivery radius" for MAX_DISTANCE_EXCEEDED', () => {
+    const authSpy = vi.spyOn(authStoreModule, 'useAuthStore').mockImplementation((selector) => {
+      const state = {
+        user: { id: 'usr_test_1', name: 'Devendra Patel', roles: ['customer'], defaultLocationId: 'loc_hostel_b' },
+        token: 'tok_test',
+      }
+      return selector ? selector(state) : state
+    })
+    const quoteSpy = vi.spyOn(deliveryQuoteModule, 'useDeliveryQuote').mockReturnValue({
+      data: null,
+      isError: true,
+      error: { code: 'MAX_DISTANCE_EXCEEDED', message: 'Distance exceeds 5 km limit' },
+    })
+
+    try {
+      const html = renderToString(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(MemoryRouter, null, React.createElement(StoreHeader, {
+            stores: SAMPLE_STORES,
+            selectedStoreId: 'store_campus_mart',
+          })),
+        ),
+      )
+      expect(html).toContain('Outside 5 km delivery radius')
+      expect(html).not.toContain('Cannot deliver here')
+    } finally {
+      quoteSpy.mockRestore()
+      authSpy.mockRestore()
+    }
+  })
+
+  it('renders "Cannot deliver here" for other quote errors', () => {
+    const authSpy = vi.spyOn(authStoreModule, 'useAuthStore').mockImplementation((selector) => {
+      const state = {
+        user: { id: 'usr_test_1', name: 'Devendra Patel', roles: ['customer'], defaultLocationId: 'loc_hostel_b' },
+        token: 'tok_test',
+      }
+      return selector ? selector(state) : state
+    })
+    const quoteSpy = vi.spyOn(deliveryQuoteModule, 'useDeliveryQuote').mockReturnValue({
+      data: null,
+      isError: true,
+      error: { code: 'INVALID_COORDINATES', message: 'Invalid coordinates' },
+    })
+
+    try {
+      const html = renderToString(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(MemoryRouter, null, React.createElement(StoreHeader, {
+            stores: SAMPLE_STORES,
+            selectedStoreId: 'store_campus_mart',
+          })),
+        ),
+      )
+      expect(html).toContain('Cannot deliver here')
+      expect(html).not.toContain('Outside 5 km delivery radius')
+    } finally {
+      quoteSpy.mockRestore()
+      authSpy.mockRestore()
+    }
+  })
+})
+
