@@ -58,37 +58,61 @@ DECLARE
   v_item RECORD;
   v_prod RECORD;
   v_subtotal NUMERIC(10,2) := 0;
+  v_base_amount NUMERIC(10,2);
   v_platform_fee NUMERIC(8,2);
   v_total NUMERIC(10,2);
   v_fulfillment_group_id VARCHAR(64) := 'grp_' || substr(md5(random()::text || clock_timestamp()::text), 1, 24);
   v_attempt_id VARCHAR(64) := 'att_' || substr(md5(random()::text || clock_timestamp()::text), 1, 24);
+  v_final_idempotency_key VARCHAR(128);
   v_existing_order_id VARCHAR(64);
   v_result JSONB;
 BEGIN
-  -- 1. Idempotency Guard
-  IF p_idempotency_key IS NOT NULL THEN
-    SELECT id INTO v_existing_order_id
-    FROM public.orders
-    WHERE idempotency_key = p_idempotency_key;
-
-    IF v_existing_order_id IS NOT NULL THEN
-      SELECT jsonb_build_object(
-        'id', o.id,
-        'customerId', o.customer_id,
-        'status', o.status,
-        'paymentStatus', o.payment_status,
-        'feePaise', o.fee_paise,
-        'totalPayable', o.total_payable,
-        'isIdempotentHit', true
-      ) INTO v_result
-      FROM public.orders o
-      WHERE o.id = v_existing_order_id;
-
-      RETURN v_result;
-    END IF;
+  -- 1. Order and Customer Validation
+  IF p_order_id IS NULL OR trim(p_order_id) = '' THEN
+    RAISE EXCEPTION 'INVALID_ORDER_ID' USING HINT = 'Order ID cannot be empty.';
+  END IF;
+  IF p_customer_id IS NULL THEN
+    RAISE EXCEPTION 'INVALID_CUSTOMER_ID' USING HINT = 'Customer ID is required.';
   END IF;
 
-  -- 2. Verify Store exists and is open
+  -- 2. Idempotency Guard & Key Normalization
+  IF p_idempotency_key IS NOT NULL AND trim(p_idempotency_key) <> '' THEN
+    v_final_idempotency_key := trim(p_idempotency_key);
+  ELSE
+    -- Deterministic order-tied fallback key guaranteeing non-null, unique, and retry-safe invariants
+    v_final_idempotency_key := 'idem_ord_' || p_order_id;
+  END IF;
+
+  SELECT id INTO v_existing_order_id
+  FROM public.orders
+  WHERE idempotency_key = v_final_idempotency_key OR id = p_order_id;
+
+  IF v_existing_order_id IS NOT NULL THEN
+    IF EXISTS (SELECT 1 FROM public.orders WHERE id = v_existing_order_id AND customer_id <> p_customer_id) THEN
+      RAISE EXCEPTION 'IDEMPOTENCY_CONFLICT' USING HINT = 'Idempotency key belongs to another customer.';
+    END IF;
+
+    SELECT jsonb_build_object(
+      'orderId', o.id,
+      'id', o.id,
+      'customerId', o.customer_id,
+      'status', o.status,
+      'paymentStatus', o.payment_status,
+      'feePaise', o.fee_paise,
+      'itemSubtotal', o.item_subtotal,
+      'deliveryFee', o.combined_delivery_fee,
+      'baseAmount', o.base_amount,
+      'platformFee', o.platform_fee,
+      'totalPayable', o.total_payable,
+      'isIdempotentHit', true
+    ) INTO v_result
+    FROM public.orders o
+    WHERE o.id = v_existing_order_id;
+
+    RETURN v_result;
+  END IF;
+
+  -- 3. Verify Store exists and is open
   SELECT id, name, description, latitude, longitude, is_open
   INTO v_store
   FROM public.stores
@@ -101,7 +125,7 @@ BEGIN
     RAISE EXCEPTION 'STORE_CLOSED' USING HINT = 'Store is currently closed.';
   END IF;
 
-  -- 3. Verify Delivery Location exists and is active
+  -- 4. Verify Delivery Location exists and is active
   SELECT id, name, group_name, latitude, longitude, is_active
   INTO v_location
   FROM public.locations
@@ -111,7 +135,10 @@ BEGIN
     RAISE EXCEPTION 'LOCATION_NOT_FOUND' USING HINT = 'Choose a valid delivery spot first.';
   END IF;
 
-  -- 4. Allocate Dynamic Platform Fee Slot (1 to 99 paise)
+  -- 5. Lock Smallest Available Dynamic Platform Fee Slot (1 to 99 paise)
+  -- Uses FOR UPDATE SKIP LOCKED to prevent concurrent orders from acquiring the same slot.
+  -- The slot reservation UPDATE is deferred until after parent order insertion to strictly
+  -- satisfy the immediate foreign-key constraint on platform_fee_reservations.active_order_id.
   SELECT fee_paise INTO v_fee_paise
   FROM public.platform_fee_reservations
   WHERE (active_order_id IS NULL OR v_now >= cooldown_expires_at)
@@ -125,20 +152,9 @@ BEGIN
       USING HINT = 'All dynamic payment fee slots are currently active. Please retry shortly.';
   END IF;
 
-  UPDATE public.platform_fee_reservations
-  SET
-    active_order_id = p_order_id,
-    attempt_id = v_attempt_id,
-    allocated_at = v_now,
-    window_expires_at = v_window_exp,
-    cooldown_expires_at = v_cooldown_exp,
-    is_paid = FALSE,
-    paid_at = NULL
-  WHERE fee_paise = v_fee_paise;
-
   v_platform_fee := round((v_fee_paise::numeric / 100.0), 2);
 
-  -- 5. Lock and Validate Products & Reserve Inventory
+  -- 6. Lock and Validate Products, Decrement Stock
   FOR v_item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, quantity INTEGER)
   LOOP
     IF v_item.quantity IS NULL OR v_item.quantity <= 0 THEN
@@ -161,10 +177,6 @@ BEGIN
         USING HINT = 'Insufficient stock for product ' || v_prod.name;
     END IF;
 
-    -- Record inventory hold
-    INSERT INTO public.inventory_reservations (id, order_id, store_id, product_id, quantity, status, expires_at, created_at)
-    VALUES ('res_' || substr(md5(random()::text || clock_timestamp()::text), 1, 24), p_order_id, p_store_id, v_item.product_id, v_item.quantity, 'HELD', v_inventory_exp, v_now);
-
     -- Decrement product stock
     UPDATE public.products
     SET stock = stock - v_item.quantity, updated_at = v_now
@@ -173,9 +185,15 @@ BEGIN
     v_subtotal := v_subtotal + round((v_prod.price * v_item.quantity), 2);
   END LOOP;
 
-  v_total := v_subtotal + p_delivery_fee + v_platform_fee;
+  -- Calculate authoritative financial sums according to agreed fee policy:
+  -- base_amount = ROUND(item_subtotal + delivery_fee)
+  -- total_payable = base_amount + platform_fee
+  v_base_amount := round(v_subtotal + p_delivery_fee);
+  v_total := v_base_amount + v_platform_fee;
 
-  -- 6. Insert Parent Order
+  -- 7. Insert Parent Order Record
+  -- Foreign key on fee_paise REFERENCES platform_fee_reservations(fee_paise) succeeds because
+  -- all 99 slots exist. Inserting orders first guarantees the parent row exists before any child references.
   INSERT INTO public.orders (
     id, customer_id, delivery_location_id, delivery_location_snapshot,
     status, payment_status, item_subtotal, combined_delivery_fee, base_amount, platform_fee,
@@ -193,7 +211,7 @@ BEGIN
       'longitude', v_location.longitude,
       'customerDetails', p_customer_details
     ),
-    'AWAITING_PAYMENT', 'PENDING', v_subtotal, p_delivery_fee, (v_subtotal + p_delivery_fee),
+    'AWAITING_PAYMENT', 'PENDING', v_subtotal, p_delivery_fee, v_base_amount,
     v_platform_fee, v_total, p_route_distance_km,
     jsonb_build_array(
       jsonb_build_object('storeId', v_store.id, 'type', 'pickup', 'sequence', 0),
@@ -202,10 +220,23 @@ BEGIN
     'straight_line_haversine', 'walking',
     jsonb_build_object('isEstimate', true, 'distanceMethod', 'straight_line'),
     p_fee_policy_version, v_attempt_id, v_fee_paise, v_now, v_window_exp, v_cooldown_exp,
-    NULL, NULL, p_idempotency_key, v_now, v_now
+    NULL, NULL, v_final_idempotency_key, v_now, v_now
   );
 
-  -- 7. Insert Fulfillment Group
+  -- 8. Update Platform Fee Slot Reservation
+  -- Parent order row now exists in public.orders, satisfying the foreign-key constraint.
+  UPDATE public.platform_fee_reservations
+  SET
+    active_order_id = p_order_id,
+    attempt_id = v_attempt_id,
+    allocated_at = v_now,
+    window_expires_at = v_window_exp,
+    cooldown_expires_at = v_cooldown_exp,
+    is_paid = FALSE,
+    paid_at = NULL
+  WHERE fee_paise = v_fee_paise;
+
+  -- 9. Insert Fulfillment Group
   INSERT INTO public.order_fulfillment_groups (
     id, order_id, store_id, store_snapshot, pickup_sequence_index, status, created_at, updated_at
   ) VALUES (
@@ -220,13 +251,23 @@ BEGIN
     0, 'PENDING', v_now, v_now
   );
 
-  -- 8. Insert Order Items
+  -- 10. Insert Order Items & Record Inventory Reservations
+  -- Now that the parent order exists, inventory_reservations and order_items can safely reference it.
   FOR v_item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, quantity INTEGER)
   LOOP
     SELECT id, name, pack, price INTO v_prod
     FROM public.products
     WHERE id = v_item.product_id AND store_id = p_store_id;
 
+    -- Record inventory hold referencing parent order
+    INSERT INTO public.inventory_reservations (
+      id, order_id, store_id, product_id, quantity, status, expires_at, created_at
+    ) VALUES (
+      'res_' || substr(md5(random()::text || clock_timestamp()::text), 1, 24),
+      p_order_id, p_store_id, v_item.product_id, v_item.quantity, 'HELD', v_inventory_exp, v_now
+    );
+
+    -- Insert line item
     INSERT INTO public.order_items (
       id, order_id, fulfillment_group_id, store_id, product_id,
       product_name, product_pack, unit_price, quantity, line_subtotal, created_at
@@ -238,9 +279,10 @@ BEGIN
     );
   END LOOP;
 
-  -- 9. Build and return result
+  -- 11. Build and return result
   RETURN jsonb_build_object(
     'orderId', p_order_id,
+    'id', p_order_id,
     'feePaise', v_fee_paise,
     'attemptId', v_attempt_id,
     'allocatedAt', v_now,
@@ -248,7 +290,7 @@ BEGIN
     'cooldownExpiresAt', v_cooldown_exp,
     'itemSubtotal', v_subtotal,
     'deliveryFee', p_delivery_fee,
-    'baseAmount', (v_subtotal + p_delivery_fee),
+    'baseAmount', v_base_amount,
     'platformFee', v_platform_fee,
     'totalPayable', v_total
   );
