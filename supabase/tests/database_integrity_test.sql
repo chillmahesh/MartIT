@@ -54,6 +54,14 @@ BEGIN
     RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on release_order_inventory';
   END IF;
 
+  -- Test create_order_atomic: client roles cannot execute
+  IF has_function_privilege('anon', 'create_order_atomic(varchar, uuid, varchar, varchar, jsonb, jsonb, numeric, varchar, numeric, varchar, integer, integer, integer)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on create_order_atomic';
+  END IF;
+  IF has_function_privilege('authenticated', 'create_order_atomic(varchar, uuid, varchar, varchar, jsonb, jsonb, numeric, varchar, numeric, varchar, integer, integer, integer)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'SECURITY FAIL: authenticated has EXECUTE on create_order_atomic';
+  END IF;
+
   -- Test handle_new_user: client roles cannot execute, but auth admin can
   IF has_function_privilege('anon', 'handle_new_user()', 'EXECUTE') THEN
     RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on handle_new_user';
