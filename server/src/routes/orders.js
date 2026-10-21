@@ -1022,6 +1022,8 @@ async function handleCreateOrder(req, res, next) {
   let allocatedFeePaise = null
   let orderId = null
   let feeSlotNeedsRelease = false
+  let inventoryReserved = false
+  let orderPersisted = false
 
   try {
     const supabase = getSupabaseAdmin()
@@ -1107,7 +1109,7 @@ async function handleCreateOrder(req, res, next) {
       throw ApiError.conflict('This store is closed right now.', 'STORE_CLOSED')
     }
 
-    // 5. Query & validate delivery location
+    // 5. Query & validate delivery location (authoritative server-side destination validation)
     const { data: location, error: locErr } = await supabase
       .from('locations')
       .select('id, name, group_name, latitude, longitude, is_active')
@@ -1178,13 +1180,13 @@ async function handleCreateOrder(req, res, next) {
     const now = Date.now()
     const nowIso = new Date(now).toISOString()
 
-    // 9. Platform Fee Allocation: lease unique 1-99 paise slot
+    // 9. Platform Fee Allocation: lease unique 1-99 paise slot with concurrency safety
     let feePaise = null
     let allocatedAt = nowIso
     let windowExpiresAt = new Date(now + PLATFORM_FEE_WINDOW_MS).toISOString()
     let cooldownExpiresAt = new Date(now + PLATFORM_FEE_WINDOW_MS + PLATFORM_FEE_COOLDOWN_MS).toISOString()
 
-    // Try PostgreSQL RPC allocate_platform_fee if available
+    // Primary: Try PostgreSQL RPC allocate_platform_fee (atomic FOR UPDATE SKIP LOCKED)
     if (typeof supabase.rpc === 'function') {
       try {
         const { data: rpcData, error: rpcErr } = await supabase.rpc('allocate_platform_fee', {
@@ -1193,7 +1195,19 @@ async function handleCreateOrder(req, res, next) {
           p_window_seconds: 120,
           p_cooldown_seconds: 300,
         })
-        if (!rpcErr && rpcData) {
+        if (rpcErr) {
+          if (rpcErr.message && rpcErr.message.includes('ALL_PLATFORM_FEE_SLOTS_BUSY')) {
+            throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'All dynamic payment fee slots are currently active. Please retry shortly.', 503)
+          }
+          if (rpcErr.message && rpcErr.message.includes('ORDER_ALREADY_PAID')) {
+            throw ApiError.conflict('Cannot allocate a platform fee for an order that is already paid.', 'ORDER_ALREADY_PAID')
+          }
+          // If RPC is missing / not implemented in this DB environment, allow fallback to direct table query
+          const isRpcMissing = !rpcErr.message || rpcErr.code === '42883' || rpcErr.code === 'PGRST202' || rpcErr.message.includes('function allocate_platform_fee')
+          if (!isRpcMissing) {
+            throw ApiError.internal(`Failed to allocate platform fee: ${rpcErr.message}`)
+          }
+        } else if (rpcData) {
           const slot = Array.isArray(rpcData) ? rpcData[0] : rpcData
           if (slot && (slot.allocated_fee_paise || slot.fee_paise)) {
             feePaise = slot.allocated_fee_paise || slot.fee_paise
@@ -1203,50 +1217,71 @@ async function handleCreateOrder(req, res, next) {
             feeSlotNeedsRelease = true
           }
         }
-      } catch {
-        // Fall back to direct table update if RPC fails
+      } catch (err) {
+        if (err instanceof ApiError) throw err
+        // Allow fallback to direct reservation query only if RPC function does not exist
       }
     }
 
-    // Direct platform_fee_reservations query if RPC not used or returned null
+    // Direct platform_fee_reservations query if RPC not present in environment
     if (!feePaise) {
       const { data: slots, error: slotErr } = await supabase
         .from('platform_fee_reservations')
         .select('*')
         .order('fee_paise', { ascending: true })
 
-      if (!slotErr && Array.isArray(slots) && slots.length > 0) {
-        const available = slots.find((s) => {
+      if (slotErr) {
+        throw ApiError.internal(`Failed to query platform fee reservations: ${slotErr.message}`)
+      }
+
+      if (Array.isArray(slots) && slots.length > 0) {
+        // Find available slots and attempt atomic optimistic update
+        const availableSlots = slots.filter((s) => {
           if (s.is_paid) return false
           if (!s.active_order_id) return true
           if (s.cooldown_expires_at && now >= new Date(s.cooldown_expires_at).getTime()) return true
           return false
         })
 
-        if (!available) {
+        if (availableSlots.length === 0) {
           throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'All dynamic payment fee slots are currently active. Please retry shortly.', 503)
         }
 
-        feePaise = available.fee_paise
-        const { error: reserveErr } = await supabase
-          .from('platform_fee_reservations')
-          .update({
-            active_order_id: orderId,
-            attempt_id: attemptId,
-            allocated_at: allocatedAt,
-            window_expires_at: windowExpiresAt,
-            cooldown_expires_at: cooldownExpiresAt,
-            is_paid: false,
-            paid_at: null,
-          })
-          .eq('fee_paise', feePaise)
+        // Try candidate slots with atomic conditional check to prevent concurrent double-booking
+        for (const candidate of availableSlots) {
+          const updateBuilder = supabase
+            .from('platform_fee_reservations')
+            .update({
+              active_order_id: orderId,
+              attempt_id: attemptId,
+              allocated_at: allocatedAt,
+              window_expires_at: windowExpiresAt,
+              cooldown_expires_at: cooldownExpiresAt,
+              is_paid: false,
+              paid_at: null,
+            })
+            .eq('fee_paise', candidate.fee_paise)
+            .eq('is_paid', false)
 
-        if (reserveErr) {
-          throw ApiError.internal('Failed to reserve platform fee slot.', 'FEE_RESERVATION_FAILED')
+          if (candidate.active_order_id) {
+            updateBuilder.eq('active_order_id', candidate.active_order_id)
+          } else {
+            updateBuilder.is('active_order_id', null)
+          }
+
+          const { data: updated, error: reserveErr } = await updateBuilder.select('fee_paise')
+          if (!reserveErr && updated && updated.length > 0) {
+            feePaise = candidate.fee_paise
+            feeSlotNeedsRelease = true
+            break
+          }
         }
-        feeSlotNeedsRelease = true
+
+        if (!feePaise) {
+          throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'All dynamic payment fee slots are currently active or being reserved concurrently. Please retry shortly.', 503)
+        }
       } else {
-        feePaise = 10
+        throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'Platform fee reservation slots are not configured. Please contact support.', 503)
       }
     }
 
@@ -1299,6 +1334,7 @@ async function handleCreateOrder(req, res, next) {
       updated_at: nowIso,
     }
 
+    orderPersisted = false
     const { error: insertOrderErr } = await supabase.from('orders').insert(orderRecord)
     if (insertOrderErr) {
       if (insertOrderErr.message && insertOrderErr.message.includes('idempotency_key')) {
@@ -1313,6 +1349,7 @@ async function handleCreateOrder(req, res, next) {
       }
       throw ApiError.internal(`Failed to persist order: ${insertOrderErr.message || 'Database error'}`)
     }
+    orderPersisted = true
 
     // 11. Persist fulfillment group
     const fulfillmentGroupId = `grp_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`
@@ -1361,21 +1398,37 @@ async function handleCreateOrder(req, res, next) {
       throw ApiError.internal(`Failed to persist order items: ${itemsErr.message}`)
     }
 
-    // 13. Inventory Reservation: attempt atomic RPC hold
+    // 13. Inventory Reservation: attempt atomic RPC hold (strict error propagation)
     if (typeof supabase.rpc === 'function') {
-      try {
-        const itemsPayload = pricedLines.map((l) => ({
-          store_id: store.id,
-          product_id: l.productId,
-          quantity: l.quantity,
-        }))
-        await supabase.rpc('reserve_order_inventory', {
-          p_order_id: orderId,
-          p_items: JSON.stringify(itemsPayload),
-          p_ttl_seconds: 420,
-        })
-      } catch {
-        // Non-blocking in environments where stored procedure is optional
+      const itemsPayload = pricedLines.map((l) => ({
+        store_id: store.id,
+        product_id: l.productId,
+        quantity: l.quantity,
+      }))
+      const { data: invData, error: invErr } = await supabase.rpc('reserve_order_inventory', {
+        p_order_id: orderId,
+        p_items: JSON.stringify(itemsPayload),
+        p_ttl_seconds: 420,
+      })
+
+      if (invErr) {
+        // If stored procedure reports out of stock or unavailable, fail authoritatively
+        if (invErr.message && invErr.message.includes('OUT_OF_STOCK')) {
+          throw ApiError.conflict('One or more items in your cart are out of stock.', 'OUT_OF_STOCK')
+        }
+        if (invErr.message && invErr.message.includes('PRODUCT_UNAVAILABLE')) {
+          throw ApiError.conflict('An item in your cart is no longer available.', 'PRODUCT_UNAVAILABLE')
+        }
+        if (invErr.message && invErr.message.includes('INVALID_QUANTITY')) {
+          throw ApiError.badRequest('Invalid quantity for order item.', 'INVALID_QUANTITY')
+        }
+        // If RPC is missing / 404 in an environment without inventory tracking, log warning but don't crash
+        const isRpcMissing = invErr.code === '42883' || invErr.code === 'PGRST202' || (invErr.message && invErr.message.includes('function reserve_order_inventory'))
+        if (!isRpcMissing) {
+          throw ApiError.internal(`Failed to reserve inventory: ${invErr.message}`)
+        }
+      } else if (invData === true) {
+        inventoryReserved = true
       }
     }
 
@@ -1443,27 +1496,51 @@ async function handleCreateOrder(req, res, next) {
     if (feeSlotNeedsRelease && (orderId || allocatedFeePaise)) {
       try {
         const supabase = getSupabaseAdmin()
-        if (typeof supabase.rpc === 'function' && orderId) {
-          await supabase.rpc('release_platform_fee', { p_order_id: orderId }).catch(() => {})
+        // 1. Release inventory hold if it was reserved
+        if (inventoryReserved && orderId && typeof supabase.rpc === 'function') {
+          await supabase.rpc('release_order_inventory', { p_order_id: orderId }).catch(() => {})
         }
-        if (allocatedFeePaise) {
-          await supabase
-            .from('platform_fee_reservations')
-            .update({
-              active_order_id: null,
-              attempt_id: null,
-              allocated_at: null,
-              window_expires_at: null,
-              cooldown_expires_at: null,
-            })
-            .eq('fee_paise', allocatedFeePaise)
-            .eq('is_paid', false)
-            .catch(() => {})
+
+        // 2. Roll back created database records in reverse topological order (children first, then parent)
+        let orderCleanedUp = !orderPersisted
+        if (orderPersisted && orderId) {
+          try {
+            await supabase.from('order_items').delete().eq('order_id', orderId)
+          } catch {}
+          try {
+            await supabase.from('order_fulfillment_groups').delete().eq('order_id', orderId)
+          } catch {}
+          try {
+            const { error: delErr } = await supabase.from('orders').delete().eq('id', orderId)
+            if (!delErr) {
+              orderCleanedUp = true
+            }
+          } catch {}
         }
-        if (orderId) {
-          await supabase.from('order_items').delete().eq('order_id', orderId).catch(() => {})
-          await supabase.from('order_fulfillment_groups').delete().eq('order_id', orderId).catch(() => {})
-          await supabase.from('orders').delete().eq('id', orderId).catch(() => {})
+
+        // 3. Release platform fee slot ONLY if order was cleaned up or never persisted
+        if (orderCleanedUp) {
+          if (typeof supabase.rpc === 'function' && orderId) {
+            await supabase.rpc('release_platform_fee', { p_order_id: orderId }).catch(() => {})
+          }
+          if (allocatedFeePaise) {
+            const releaseBuilder = supabase
+              .from('platform_fee_reservations')
+              .update({
+                active_order_id: null,
+                attempt_id: null,
+                allocated_at: null,
+                window_expires_at: null,
+                cooldown_expires_at: null,
+              })
+              .eq('fee_paise', allocatedFeePaise)
+              .eq('is_paid', false)
+
+            if (orderId) {
+              releaseBuilder.eq('active_order_id', orderId)
+            }
+            await releaseBuilder.catch(() => {})
+          }
         }
       } catch {
         // Suppress rollback cleanup errors to preserve original exception

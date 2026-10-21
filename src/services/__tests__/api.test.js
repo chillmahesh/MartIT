@@ -118,6 +118,52 @@ describe('API Transport & Error Handling (src/services/api.js)', () => {
     expect(calledOptions.headers.Authorization).toBe('Bearer test_jwt_token')
   })
 
+  it('constructs exact endpoints with production Render base URL (https://martit.onrender.com)', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    envConfig.env.apiBaseUrl = 'https://martit.onrender.com'
+
+    const capturedCalls = []
+    globalThis.fetch = vi.fn().mockImplementation((url, options) => {
+      capturedCalls.push({ url, method: options?.method })
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ status: 'ok' }),
+      })
+    })
+
+    // Test delivery quote endpoint
+    await request('delivery.quote', { storeId: 'store_1', locationId: 'loc_hostel_a' })
+    expect(capturedCalls[0].url).toBe('https://martit.onrender.com/delivery/quote')
+    expect(capturedCalls[0].method).toBe('POST')
+
+    // Test orders create endpoint
+    await request('orders.create', { storeId: 'store_1', lines: [] })
+    expect(capturedCalls[1].url).toBe('https://martit.onrender.com/orders/create')
+    expect(capturedCalls[1].method).toBe('POST')
+
+    // Test locations list endpoint
+    await request('locations.list', {})
+    expect(capturedCalls[2].url).toBe('https://martit.onrender.com/locations/list')
+    expect(capturedCalls[2].method).toBe('POST')
+  })
+
+  it('handles production base URL with trailing slash cleanly without double slashes', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    envConfig.env.apiBaseUrl = 'https://martit.onrender.com/'
+
+    let calledUrl = null
+    globalThis.fetch = vi.fn().mockImplementation((url) => {
+      calledUrl = url
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({}),
+      })
+    })
+
+    await request('delivery.quote', { storeId: 'store_1', locationId: 'loc_hostel_a' })
+    expect(calledUrl).toBe('https://martit.onrender.com/delivery/quote')
+  })
+
   it('uses mock backend handler when isMockBackend is true', async () => {
     vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(true)
 

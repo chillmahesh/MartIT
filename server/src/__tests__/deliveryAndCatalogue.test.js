@@ -34,6 +34,8 @@ describe('Catalogue & Authoritative Delivery Quote Endpoints', () => {
         { id: 'loc_close', name: 'Nearby Hostel', latitude: '12.973000', longitude: '77.590000', is_active: true }, // ~0.33 km -> band 10
         { id: 'loc_1km', name: 'Mid Hostel', latitude: '12.978000', longitude: '77.590000', is_active: true }, // ~0.89 km -> band 15
         { id: 'loc_far', name: 'Outside Campus', latitude: '13.040000', longitude: '77.590000', is_active: true }, // ~7.7 km -> outside 5km
+        { id: 'loc_hostel_a', name: 'Hostel A (Boys)', latitude: '12.971599', longitude: '77.594563', is_active: true }, // Canonical A Block
+        { id: 'loc_inactive', name: 'Old Inactive Block', latitude: '12.971599', longitude: '77.594563', is_active: false },
       ],
       categories: [
         { id: 'dairy', name: 'Milk & Bread', icon: 'MilkCarton', sort_order: 1 },
@@ -243,5 +245,52 @@ describe('Catalogue & Authoritative Delivery Quote Endpoints', () => {
 
     expect(res.status).toBe(200)
     expect(res.body.isOpen).toBe(true)
+  })
+
+  it('resolves valid quote for canonical campus A Block destination (loc_hostel_a)', async () => {
+    const res = await request(app)
+      .post('/delivery/quote')
+      .send({ storeId: 'store_open', locationId: 'loc_hostel_a' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.deliveryFee).toBe(10)
+    expect(res.body.feeLabel).toBe('Flat campus delivery')
+    expect(res.body.distanceKm).toBeGreaterThan(0)
+    expect(res.body.distanceKm).toBeLessThanOrEqual(5)
+    expect(res.body.locationId).toBe('loc_hostel_a')
+  })
+
+  it('rejects delivery quote for missing / unknown location with 404 LOCATION_NOT_FOUND', async () => {
+    const res = await request(app)
+      .post('/delivery/quote')
+      .send({ storeId: 'store_open', locationId: 'loc_unknown' })
+
+    expect(res.status).toBe(404)
+    expect(res.body.code).toBe('LOCATION_NOT_FOUND')
+    expect(res.body.message).toBe('Choose a valid delivery spot first.')
+  })
+
+  it('rejects delivery quote for inactive location with 404 LOCATION_NOT_FOUND', async () => {
+    const res = await request(app)
+      .post('/delivery/quote')
+      .send({ storeId: 'store_open', locationId: 'loc_inactive' })
+
+    expect(res.status).toBe(404)
+    expect(res.body.code).toBe('LOCATION_NOT_FOUND')
+    expect(res.body.message).toBe('Choose a valid delivery spot first.')
+  })
+
+  it('supports identical quote responses across REST POST /api/v1/delivery/quote and RPC POST /delivery/quote', async () => {
+    const rpcRes = await request(app)
+      .post('/delivery/quote')
+      .send({ storeId: 'store_open', locationId: 'loc_hostel_a' })
+
+    const restRes = await request(app)
+      .post('/api/v1/delivery/quote')
+      .send({ storeId: 'store_open', locationId: 'loc_hostel_a' })
+
+    expect(rpcRes.status).toBe(200)
+    expect(restRes.status).toBe(200)
+    expect(rpcRes.body).toEqual(restRes.body)
   })
 })

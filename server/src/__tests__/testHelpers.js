@@ -57,11 +57,38 @@ export function createMockSupabaseClient({
         const queryError = { message: state.tableErrors[table] }
         return {
           select() { return this },
+          insert() {
+            return {
+              select() { return this },
+              single() { return Promise.resolve({ data: null, error: queryError }) },
+              maybeSingle() { return Promise.resolve({ data: null, error: queryError }) },
+              catch(onRejected) { return Promise.resolve({ data: null, error: queryError }).catch(onRejected) },
+              then(resolve) { return resolve({ data: null, error: queryError }) },
+            }
+          },
+          update() {
+            return {
+              select() { return this },
+              eq() { return this },
+              is() { return this },
+              catch(onRejected) { return Promise.resolve({ data: null, error: queryError }).catch(onRejected) },
+              then(resolve) { return resolve({ data: null, error: queryError }) },
+            }
+          },
+          delete() {
+            return {
+              eq() { return this },
+              catch(onRejected) { return Promise.resolve({ data: null, error: queryError }).catch(onRejected) },
+              then(resolve) { return resolve({ data: null, error: queryError }) },
+            }
+          },
           eq() { return this },
+          is() { return this },
           order() { return this },
           limit() { return this },
           async maybeSingle() { return { data: null, error: queryError } },
           async single() { return { data: null, error: queryError } },
+          catch(onRejected) { return Promise.resolve({ data: null, error: queryError }).catch(onRejected) },
           then(resolve) { return resolve({ data: null, error: queryError }) },
         }
       }
@@ -83,6 +110,10 @@ export function createMockSupabaseClient({
           return query
         },
         eq(column, value) {
+          filters.push({ column, value })
+          return query
+        },
+        is(column, value) {
           filters.push({ column, value })
           return query
         },
@@ -162,20 +193,28 @@ export function createMockSupabaseClient({
           isDelete = true
           return query
         },
+        catch(onRejected) {
+          return Promise.resolve(this).catch(onRejected)
+        },
         then(resolve, reject) {
           if (pendingUpdate) {
+            const updatedRows = []
             for (let i = 0; i < currentTableData.length; i++) {
               if (filters.every((f) => currentTableData[i][f.column] === f.value)) {
                 currentTableData[i] = { ...currentTableData[i], ...pendingUpdate }
+                updatedRows.push(currentTableData[i])
               }
             }
-            return resolve({ data: currentTableData, error: null })
+            return resolve({ data: updatedRows, error: null })
           }
 
           if (isDelete) {
-            state[table] = currentTableData.filter(
+            const kept = currentTableData.filter(
               (row) => !filters.every((f) => row[f.column] === f.value),
             )
+            currentTableData.length = 0
+            currentTableData.push(...kept)
+            state[table] = currentTableData
             return resolve({ data: null, error: null })
           }
 
@@ -201,6 +240,10 @@ export function createMockSupabaseClient({
       if (state.rpcError) {
         return { data: null, error: state.rpcError }
       }
+      if (state.rpcErrors && state.rpcErrors[fn]) {
+        const errVal = state.rpcErrors[fn]
+        return { data: null, error: typeof errVal === 'string' ? { message: errVal } : errVal }
+      }
 
       if (fn === 'allocate_platform_fee') {
         const orderId = args?.p_order_id
@@ -214,9 +257,12 @@ export function createMockSupabaseClient({
           (r) => !r.is_paid && (!r.active_order_id || (r.cooldown_expires_at && now >= new Date(r.cooldown_expires_at).getTime()))
         )
         if (!slot) {
-          slot = { fee_paise: 12 }
-          if (!state.platform_fee_reservations) state.platform_fee_reservations = []
-          state.platform_fee_reservations.push(slot)
+          if (!state.platform_fee_reservations || state.platform_fee_reservations.length === 0) {
+            slot = { fee_paise: 12 }
+            state.platform_fee_reservations = [slot]
+          } else {
+            return { data: null, error: { message: 'ALL_PLATFORM_FEE_SLOTS_BUSY' } }
+          }
         }
         slot.active_order_id = orderId
         slot.attempt_id = attemptId
