@@ -1176,126 +1176,130 @@ async function handleCreateOrder(req, res, next) {
     const baseAmount = Math.round(itemSubtotal + deliveryFee)
 
     orderId = `ord_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`
-    const attemptId = `att_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`
-    const now = Date.now()
-    const nowIso = new Date(now).toISOString()
-
-    // 9. Platform Fee Allocation: lease unique 1-99 paise slot with concurrency safety
-    let feePaise = null
-    let allocatedAt = nowIso
-    let windowExpiresAt = new Date(now + PLATFORM_FEE_WINDOW_MS).toISOString()
-    let cooldownExpiresAt = new Date(now + PLATFORM_FEE_WINDOW_MS + PLATFORM_FEE_COOLDOWN_MS).toISOString()
-
-    // Primary: Try PostgreSQL RPC allocate_platform_fee (atomic FOR UPDATE SKIP LOCKED)
-    if (typeof supabase.rpc === 'function') {
-      try {
-        const { data: rpcData, error: rpcErr } = await supabase.rpc('allocate_platform_fee', {
-          p_order_id: orderId,
-          p_attempt_id: attemptId,
-          p_window_seconds: 120,
-          p_cooldown_seconds: 300,
-        })
-        if (rpcErr) {
-          if (rpcErr.message && rpcErr.message.includes('ALL_PLATFORM_FEE_SLOTS_BUSY')) {
-            throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'All dynamic payment fee slots are currently active. Please retry shortly.', 503)
-          }
-          if (rpcErr.message && rpcErr.message.includes('ORDER_ALREADY_PAID')) {
-            throw ApiError.conflict('Cannot allocate a platform fee for an order that is already paid.', 'ORDER_ALREADY_PAID')
-          }
-          // If RPC is missing / not implemented in this DB environment, allow fallback to direct table query
-          const isRpcMissing = !rpcErr.message || rpcErr.code === '42883' || rpcErr.code === 'PGRST202' || rpcErr.message.includes('function allocate_platform_fee')
-          if (!isRpcMissing) {
-            throw ApiError.internal(`Failed to allocate platform fee: ${rpcErr.message}`)
-          }
-        } else if (rpcData) {
-          const slot = Array.isArray(rpcData) ? rpcData[0] : rpcData
-          if (slot && (slot.allocated_fee_paise || slot.fee_paise)) {
-            feePaise = slot.allocated_fee_paise || slot.fee_paise
-            allocatedAt = slot.allocated_at || allocatedAt
-            windowExpiresAt = slot.window_expires_at || windowExpiresAt
-            cooldownExpiresAt = slot.cooldown_expires_at || cooldownExpiresAt
-            feeSlotNeedsRelease = true
-          }
-        }
-      } catch (err) {
-        if (err instanceof ApiError) throw err
-        // Allow fallback to direct reservation query only if RPC function does not exist
-      }
-    }
-
-    // Direct platform_fee_reservations query if RPC not present in environment
-    if (!feePaise) {
-      const { data: slots, error: slotErr } = await supabase
-        .from('platform_fee_reservations')
-        .select('*')
-        .order('fee_paise', { ascending: true })
-
-      if (slotErr) {
-        throw ApiError.internal(`Failed to query platform fee reservations: ${slotErr.message}`)
-      }
-
-      if (Array.isArray(slots) && slots.length > 0) {
-        // Find available slots and attempt atomic optimistic update
-        const availableSlots = slots.filter((s) => {
-          if (s.is_paid) return false
-          if (!s.active_order_id) return true
-          if (s.cooldown_expires_at && now >= new Date(s.cooldown_expires_at).getTime()) return true
-          return false
-        })
-
-        if (availableSlots.length === 0) {
-          throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'All dynamic payment fee slots are currently active. Please retry shortly.', 503)
-        }
-
-        // Try candidate slots with atomic conditional check to prevent concurrent double-booking
-        for (const candidate of availableSlots) {
-          const updateBuilder = supabase
-            .from('platform_fee_reservations')
-            .update({
-              active_order_id: orderId,
-              attempt_id: attemptId,
-              allocated_at: allocatedAt,
-              window_expires_at: windowExpiresAt,
-              cooldown_expires_at: cooldownExpiresAt,
-              is_paid: false,
-              paid_at: null,
-            })
-            .eq('fee_paise', candidate.fee_paise)
-            .eq('is_paid', false)
-
-          if (candidate.active_order_id) {
-            updateBuilder.eq('active_order_id', candidate.active_order_id)
-          } else {
-            updateBuilder.is('active_order_id', null)
-          }
-
-          const { data: updated, error: reserveErr } = await updateBuilder.select('fee_paise')
-          if (!reserveErr && updated && updated.length > 0) {
-            feePaise = candidate.fee_paise
-            feeSlotNeedsRelease = true
-            break
-          }
-        }
-
-        if (!feePaise) {
-          throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'All dynamic payment fee slots are currently active or being reserved concurrently. Please retry shortly.', 503)
-        }
-      } else {
-        throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'Platform fee reservation slots are not configured. Please contact support.', 503)
-      }
-    }
-
-    allocatedFeePaise = feePaise
-    const platformFee = Math.round(feePaise) / 100
-    const totalPayable = Math.round((baseAmount * 100 + feePaise)) / 100
-
-    // 10. Persist order record in database
     const finalIdempotencyKey = idempotencyKey || `idem_${crypto.randomUUID().replace(/-/g, '')}`
-    const orderRecord = {
-      id: orderId,
-      customer_id: req.user.id,
-      delivery_location_id: location.id,
-      delivery_location_snapshot: {
+
+    // 9. Atomic Order Creation via PostgreSQL stored procedure
+    // Bundles slot locking, parent order insertion, fee slot binding, fulfillment group,
+    // order items, and inventory reservation into a single atomic transaction.
+    const atomicItemsPayload = pricedLines.map((l) => ({
+      product_id: l.productId,
+      productId: l.productId,
+      quantity: l.quantity,
+    }))
+
+    const { data: atomicOrder, error: atomicErr } = await supabase.rpc('create_order_atomic', {
+      p_order_id: orderId,
+      p_customer_id: req.user.id,
+      p_store_id: store.id,
+      p_location_id: location.id,
+      p_customer_details: customerDetails || null,
+      p_items: atomicItemsPayload,
+      p_delivery_fee: deliveryFee,
+      p_fee_policy_version: PRICING_VERSION,
+      p_route_distance_km: Number(distanceKm.toFixed(4)),
+      p_idempotency_key: finalIdempotencyKey,
+      p_fee_window_seconds: 120,
+      p_fee_cooldown_seconds: 300,
+      p_inventory_ttl_seconds: 420,
+    })
+
+    if (atomicErr) {
+      if (atomicErr.message && atomicErr.message.includes('ALL_PLATFORM_FEE_SLOTS_BUSY')) {
+        throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'All dynamic payment fee slots are currently active. Please retry shortly.', 503)
+      }
+      if (atomicErr.message && atomicErr.message.includes('OUT_OF_STOCK')) {
+        throw ApiError.conflict('One or more items in your cart are out of stock.', 'OUT_OF_STOCK')
+      }
+      if (atomicErr.message && atomicErr.message.includes('PRODUCT_UNAVAILABLE')) {
+        throw ApiError.conflict('An item in your cart is no longer available.', 'PRODUCT_UNAVAILABLE')
+      }
+      if (atomicErr.message && atomicErr.message.includes('STORE_CLOSED')) {
+        throw ApiError.conflict('This store is closed right now.', 'STORE_CLOSED')
+      }
+      if (atomicErr.message && atomicErr.message.includes('LOCATION_NOT_FOUND')) {
+        throw ApiError.notFound('Choose a valid delivery spot first.', 'LOCATION_NOT_FOUND')
+      }
+      if (atomicErr.message && atomicErr.message.includes('STORE_NOT_FOUND')) {
+        throw ApiError.notFound('That store is not available.', 'STORE_NOT_FOUND')
+      }
+      if (atomicErr.message && atomicErr.message.includes('IDEMPOTENCY_CONFLICT')) {
+        throw ApiError.forbidden('Idempotency key belongs to another customer.', 'IDEMPOTENCY_CONFLICT')
+      }
+      if (atomicErr.message && (atomicErr.message.includes('idempotency_key') || atomicErr.code === '23505')) {
+        // Concurrent racer order with the same idempotency key
+        const { data: racerOrder } = await supabase
+          .from('orders')
+          .select(`
+            id, customer_id, runner_id, delivery_location_id, delivery_location_snapshot,
+            status, payment_status, item_subtotal, combined_delivery_fee, base_amount, platform_fee,
+            total_payable, route_distance_km, route_stop_sequence, routing_provider, routing_mode,
+            fee_policy_version, payment_attempt_id, fee_paise, payment_allocated_at,
+            payment_window_expires_at, payment_cooldown_expires_at, paid_at, created_at,
+            order_fulfillment_groups (
+              id, store_id, store_snapshot, status, pickup_sequence_index, picked_up_at,
+              order_items (
+                id, product_id, product_name, product_pack, unit_price, quantity, line_subtotal
+              )
+            )
+          `)
+          .eq('idempotency_key', finalIdempotencyKey)
+          .maybeSingle()
+        if (racerOrder) {
+          return res.status(200).json(formatCreatedOrderResponse(racerOrder))
+        }
+      }
+      throw ApiError.internal(`Failed to create order: ${atomicErr.message || 'Database error'}`)
+    }
+
+    if (!atomicOrder) {
+      throw ApiError.internal('Failed to create order: No order data returned from atomic procedure.')
+    }
+
+    // Handle idempotent return from create_order_atomic
+    if (atomicOrder.isIdempotentHit) {
+      const existingId = atomicOrder.orderId || atomicOrder.id
+      const { data: existingOrder } = await supabase
+        .from('orders')
+        .select(`
+          id, customer_id, runner_id, delivery_location_id, delivery_location_snapshot,
+          status, payment_status, item_subtotal, combined_delivery_fee, base_amount, platform_fee,
+          total_payable, route_distance_km, route_stop_sequence, routing_provider, routing_mode,
+          fee_policy_version, payment_attempt_id, fee_paise, payment_allocated_at,
+          payment_window_expires_at, payment_cooldown_expires_at, paid_at, created_at,
+          order_fulfillment_groups (
+            id, store_id, store_snapshot, status, pickup_sequence_index, picked_up_at,
+            order_items (
+              id, product_id, product_name, product_pack, unit_price, quantity, line_subtotal
+            )
+          )
+        `)
+        .eq('id', existingId)
+        .maybeSingle()
+      if (existingOrder) {
+        return res.status(200).json(formatCreatedOrderResponse(existingOrder))
+      }
+    }
+
+    const assignedOrderId = atomicOrder.orderId || atomicOrder.id || orderId
+    const feePaise = atomicOrder.feePaise
+    const attemptId = atomicOrder.attemptId
+    const allocatedAt = atomicOrder.allocatedAt || new Date().toISOString()
+    const windowExpiresAt = atomicOrder.windowExpiresAt
+    const cooldownExpiresAt = atomicOrder.cooldownExpiresAt
+    const authoritativeSubtotal = Number(atomicOrder.itemSubtotal ?? itemSubtotal)
+    const authoritativeDeliveryFee = Number(atomicOrder.deliveryFee ?? deliveryFee)
+    const authoritativeBaseAmount = Number(atomicOrder.baseAmount ?? baseAmount)
+    const authoritativePlatformFee = Number(atomicOrder.platformFee ?? (feePaise / 100))
+    const authoritativeTotal = Number(atomicOrder.totalPayable ?? (authoritativeBaseAmount + authoritativePlatformFee))
+
+    // 10. Format and return response expected by frontend payment screen
+    const responsePayload = {
+      id: assignedOrderId,
+      customerId: req.user.id,
+      storeId: store.id,
+      locationId: location.id,
+      deliveryLocationId: location.id,
+      deliveryLocationSnapshot: {
         id: location.id,
         name: location.name,
         group_name: location.group_name,
@@ -1303,145 +1307,6 @@ async function handleCreateOrder(req, res, next) {
         longitude: location.longitude,
         customerDetails: customerDetails || null,
       },
-      status: 'AWAITING_PAYMENT',
-      payment_status: 'PENDING',
-      item_subtotal: itemSubtotal.toFixed(2),
-      combined_delivery_fee: deliveryFee.toFixed(2),
-      base_amount: baseAmount.toFixed(2),
-      platform_fee: platformFee.toFixed(2),
-      total_payable: totalPayable.toFixed(2),
-      route_distance_km: Number(distanceKm.toFixed(4)),
-      route_stop_sequence: [
-        { storeId: store.id, type: 'pickup', sequence: 0 },
-        { locationId: location.id, type: 'dropoff', sequence: 1 },
-      ],
-      routing_provider: 'straight_line_haversine',
-      routing_mode: 'walking',
-      routing_metadata: {
-        isEstimate: true,
-        distanceMethod: 'straight_line',
-      },
-      fee_policy_version: PRICING_VERSION,
-      payment_attempt_id: attemptId,
-      fee_paise: feePaise,
-      payment_allocated_at: allocatedAt,
-      payment_window_expires_at: windowExpiresAt,
-      payment_cooldown_expires_at: cooldownExpiresAt,
-      paid_at: null,
-      runner_id: null,
-      idempotency_key: finalIdempotencyKey,
-      created_at: nowIso,
-      updated_at: nowIso,
-    }
-
-    orderPersisted = false
-    const { error: insertOrderErr } = await supabase.from('orders').insert(orderRecord)
-    if (insertOrderErr) {
-      if (insertOrderErr.message && insertOrderErr.message.includes('idempotency_key')) {
-        const { data: racerOrder } = await supabase
-          .from('orders')
-          .select('*')
-          .eq('idempotency_key', finalIdempotencyKey)
-          .maybeSingle()
-        if (racerOrder) {
-          return res.status(200).json(formatCreatedOrderResponse(racerOrder))
-        }
-      }
-      throw ApiError.internal(`Failed to persist order: ${insertOrderErr.message || 'Database error'}`)
-    }
-    orderPersisted = true
-
-    // 11. Persist fulfillment group
-    const fulfillmentGroupId = `grp_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`
-    const fulfillmentGroupRecord = {
-      id: fulfillmentGroupId,
-      order_id: orderId,
-      store_id: store.id,
-      store_snapshot: {
-        id: store.id,
-        name: store.name,
-        description: store.description || null,
-        latitude: store.latitude,
-        longitude: store.longitude,
-      },
-      pickup_sequence_index: 0,
-      status: 'PENDING',
-      created_at: nowIso,
-      updated_at: nowIso,
-    }
-
-    const { error: groupErr } = await supabase
-      .from('order_fulfillment_groups')
-      .insert(fulfillmentGroupRecord)
-
-    if (groupErr) {
-      throw ApiError.internal(`Failed to persist order fulfillment group: ${groupErr.message}`)
-    }
-
-    // 12. Persist order items
-    const orderItemsRecords = pricedLines.map((line) => ({
-      id: `item_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
-      order_id: orderId,
-      fulfillment_group_id: fulfillmentGroupId,
-      store_id: store.id,
-      product_id: line.productId,
-      product_name: line.name,
-      product_pack: line.pack,
-      unit_price: line.unitPrice.toFixed(2),
-      quantity: line.quantity,
-      line_subtotal: line.lineSubtotal.toFixed(2),
-      created_at: nowIso,
-    }))
-
-    const { error: itemsErr } = await supabase.from('order_items').insert(orderItemsRecords)
-    if (itemsErr) {
-      throw ApiError.internal(`Failed to persist order items: ${itemsErr.message}`)
-    }
-
-    // 13. Inventory Reservation: attempt atomic RPC hold (strict error propagation)
-    if (typeof supabase.rpc === 'function') {
-      const itemsPayload = pricedLines.map((l) => ({
-        store_id: store.id,
-        product_id: l.productId,
-        quantity: l.quantity,
-      }))
-      const { data: invData, error: invErr } = await supabase.rpc('reserve_order_inventory', {
-        p_order_id: orderId,
-        p_items: JSON.stringify(itemsPayload),
-        p_ttl_seconds: 420,
-      })
-
-      if (invErr) {
-        // If stored procedure reports out of stock or unavailable, fail authoritatively
-        if (invErr.message && invErr.message.includes('OUT_OF_STOCK')) {
-          throw ApiError.conflict('One or more items in your cart are out of stock.', 'OUT_OF_STOCK')
-        }
-        if (invErr.message && invErr.message.includes('PRODUCT_UNAVAILABLE')) {
-          throw ApiError.conflict('An item in your cart is no longer available.', 'PRODUCT_UNAVAILABLE')
-        }
-        if (invErr.message && invErr.message.includes('INVALID_QUANTITY')) {
-          throw ApiError.badRequest('Invalid quantity for order item.', 'INVALID_QUANTITY')
-        }
-        // If RPC is missing / 404 in an environment without inventory tracking, log warning but don't crash
-        const isRpcMissing = invErr.code === '42883' || invErr.code === 'PGRST202' || (invErr.message && invErr.message.includes('function reserve_order_inventory'))
-        if (!isRpcMissing) {
-          throw ApiError.internal(`Failed to reserve inventory: ${invErr.message}`)
-        }
-      } else if (invData === true) {
-        inventoryReserved = true
-      }
-    }
-
-    feeSlotNeedsRelease = false
-
-    // 14. Return formatted response expected by frontend payment screen
-    const responsePayload = {
-      id: orderId,
-      customerId: req.user.id,
-      storeId: store.id,
-      locationId: location.id,
-      deliveryLocationId: location.id,
-      deliveryLocationSnapshot: orderRecord.delivery_location_snapshot,
       lines: pricedLines.map((l) => ({
         productId: l.productId,
         name: l.name,
@@ -1452,11 +1317,11 @@ async function handleCreateOrder(req, res, next) {
       })),
       customerDetails: customerDetails || null,
       pricing: {
-        itemSubtotal,
-        deliveryFee,
-        baseAmount,
-        platformFee,
-        total: totalPayable,
+        itemSubtotal: authoritativeSubtotal,
+        deliveryFee: authoritativeDeliveryFee,
+        baseAmount: authoritativeBaseAmount,
+        platformFee: authoritativePlatformFee,
+        total: authoritativeTotal,
         distanceKm: Number(distanceKm.toFixed(2)),
         distanceMethod: 'straight_line',
         pricingVersion: PRICING_VERSION,
@@ -1472,9 +1337,15 @@ async function handleCreateOrder(req, res, next) {
       },
       fulfillmentGroups: [
         {
-          id: fulfillmentGroupId,
+          id: `grp_${assignedOrderId.replace(/^ord_/, '')}`,
           storeId: store.id,
-          storeSnapshot: fulfillmentGroupRecord.store_snapshot,
+          storeSnapshot: {
+            id: store.id,
+            name: store.name,
+            description: store.description || null,
+            latitude: store.latitude,
+            longitude: store.longitude,
+          },
           status: 'PENDING',
           orderItems: pricedLines.map((l) => ({
             productId: l.productId,
@@ -1488,64 +1359,11 @@ async function handleCreateOrder(req, res, next) {
       ],
       status: 'AWAITING_PAYMENT',
       paymentStatus: 'PENDING',
-      createdAt: nowIso,
+      createdAt: allocatedAt,
     }
 
     res.status(201).json(responsePayload)
   } catch (err) {
-    if (feeSlotNeedsRelease && (orderId || allocatedFeePaise)) {
-      try {
-        const supabase = getSupabaseAdmin()
-        // 1. Release inventory hold if it was reserved
-        if (inventoryReserved && orderId && typeof supabase.rpc === 'function') {
-          await supabase.rpc('release_order_inventory', { p_order_id: orderId }).catch(() => {})
-        }
-
-        // 2. Roll back created database records in reverse topological order (children first, then parent)
-        let orderCleanedUp = !orderPersisted
-        if (orderPersisted && orderId) {
-          try {
-            await supabase.from('order_items').delete().eq('order_id', orderId)
-          } catch {}
-          try {
-            await supabase.from('order_fulfillment_groups').delete().eq('order_id', orderId)
-          } catch {}
-          try {
-            const { error: delErr } = await supabase.from('orders').delete().eq('id', orderId)
-            if (!delErr) {
-              orderCleanedUp = true
-            }
-          } catch {}
-        }
-
-        // 3. Release platform fee slot ONLY if order was cleaned up or never persisted
-        if (orderCleanedUp) {
-          if (typeof supabase.rpc === 'function' && orderId) {
-            await supabase.rpc('release_platform_fee', { p_order_id: orderId }).catch(() => {})
-          }
-          if (allocatedFeePaise) {
-            const releaseBuilder = supabase
-              .from('platform_fee_reservations')
-              .update({
-                active_order_id: null,
-                attempt_id: null,
-                allocated_at: null,
-                window_expires_at: null,
-                cooldown_expires_at: null,
-              })
-              .eq('fee_paise', allocatedFeePaise)
-              .eq('is_paid', false)
-
-            if (orderId) {
-              releaseBuilder.eq('active_order_id', orderId)
-            }
-            await releaseBuilder.catch(() => {})
-          }
-        }
-      } catch {
-        // Suppress rollback cleanup errors to preserve original exception
-      }
-    }
     next(err)
   }
 }

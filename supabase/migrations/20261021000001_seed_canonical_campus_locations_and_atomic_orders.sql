@@ -155,7 +155,11 @@ BEGIN
   v_platform_fee := round((v_fee_paise::numeric / 100.0), 2);
 
   -- 6. Lock and Validate Products, Decrement Stock
-  FOR v_item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, quantity INTEGER)
+  FOR v_item IN
+    SELECT
+      COALESCE(x.product_id, x."productId") AS product_id,
+      x.quantity
+    FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, "productId" VARCHAR, quantity INTEGER)
   LOOP
     IF v_item.quantity IS NULL OR v_item.quantity <= 0 THEN
       RAISE EXCEPTION 'INVALID_QUANTITY' USING HINT = 'Quantity must be positive.';
@@ -253,7 +257,11 @@ BEGIN
 
   -- 10. Insert Order Items & Record Inventory Reservations
   -- Now that the parent order exists, inventory_reservations and order_items can safely reference it.
-  FOR v_item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, quantity INTEGER)
+  FOR v_item IN
+    SELECT
+      COALESCE(x.product_id, x."productId") AS product_id,
+      x.quantity
+    FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, "productId" VARCHAR, quantity INTEGER)
   LOOP
     SELECT id, name, pack, price INTO v_prod
     FROM public.products

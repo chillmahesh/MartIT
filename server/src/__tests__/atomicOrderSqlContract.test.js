@@ -55,6 +55,10 @@ describe('create_order_atomic SQL Migration Contract & Invariants', () => {
   it('qualifies pfr.cooldown_expires_at in create_order_atomic to prevent column reference ambiguity', () => {
     expect(migrationSql).toMatch(/SELECT\s+pfr\.fee_paise\s+INTO\s+v_fee_paise\s+FROM\s+public\.platform_fee_reservations\s+pfr\s+WHERE\s+\(pfr\.active_order_id\s+IS\s+NULL\s+OR\s+v_now\s*>=\s*pfr\.cooldown_expires_at\)/)
   })
+
+  it('normalizes item payload keys by handling both product_id and productId via COALESCE', () => {
+    expect(migrationSql).toMatch(/COALESCE\(x\.product_id,\s*x\."productId"\)/)
+  })
 })
 
 describe('allocate_platform_fee SQL Function Contract', () => {
@@ -71,3 +75,20 @@ describe('allocate_platform_fee SQL Function Contract', () => {
     expect(feeMigrationSql).toMatch(/SELECT\s+pfr\.fee_paise\s+INTO\s+v_paise\s+FROM\s+public\.platform_fee_reservations\s+pfr\s+WHERE\s+\(pfr\.active_order_id\s+IS\s+NULL\s+OR\s+v_now\s*>=\s*pfr\.cooldown_expires_at\)/)
   })
 })
+
+describe('Express orders.js Atomic Integration Contract', () => {
+  const ordersRoutePath = path.resolve(process.cwd(), 'server/src/routes/orders.js')
+  const ordersRouteCode = fs.readFileSync(ordersRoutePath, 'utf8')
+
+  it('invokes create_order_atomic RPC instead of multi-step non-transactional writes', () => {
+    expect(ordersRouteCode).toContain("supabase.rpc('create_order_atomic'")
+    // Must NOT call allocate_platform_fee directly in handleCreateOrder
+    expect(ordersRouteCode).not.toContain("supabase.rpc('allocate_platform_fee'")
+  })
+
+  it('passes normalized product_id and productId in items payload to create_order_atomic', () => {
+    expect(ordersRouteCode).toMatch(/product_id:\s*l\.productId/)
+    expect(ordersRouteCode).toMatch(/productId:\s*l\.productId/)
+  })
+})
+

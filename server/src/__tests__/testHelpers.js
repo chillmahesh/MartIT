@@ -245,6 +245,144 @@ export function createMockSupabaseClient({
         return { data: null, error: typeof errVal === 'string' ? { message: errVal } : errVal }
       }
 
+      if (fn === 'create_order_atomic') {
+        if (state.rpcErrors?.create_order_atomic || state.rpcErrors?.allocate_platform_fee || state.rpcErrors?.reserve_order_inventory) {
+          const errVal = state.rpcErrors.create_order_atomic || state.rpcErrors.allocate_platform_fee || state.rpcErrors.reserve_order_inventory
+          return { data: null, error: typeof errVal === 'string' ? { message: errVal } : errVal }
+        }
+        if (state.tableErrors?.orders || state.tableErrors?.order_fulfillment_groups || state.tableErrors?.order_items) {
+          return { data: null, error: { message: 'synthetic table error' } }
+        }
+
+        const orderId = args?.p_order_id
+        const customerId = args?.p_customer_id
+        const idempotencyKey = args?.p_idempotency_key
+        const now = Date.now()
+        const nowIso = new Date(now).toISOString()
+        const windowExp = new Date(now + 120000).toISOString()
+        const cooldownExp = new Date(now + 420000).toISOString()
+        const deliveryFee = Number(args?.p_delivery_fee ?? 10)
+
+        // Idempotency Check
+        const existingOrder = (state.orders || []).find(
+          (o) => (idempotencyKey && o.idempotency_key === idempotencyKey) || o.id === orderId
+        )
+        if (existingOrder) {
+          if (existingOrder.customer_id && existingOrder.customer_id !== customerId) {
+            return { data: null, error: { message: 'IDEMPOTENCY_CONFLICT' } }
+          }
+          return {
+            data: {
+              orderId: existingOrder.id,
+              id: existingOrder.id,
+              customerId: existingOrder.customer_id,
+              status: existingOrder.status,
+              paymentStatus: existingOrder.payment_status,
+              feePaise: existingOrder.fee_paise,
+              itemSubtotal: Number(existingOrder.item_subtotal),
+              deliveryFee: Number(existingOrder.combined_delivery_fee),
+              baseAmount: Number(existingOrder.base_amount),
+              platformFee: Number(existingOrder.platform_fee),
+              totalPayable: Number(existingOrder.total_payable),
+              isIdempotentHit: true,
+            },
+            error: null,
+          }
+        }
+
+        // Validate products and deduct stock
+        let subtotal = 0
+        const items = args?.p_items || []
+        for (const item of items) {
+          const pid = item.product_id || item.productId
+          const qty = item.quantity
+          const prod = (state.products || []).find((p) => p.id === pid)
+          if (!prod || !prod.is_available) {
+            return { data: null, error: { message: 'PRODUCT_UNAVAILABLE' } }
+          }
+          if (prod.stock < qty) {
+            return { data: null, error: { message: 'OUT_OF_STOCK' } }
+          }
+          prod.stock -= qty
+          subtotal += Number(prod.price) * qty
+        }
+        subtotal = Math.round(subtotal * 100) / 100
+        const baseAmount = Math.round(subtotal + deliveryFee)
+
+        // Find available platform fee slot
+        let slot = (state.platform_fee_reservations || []).find(
+          (r) => !r.is_paid && (!r.active_order_id || (r.cooldown_expires_at && now >= new Date(r.cooldown_expires_at).getTime()))
+        )
+        if (!slot) {
+          if (!state.platform_fee_reservations || state.platform_fee_reservations.length === 0) {
+            slot = { fee_paise: 12, is_paid: false }
+            state.platform_fee_reservations = [slot]
+          } else {
+            return { data: null, error: { message: 'ALL_PLATFORM_FEE_SLOTS_BUSY' } }
+          }
+        }
+        const feePaise = slot.fee_paise
+        const attemptId = `att_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`
+        slot.active_order_id = orderId
+        slot.attempt_id = attemptId
+        slot.allocated_at = nowIso
+        slot.window_expires_at = windowExp
+        slot.cooldown_expires_at = cooldownExp
+        slot.is_paid = false
+        slot.paid_at = null
+
+        const platformFee = Math.round(feePaise) / 100
+        const totalPayable = baseAmount + platformFee
+
+        // Insert order record into mock state.orders
+        const orderRecord = {
+          id: orderId,
+          customer_id: customerId,
+          delivery_location_id: args?.p_location_id,
+          delivery_location_snapshot: args?.p_customer_details,
+          status: 'AWAITING_PAYMENT',
+          payment_status: 'PENDING',
+          item_subtotal: subtotal.toFixed(2),
+          combined_delivery_fee: deliveryFee.toFixed(2),
+          base_amount: baseAmount.toFixed(2),
+          platform_fee: platformFee.toFixed(2),
+          total_payable: totalPayable.toFixed(2),
+          route_distance_km: args?.p_route_distance_km,
+          fee_policy_version: args?.p_fee_policy_version,
+          payment_attempt_id: attemptId,
+          fee_paise: feePaise,
+          payment_allocated_at: nowIso,
+          payment_window_expires_at: windowExp,
+          payment_cooldown_expires_at: cooldownExp,
+          paid_at: null,
+          runner_id: null,
+          idempotency_key: idempotencyKey,
+          created_at: nowIso,
+          updated_at: nowIso,
+        }
+        if (!state.orders) state.orders = []
+        state.orders.push(orderRecord)
+
+        return {
+          data: {
+            orderId,
+            id: orderId,
+            feePaise,
+            attemptId,
+            allocatedAt: nowIso,
+            windowExpiresAt: windowExp,
+            cooldownExpiresAt: cooldownExp,
+            itemSubtotal: subtotal,
+            deliveryFee,
+            baseAmount,
+            platformFee,
+            totalPayable,
+            isIdempotentHit: false,
+          },
+          error: null,
+        }
+      }
+
       if (fn === 'allocate_platform_fee') {
         const orderId = args?.p_order_id
         const attemptId = args?.p_attempt_id
