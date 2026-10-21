@@ -957,4 +957,144 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
     const slot = mockState.platform_fee_reservations.find((r) => r.fee_paise === 12)
     expect(slot.active_order_id).toBeNull()
   })
+
+  it('15. rejects with 503 ALL_PLATFORM_FEE_SLOTS_BUSY when fee reservation fails and NEVER fabricates a 10 paise fee', async () => {
+    mockState.rpcErrors = { allocate_platform_fee: 'ALL_PLATFORM_FEE_SLOTS_BUSY' }
+    mockState.platform_fee_reservations.forEach((r) => {
+      r.active_order_id = 'ord_other_active'
+      r.cooldown_expires_at = new Date(Date.now() + 600000).toISOString()
+    })
+
+    const initialOrdersCount = mockState.orders.length
+
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+      })
+
+    expect(res.status).toBe(503)
+    expect(res.body.code).toBe('ALL_PLATFORM_FEE_SLOTS_BUSY')
+    expect(res.body.message).toContain('All dynamic payment fee slots are currently active')
+    // Crucial: no order was created with a fabricated 10 paise fallback
+    expect(mockState.orders.length).toBe(initialOrdersCount)
+  })
+
+  it('16. handles concurrent order creation without allocating the same fee slot twice', async () => {
+    // Clear reservations and set up only 2 available slots: 15 paise and 25 paise
+    mockState.platform_fee_reservations = [
+      { fee_paise: 15, active_order_id: null, is_paid: false },
+      { fee_paise: 25, active_order_id: null, is_paid: false },
+    ]
+
+    const orderPayload = {
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_a',
+      lines: [{ productId: 'p_milk', quantity: 1 }],
+    }
+
+    const [res1, res2, res3] = await Promise.all([
+      request(app).post('/orders/create').set('Authorization', 'Bearer tok_alice').send(orderPayload),
+      request(app).post('/orders/create').set('Authorization', 'Bearer tok_alice').send(orderPayload),
+      request(app).post('/orders/create').set('Authorization', 'Bearer tok_alice').send(orderPayload),
+    ])
+
+    const successful = [res1, res2, res3].filter((r) => r.status === 201)
+    const busy = [res1, res2, res3].filter((r) => r.status === 503)
+
+    // At most 2 can succeed because only 2 slots exist
+    expect(successful.length).toBe(2)
+    expect(busy.length).toBe(1)
+
+    // The two successful orders must have different fee amounts
+    const fees = successful.map((r) => r.body.payment.feePaise)
+    expect(new Set(fees).size).toBe(2)
+    expect(fees).toContain(15)
+    expect(fees).toContain(25)
+  })
+
+  it('17. rolls back parent order and releases fee slot when order_fulfillment_groups insertion fails', async () => {
+    mockState.tableErrors = { order_fulfillment_groups: 'synthetic fulfillment group failure' }
+    const initialOrdersCount = mockState.orders.length
+
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+      })
+
+    expect(res.status).toBe(500)
+    // Parent order must be rolled back (no orphaned row in orders)
+    expect(mockState.orders.length).toBe(initialOrdersCount)
+    // Platform fee slot must be released
+    const slot = mockState.platform_fee_reservations.find((r) => r.fee_paise === 12)
+    expect(slot.active_order_id).toBeNull()
+  })
+
+  it('18. rolls back parent order and groups when order_items insertion fails', async () => {
+    mockState.tableErrors = { order_items: 'synthetic items disk failure' }
+    const initialOrdersCount = mockState.orders.length
+
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+      })
+
+    expect(res.status).toBe(500)
+    expect(mockState.orders.length).toBe(initialOrdersCount)
+    const slot = mockState.platform_fee_reservations.find((r) => r.fee_paise === 12)
+    expect(slot.active_order_id).toBeNull()
+  })
+
+  it('19. rejects with 409 OUT_OF_STOCK when inventory hold RPC fails and rolls back order & fee slot', async () => {
+    mockState.rpcErrors = { reserve_order_inventory: 'OUT_OF_STOCK' }
+    const initialOrdersCount = mockState.orders.length
+
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+      })
+
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('OUT_OF_STOCK')
+    expect(res.body.message).toContain('out of stock')
+    // Rollback verified
+    expect(mockState.orders.length).toBe(initialOrdersCount)
+    const slot = mockState.platform_fee_reservations.find((r) => r.fee_paise === 12)
+    expect(slot.active_order_id).toBeNull()
+  })
+
+  it('20. rejects with 409 PRODUCT_UNAVAILABLE when inventory hold RPC reports product unavailable', async () => {
+    mockState.rpcErrors = { reserve_order_inventory: 'PRODUCT_UNAVAILABLE' }
+    const initialOrdersCount = mockState.orders.length
+
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+      })
+
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('PRODUCT_UNAVAILABLE')
+    expect(mockState.orders.length).toBe(initialOrdersCount)
+    const slot = mockState.platform_fee_reservations.find((r) => r.fee_paise === 12)
+    expect(slot.active_order_id).toBeNull()
+  })
 })
