@@ -1,6 +1,6 @@
 import { m } from 'motion/react'
 import { BadgeCheck, Building2, KeyRound, MapPin, QrCode, Radio } from 'lucide-react'
-import { DELIVERY_FEE_BANDS, EXTENDED_DELIVERY, MAX_SERVICE_KM } from '@/config/fees'
+import { FLAT_DELIVERY_FEE, MAX_SERVICE_KM } from '@/config/fees'
 import { ORDER_STATUS_LABEL, ORDER_TIMELINE } from '@/utils/orderMachine'
 import { cn } from '@/utils/cn'
 import { ease } from '@/utils/motion'
@@ -45,8 +45,8 @@ function TileTitle({ icon: Icon, children, accent }) {
 }
 
 const feeRows = [
-  ...DELIVERY_FEE_BANDS.map((b, i, all) => [`${i === 0 ? 'Up to' : `${all[i - 1].maxKm}–`}${i === 0 ? ` ${b.maxKm * 1000} m` : `${b.maxKm} km`}`, `₹${b.fee}`]),
-  [`${EXTENDED_DELIVERY.fromKm}–${MAX_SERVICE_KM} km`, `+₹${EXTENDED_DELIVERY.perStartedKm} per started km`],
+  [`Campus delivery (up to ${MAX_SERVICE_KM} km)`, `₹${FLAT_DELIVERY_FEE} flat fee`],
+  [`Beyond ${MAX_SERVICE_KM} km`, 'Checkout blocked'],
 ]
 
 export function FeatureBento() {

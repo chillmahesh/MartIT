@@ -90,6 +90,34 @@ describe('API Transport & Error Handling (src/services/api.js)', () => {
     })
   })
 
+  it('resolves orders.create to POST /orders/create with JSON payload and authorization', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    envConfig.env.apiBaseUrl = 'https://martit-backend.onrender.com'
+
+    let calledUrl = null
+    let calledOptions = null
+    globalThis.fetch = vi.fn().mockImplementation((url, options) => {
+      calledUrl = url
+      calledOptions = options
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ id: 'ord_123', status: 'AWAITING_PAYMENT' }),
+      })
+    })
+
+    const orderPayload = {
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_a',
+      lines: [{ productId: 'p_milk', quantity: 1 }],
+    }
+    const res = await request('orders.create', orderPayload)
+    expect(res.id).toBe('ord_123')
+    expect(calledUrl).toBe('https://martit-backend.onrender.com/orders/create')
+    expect(calledOptions.method).toBe('POST')
+    expect(JSON.parse(calledOptions.body)).toEqual(orderPayload)
+    expect(calledOptions.headers.Authorization).toBe('Bearer test_jwt_token')
+  })
+
   it('uses mock backend handler when isMockBackend is true', async () => {
     vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(true)
 

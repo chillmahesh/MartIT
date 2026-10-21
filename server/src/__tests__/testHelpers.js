@@ -71,6 +71,7 @@ export function createMockSupabaseClient({
       }
       let currentTableData = state[table]
       let filters = []
+      let inFilters = []
       let selectedFields = null
       let isSingle = false
       let pendingUpdate = null
@@ -85,6 +86,10 @@ export function createMockSupabaseClient({
           filters.push({ column, value })
           return query
         },
+        in(column, values) {
+          inFilters.push({ column, values: Array.isArray(values) ? values : [values] })
+          return query
+        },
         order() {
           return query
         },
@@ -93,18 +98,47 @@ export function createMockSupabaseClient({
         },
         async maybeSingle() {
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value),
+            filters.every((f) => row[f.column] === f.value) &&
+            inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
           return { data: results[0] || null, error: null }
         },
         async single() {
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value),
+            filters.every((f) => row[f.column] === f.value) &&
+            inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
           if (results.length === 0) {
             return { data: null, error: { message: 'No rows found', code: 'PGRST116' } }
           }
           return { data: results[0], error: null }
+        },
+        insert(values) {
+          const arr = Array.isArray(values) ? values : [values]
+          for (const item of arr) {
+            currentTableData.push({ ...item })
+          }
+          const insertResult = {
+            data: arr,
+            error: null,
+            select() {
+              return {
+                async single() {
+                  return { data: arr[0] || null, error: null }
+                },
+                async maybeSingle() {
+                  return { data: arr[0] || null, error: null }
+                },
+                then(resolve) {
+                  return resolve({ data: arr, error: null })
+                },
+              }
+            },
+            then(resolve) {
+              return resolve({ data: arr, error: null })
+            },
+          }
+          return insertResult
         },
         async upsert(values, options) {
           const arr = Array.isArray(values) ? values : [values]
@@ -146,7 +180,8 @@ export function createMockSupabaseClient({
           }
 
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value),
+            filters.every((f) => row[f.column] === f.value) &&
+            inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
           // Handle relationships in mock if queried
           if (table === 'profiles') {
@@ -165,6 +200,64 @@ export function createMockSupabaseClient({
     async rpc(fn, args) {
       if (state.rpcError) {
         return { data: null, error: state.rpcError }
+      }
+
+      if (fn === 'allocate_platform_fee') {
+        const orderId = args?.p_order_id
+        const attemptId = args?.p_attempt_id
+        const now = Date.now()
+        const nowIso = new Date(now).toISOString()
+        const windowExp = new Date(now + 120000).toISOString()
+        const cooldownExp = new Date(now + 420000).toISOString()
+
+        let slot = (state.platform_fee_reservations || []).find(
+          (r) => !r.is_paid && (!r.active_order_id || (r.cooldown_expires_at && now >= new Date(r.cooldown_expires_at).getTime()))
+        )
+        if (!slot) {
+          slot = { fee_paise: 12 }
+          if (!state.platform_fee_reservations) state.platform_fee_reservations = []
+          state.platform_fee_reservations.push(slot)
+        }
+        slot.active_order_id = orderId
+        slot.attempt_id = attemptId
+        slot.allocated_at = nowIso
+        slot.window_expires_at = windowExp
+        slot.cooldown_expires_at = cooldownExp
+        slot.is_paid = false
+        slot.paid_at = null
+
+        return {
+          data: [{
+            allocated_fee_paise: slot.fee_paise,
+            allocated_at: nowIso,
+            window_expires_at: windowExp,
+            cooldown_expires_at: cooldownExp,
+          }],
+          error: null,
+        }
+      }
+
+      if (fn === 'release_platform_fee') {
+        const orderId = args?.p_order_id
+        const slot = (state.platform_fee_reservations || []).find(
+          (r) => r.active_order_id === orderId && !r.is_paid
+        )
+        if (slot) {
+          slot.active_order_id = null
+          slot.attempt_id = null
+          slot.allocated_at = null
+          slot.window_expires_at = null
+          slot.cooldown_expires_at = null
+        }
+        return { data: true, error: null }
+      }
+
+      if (fn === 'reserve_order_inventory') {
+        return { data: true, error: null }
+      }
+
+      if (fn === 'release_order_inventory') {
+        return { data: true, error: null }
       }
 
       if (fn === 'expire_order_payment') {

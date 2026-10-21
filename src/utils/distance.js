@@ -3,15 +3,37 @@ const EARTH_RADIUS_KM = 6371.0088
 const toRad = (deg) => (deg * Math.PI) / 180
 
 /**
+ * Validates and normalizes coordinate inputs.
+ * Accepts { lat, lng } or { latitude, longitude } (numbers or valid non-empty numeric strings).
+ * Returns { lat: number, lng: number } if valid and within Earth bounds (-90..90, -180..180),
+ * or null if missing, non-finite, or invalid.
+ */
+export function parseCoordinate(coords) {
+  if (!coords || typeof coords !== 'object') return null
+  const rawLat = coords.lat !== undefined ? coords.lat : coords.latitude
+  const rawLng = coords.lng !== undefined ? coords.lng : (coords.lon !== undefined ? coords.lon : coords.longitude)
+  if (rawLat === null || rawLat === undefined || rawLng === null || rawLng === undefined) return null
+  if (typeof rawLat === 'string' && rawLat.trim() === '') return null
+  if (typeof rawLng === 'string' && rawLng.trim() === '') return null
+  const lat = Number(rawLat)
+  const lng = Number(rawLng)
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null
+  return { lat, lng }
+}
+
+/**
  * Great-circle ("straight-line") distance in km between two { lat, lng } points.
  * This is NOT walking or road distance and usually under-estimates the real route.
  * Anything shown to users from this must say "straight-line".
  */
 export function straightLineKm(a, b) {
-  const dLat = toRad(b.lat - a.lat)
-  const dLng = toRad(b.lng - a.lng)
+  const coordA = parseCoordinate(a) || a
+  const coordB = parseCoordinate(b) || b
+  const dLat = toRad(coordB.lat - coordA.lat)
+  const dLng = toRad(coordB.lng - coordA.lng)
   const h =
-    Math.sin(dLat / 2) ** 2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2
+    Math.sin(dLat / 2) ** 2 + Math.cos(toRad(coordA.lat)) * Math.cos(toRad(coordB.lat)) * Math.sin(dLng / 2) ** 2
   return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(h)))
 }
 

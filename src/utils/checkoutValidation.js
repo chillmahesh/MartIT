@@ -25,11 +25,12 @@ export const LEGACY_OTHER_LABEL = 'Other location / Hostel details'
 
 /**
  * Authoritative mapping from preset campus locations to registered delivery destination IDs.
- * Preserves existing distance-based fee tiers without fabricating coordinates.
+ * Under the MVP Flat Delivery Fee Policy, eligible campus orders carry a flat ₹10 delivery fee
+ * while preserving safe destination mapping to registered campus delivery spots:
  *
- * - A Block / Food Court / C Block: Nearby student central zone (loc_hostel_a ~0.37 km, ₹10 tier)
- * - B Block / D Block / E Block: Hostel cluster zone (loc_hostel_b ~0.80 km, ₹15 tier)
- * - MBA Block / Management Building: Academic & management zone (loc_library ~1.67 km, ₹20 tier)
+ * - A Block / Food Court / C Block: Nearby student central zone (loc_hostel_a ~0.37 km)
+ * - B Block / D Block / E Block: Hostel cluster zone (loc_hostel_b ~0.80 km)
+ * - MBA Block / Management Building: Academic & management zone (loc_library ~1.67 km)
  */
 export const CAMPUS_LOCATION_DESTINATION_MAP = {
   'A Block': 'loc_hostel_a',

@@ -182,17 +182,17 @@ describe('Server Authoritative Orders Integration with Platform Fee', () => {
 
     const order = await server.handle('orders.create', payload, { token })
 
-    // Authoritative calculation:
+    // Authoritative calculation (MVP flat ₹10 delivery policy):
     // Milk: 28 * 2 = 56
-    // Delivery: loc_hostel_b = 15
-    // Base amount: 56 + 15 = 71
+    // Delivery: flat campus delivery = 10
+    // Base amount: 56 + 10 = 66
     // Smallest platform fee: 0.01 (1 paisa)
-    // Authoritative total: 71 + 0.01 = 71.01
+    // Authoritative total: 66 + 0.01 = 66.01
     expect(order.pricing.itemSubtotal).toBe(56)
-    expect(order.pricing.deliveryFee).toBe(15)
-    expect(order.pricing.baseAmount).toBe(71)
+    expect(order.pricing.deliveryFee).toBe(10)
+    expect(order.pricing.baseAmount).toBe(66)
     expect(order.pricing.platformFee).toBe(0.01)
-    expect(order.pricing.total).toBe(71.01)
+    expect(order.pricing.total).toBe(66.01)
   })
 
   it('computes exact order totals with fractional base rounded before adding platform fee (₹97.40 + ₹15 -> ₹112 + ₹0.01 = ₹112.01)', () => {

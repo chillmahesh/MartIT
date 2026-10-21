@@ -8,14 +8,13 @@ import { useLocations } from '@/hooks/useLocations'
 import { useDeliveryQuote } from '@/hooks/useDeliveryQuote'
 import { calculateDeliveryFee, DELIVERY_FEE_MESSAGES } from '@/utils/deliveryFee'
 import { DISTANCE_METHOD_LABEL, formatDistance } from '@/utils/distance'
-import { MAX_SERVICE_KM } from '@/config/fees'
+import { FLAT_DELIVERY_FEE, MAX_SERVICE_KM } from '@/config/fees'
 import { cn } from '@/utils/cn'
 
 const STORE_ID = 'store_campus_mart'
 
 const TABLE = [
-  ['0 < d ≤ 0.5 km', 10], ['0.5 < d ≤ 1 km', 15], ['1 < d ≤ 2 km', 20],
-  ['2 < d ≤ 3 km', 25], ['3 < d ≤ 4 km', 30], ['4 < d ≤ 5 km', 35],
+  [`0 < d ≤ ${MAX_SERVICE_KM} km (Campus)`, FLAT_DELIVERY_FEE],
 ]
 
 export function DeliveryFeeLab() {

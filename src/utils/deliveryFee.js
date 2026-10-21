@@ -1,23 +1,18 @@
 import {
-  DELIVERY_FEE_BANDS,
-  EXTENDED_DELIVERY,
+  FLAT_DELIVERY_FEE,
+  FLAT_DELIVERY_FEE_LABEL,
   MAX_SERVICE_KM,
   PRICING_VERSION,
   RUNNER_PAYOUT_BY_FEE,
 } from '@/config/fees'
 
 /**
- * Absorbs binary floating-point noise only (1 micrometre). Without it, a value
- * such as 3.0000000000000004 km — produced by arithmetic, not by real distance —
- * would be charged an extra kilometre. Any real excess is charged.
- */
-const FLOAT_TOLERANCE_KM = 1e-9
-
-/**
- * Pure delivery-fee calculation. Shared shape with the backend; the server's result
- * is authoritative and the browser's copy is only ever shown as an estimate.
+ * Pure delivery-fee calculation under the MVP Flat Delivery Fee Policy.
+ * Shared shape with the backend; the server's result is authoritative and the
+ * browser's copy is shown as an estimate.
  *
- * Uses the UNROUNDED distance — never round before calling this.
+ * For new eligible orders within the supported campus delivery area (0 < distanceKm <= 5 km),
+ * delivery is a flat ₹10.
  *
  * @param {number} distanceKm
  * @returns {{ ok: true, fee: number, distanceKm: number, label: string, pricingVersion: string }
@@ -31,18 +26,11 @@ export function calculateDeliveryFee(distanceKm) {
     return { ok: false, reason: 'OUT_OF_SERVICE_AREA', distanceKm, maxKm: MAX_SERVICE_KM }
   }
 
-  const band = DELIVERY_FEE_BANDS.find((b) => distanceKm <= b.maxKm)
-  if (band) {
-    return { ok: true, fee: band.fee, distanceKm, label: band.label, pricingVersion: PRICING_VERSION }
-  }
-
-  const { fromKm, baseFee, perStartedKm, label } = EXTENDED_DELIVERY
-  const startedKm = Math.ceil(distanceKm - fromKm - FLOAT_TOLERANCE_KM)
   return {
     ok: true,
-    fee: baseFee + perStartedKm * startedKm,
+    fee: FLAT_DELIVERY_FEE,
     distanceKm,
-    label,
+    label: FLAT_DELIVERY_FEE_LABEL,
     pricingVersion: PRICING_VERSION,
   }
 }

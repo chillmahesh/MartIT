@@ -5,6 +5,14 @@ import { authenticate } from '../middleware/auth.js'
 import { getSupabaseAdmin } from '../config/supabase.js'
 import { ApiError } from '../utils/errors.js'
 import { ROLES } from '../utils/permissions.js'
+import {
+  FLAT_DELIVERY_FEE,
+  MAX_SERVICE_KM,
+  PRICING_VERSION,
+  PLATFORM_FEE_WINDOW_MS,
+  PLATFORM_FEE_COOLDOWN_MS,
+} from '../../../src/config/fees.js'
+import { parseCoordinate, straightLineKm } from '../../../src/utils/distance.js'
 
 export const ordersRouter = Router()
 
@@ -960,6 +968,515 @@ async function handleRefreshDeliveryOtp(req, res, next) {
   }
 }
 
+// Customer order creation helper for idempotency hits
+function formatCreatedOrderResponse(order) {
+  const storeId = order.order_fulfillment_groups?.[0]?.store_id || order.store_id || null
+  const locationId = order.delivery_location_id || order.location_id
+  const itemSubtotal = Number(order.item_subtotal)
+  const deliveryFee = Number(order.combined_delivery_fee)
+  const baseAmount = Number(order.base_amount)
+  const platformFee = Number(order.platform_fee)
+  const total = Number(order.total_payable)
+  const distanceKm = Number(order.route_distance_km)
+
+  return {
+    id: order.id,
+    customerId: order.customer_id,
+    storeId,
+    locationId,
+    deliveryLocationId: locationId,
+    deliveryLocationSnapshot: order.delivery_location_snapshot,
+    status: order.status,
+    paymentStatus: order.payment_status,
+    pricing: {
+      itemSubtotal,
+      deliveryFee,
+      baseAmount,
+      platformFee,
+      total,
+      distanceKm: Number(distanceKm.toFixed(2)),
+      distanceMethod: 'straight_line',
+      pricingVersion: order.fee_policy_version,
+    },
+    payment: {
+      status: order.payment_status,
+      attemptId: order.payment_attempt_id,
+      feePaise: order.fee_paise,
+      allocatedAt: order.payment_allocated_at,
+      windowExpiresAt: order.payment_window_expires_at,
+      cooldownExpiresAt: order.payment_cooldown_expires_at,
+      paidAt: order.paid_at,
+    },
+    fulfillmentGroups: order.order_fulfillment_groups || [],
+    createdAt: order.created_at,
+  }
+}
+
+/**
+ * Customer Order Creation Endpoint.
+ * Supports:
+ *   - POST /orders/create (RPC style for frontend api.js)
+ *   - POST /api/v1/orders (REST style)
+ */
+async function handleCreateOrder(req, res, next) {
+  let allocatedFeePaise = null
+  let orderId = null
+  let feeSlotNeedsRelease = false
+
+  try {
+    const supabase = getSupabaseAdmin()
+
+    // 1. Authorization: Only customers and staff can create orders
+    const userRoles = req.user?.roles || []
+    const isCustomerOrStaff =
+      userRoles.length === 0 ||
+      userRoles.includes(ROLES.CUSTOMER) ||
+      userRoles.includes(ROLES.ADMIN) ||
+      userRoles.includes(ROLES.SUPER_ADMIN)
+
+    if (!isCustomerOrStaff) {
+      throw ApiError.forbidden('Only customers can place delivery orders.', 'FORBIDDEN')
+    }
+
+    // 2. Validate payload
+    const { storeId, locationId, lines, customerDetails, idempotencyKey: bodyIdempotencyKey } = req.body || {}
+    const idempotencyKey = req.headers['idempotency-key'] || bodyIdempotencyKey || null
+
+    if (!storeId || typeof storeId !== 'string') {
+      throw ApiError.badRequest('Store ID is required.', 'INVALID_STORE_ID')
+    }
+    if (!locationId || typeof locationId !== 'string') {
+      throw ApiError.badRequest('Delivery location is required.', 'INVALID_LOCATION_ID')
+    }
+    if (!Array.isArray(lines) || lines.length === 0) {
+      throw ApiError.unprocessable('Your cart is empty.', 'EMPTY_CART')
+    }
+
+    // Line item consolidation & format check
+    const lineMap = new Map()
+    for (const item of lines) {
+      if (!item || !item.productId || typeof item.productId !== 'string') {
+        throw ApiError.badRequest('Valid product ID is required for each line item.', 'INVALID_LINE_ITEM')
+      }
+      if (!Number.isInteger(item.quantity) || item.quantity < 1) {
+        throw ApiError.unprocessable('Invalid quantity.', 'INVALID_QUANTITY', { productId: item.productId })
+      }
+      const existingQty = lineMap.get(item.productId) || 0
+      lineMap.set(item.productId, existingQty + item.quantity)
+    }
+
+    // 3. Idempotency Check: if idempotencyKey is supplied, check if order already exists
+    if (idempotencyKey) {
+      const { data: existingOrder } = await supabase
+        .from('orders')
+        .select(`
+          id, customer_id, runner_id, delivery_location_id, delivery_location_snapshot,
+          status, payment_status, item_subtotal, combined_delivery_fee, base_amount, platform_fee,
+          total_payable, route_distance_km, route_stop_sequence, routing_provider, routing_mode,
+          fee_policy_version, payment_attempt_id, fee_paise, payment_allocated_at,
+          payment_window_expires_at, payment_cooldown_expires_at, paid_at, created_at,
+          order_fulfillment_groups (
+            id, store_id, store_snapshot, status, pickup_sequence_index, picked_up_at,
+            order_items (
+              id, product_id, product_name, product_pack, unit_price, quantity, line_subtotal
+            )
+          )
+        `)
+        .eq('idempotency_key', idempotencyKey)
+        .maybeSingle()
+
+      if (existingOrder) {
+        if (existingOrder.customer_id !== req.user.id && !req.user.roles?.includes(ROLES.ADMIN) && !req.user.roles?.includes(ROLES.SUPER_ADMIN)) {
+          throw ApiError.forbidden('Idempotency key belongs to another customer.', 'IDEMPOTENCY_CONFLICT')
+        }
+        return res.status(200).json(formatCreatedOrderResponse(existingOrder))
+      }
+    }
+
+    // 4. Query & validate store
+    const { data: store, error: storeErr } = await supabase
+      .from('stores')
+      .select('id, name, description, is_open, latitude, longitude')
+      .eq('id', storeId)
+      .maybeSingle()
+
+    if (storeErr || !store) {
+      throw ApiError.notFound('That store is not available.', 'STORE_NOT_FOUND')
+    }
+    if (!store.is_open) {
+      throw ApiError.conflict('This store is closed right now.', 'STORE_CLOSED')
+    }
+
+    // 5. Query & validate delivery location
+    const { data: location, error: locErr } = await supabase
+      .from('locations')
+      .select('id, name, group_name, latitude, longitude, is_active')
+      .eq('id', locationId)
+      .maybeSingle()
+
+    if (locErr || !location || !location.is_active) {
+      throw ApiError.notFound('Choose a valid delivery spot first.', 'LOCATION_NOT_FOUND')
+    }
+
+    // 6. Validate coordinates and delivery distance
+    const storeCoords = parseCoordinate({ latitude: store.latitude, longitude: store.longitude })
+    if (!storeCoords) {
+      throw ApiError.unprocessable('Store coordinates are missing or invalid.', 'INVALID_COORDINATES', { entity: 'store', storeId })
+    }
+    const locationCoords = parseCoordinate({ latitude: location.latitude, longitude: location.longitude })
+    if (!locationCoords) {
+      throw ApiError.unprocessable('Delivery destination coordinates are missing or invalid.', 'INVALID_COORDINATES', { entity: 'location', locationId })
+    }
+
+    const distanceKm = straightLineKm(storeCoords, locationCoords)
+    if (!Number.isFinite(distanceKm) || distanceKm <= 0) {
+      throw ApiError.unprocessable("We couldn't work out the distance for that drop point. Please re-pick your location.", 'INVALID_DISTANCE', { distanceKm })
+    }
+    if (distanceKm > MAX_SERVICE_KM + 1e-9) {
+      throw ApiError.unprocessable('Delivery location is outside our 5 km service radius.', 'OUT_OF_SERVICE_AREA', { distanceKm, maxKm: MAX_SERVICE_KM })
+    }
+
+    // 7. Authoritative product pricing & inventory check
+    const productIds = Array.from(lineMap.keys())
+    const { data: dbProducts, error: prodErr } = await supabase
+      .from('products')
+      .select('id, store_id, name, pack, price, stock, is_available')
+      .in('id', productIds)
+
+    if (prodErr || !dbProducts) {
+      throw ApiError.internal('Failed to retrieve product details.', 'DATABASE_ERROR')
+    }
+
+    const pricedLines = []
+    for (const [productId, quantity] of lineMap.entries()) {
+      const product = dbProducts.find((p) => p.id === productId && p.store_id === storeId)
+      if (!product || !product.is_available) {
+        throw ApiError.conflict('An item in your cart is no longer available.', 'PRODUCT_UNAVAILABLE', { productId })
+      }
+      if (product.stock < quantity) {
+        throw ApiError.conflict(`Only ${product.stock} left of ${product.name}.`, 'OUT_OF_STOCK', { productId, available: product.stock })
+      }
+      const unitPrice = Number(product.price)
+      const lineSubtotal = Math.round(unitPrice * quantity * 100) / 100
+      pricedLines.push({
+        productId,
+        name: product.name,
+        pack: product.pack || null,
+        unitPrice,
+        quantity,
+        lineSubtotal,
+      })
+    }
+
+    // 8. Financial totals calculation under MVP Flat ₹10 Delivery Fee Policy
+    const deliveryFee = FLAT_DELIVERY_FEE
+    const itemSubtotal = Math.round(pricedLines.reduce((acc, l) => acc + l.lineSubtotal, 0) * 100) / 100
+    const baseAmount = Math.round(itemSubtotal + deliveryFee)
+
+    orderId = `ord_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`
+    const attemptId = `att_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`
+    const now = Date.now()
+    const nowIso = new Date(now).toISOString()
+
+    // 9. Platform Fee Allocation: lease unique 1-99 paise slot
+    let feePaise = null
+    let allocatedAt = nowIso
+    let windowExpiresAt = new Date(now + PLATFORM_FEE_WINDOW_MS).toISOString()
+    let cooldownExpiresAt = new Date(now + PLATFORM_FEE_WINDOW_MS + PLATFORM_FEE_COOLDOWN_MS).toISOString()
+
+    // Try PostgreSQL RPC allocate_platform_fee if available
+    if (typeof supabase.rpc === 'function') {
+      try {
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('allocate_platform_fee', {
+          p_order_id: orderId,
+          p_attempt_id: attemptId,
+          p_window_seconds: 120,
+          p_cooldown_seconds: 300,
+        })
+        if (!rpcErr && rpcData) {
+          const slot = Array.isArray(rpcData) ? rpcData[0] : rpcData
+          if (slot && (slot.allocated_fee_paise || slot.fee_paise)) {
+            feePaise = slot.allocated_fee_paise || slot.fee_paise
+            allocatedAt = slot.allocated_at || allocatedAt
+            windowExpiresAt = slot.window_expires_at || windowExpiresAt
+            cooldownExpiresAt = slot.cooldown_expires_at || cooldownExpiresAt
+            feeSlotNeedsRelease = true
+          }
+        }
+      } catch {
+        // Fall back to direct table update if RPC fails
+      }
+    }
+
+    // Direct platform_fee_reservations query if RPC not used or returned null
+    if (!feePaise) {
+      const { data: slots, error: slotErr } = await supabase
+        .from('platform_fee_reservations')
+        .select('*')
+        .order('fee_paise', { ascending: true })
+
+      if (!slotErr && Array.isArray(slots) && slots.length > 0) {
+        const available = slots.find((s) => {
+          if (s.is_paid) return false
+          if (!s.active_order_id) return true
+          if (s.cooldown_expires_at && now >= new Date(s.cooldown_expires_at).getTime()) return true
+          return false
+        })
+
+        if (!available) {
+          throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'All dynamic payment fee slots are currently active. Please retry shortly.', 503)
+        }
+
+        feePaise = available.fee_paise
+        const { error: reserveErr } = await supabase
+          .from('platform_fee_reservations')
+          .update({
+            active_order_id: orderId,
+            attempt_id: attemptId,
+            allocated_at: allocatedAt,
+            window_expires_at: windowExpiresAt,
+            cooldown_expires_at: cooldownExpiresAt,
+            is_paid: false,
+            paid_at: null,
+          })
+          .eq('fee_paise', feePaise)
+
+        if (reserveErr) {
+          throw ApiError.internal('Failed to reserve platform fee slot.', 'FEE_RESERVATION_FAILED')
+        }
+        feeSlotNeedsRelease = true
+      } else {
+        feePaise = 10
+      }
+    }
+
+    allocatedFeePaise = feePaise
+    const platformFee = Math.round(feePaise) / 100
+    const totalPayable = Math.round((baseAmount * 100 + feePaise)) / 100
+
+    // 10. Persist order record in database
+    const finalIdempotencyKey = idempotencyKey || `idem_${crypto.randomUUID().replace(/-/g, '')}`
+    const orderRecord = {
+      id: orderId,
+      customer_id: req.user.id,
+      delivery_location_id: location.id,
+      delivery_location_snapshot: {
+        id: location.id,
+        name: location.name,
+        group_name: location.group_name,
+        latitude: location.latitude,
+        longitude: location.longitude,
+        customerDetails: customerDetails || null,
+      },
+      status: 'AWAITING_PAYMENT',
+      payment_status: 'PENDING',
+      item_subtotal: itemSubtotal.toFixed(2),
+      combined_delivery_fee: deliveryFee.toFixed(2),
+      base_amount: baseAmount.toFixed(2),
+      platform_fee: platformFee.toFixed(2),
+      total_payable: totalPayable.toFixed(2),
+      route_distance_km: Number(distanceKm.toFixed(4)),
+      route_stop_sequence: [
+        { storeId: store.id, type: 'pickup', sequence: 0 },
+        { locationId: location.id, type: 'dropoff', sequence: 1 },
+      ],
+      routing_provider: 'straight_line_haversine',
+      routing_mode: 'walking',
+      routing_metadata: {
+        isEstimate: true,
+        distanceMethod: 'straight_line',
+      },
+      fee_policy_version: PRICING_VERSION,
+      payment_attempt_id: attemptId,
+      fee_paise: feePaise,
+      payment_allocated_at: allocatedAt,
+      payment_window_expires_at: windowExpiresAt,
+      payment_cooldown_expires_at: cooldownExpiresAt,
+      paid_at: null,
+      runner_id: null,
+      idempotency_key: finalIdempotencyKey,
+      created_at: nowIso,
+      updated_at: nowIso,
+    }
+
+    const { error: insertOrderErr } = await supabase.from('orders').insert(orderRecord)
+    if (insertOrderErr) {
+      if (insertOrderErr.message && insertOrderErr.message.includes('idempotency_key')) {
+        const { data: racerOrder } = await supabase
+          .from('orders')
+          .select('*')
+          .eq('idempotency_key', finalIdempotencyKey)
+          .maybeSingle()
+        if (racerOrder) {
+          return res.status(200).json(formatCreatedOrderResponse(racerOrder))
+        }
+      }
+      throw ApiError.internal(`Failed to persist order: ${insertOrderErr.message || 'Database error'}`)
+    }
+
+    // 11. Persist fulfillment group
+    const fulfillmentGroupId = `grp_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`
+    const fulfillmentGroupRecord = {
+      id: fulfillmentGroupId,
+      order_id: orderId,
+      store_id: store.id,
+      store_snapshot: {
+        id: store.id,
+        name: store.name,
+        description: store.description || null,
+        latitude: store.latitude,
+        longitude: store.longitude,
+      },
+      pickup_sequence_index: 0,
+      status: 'PENDING',
+      created_at: nowIso,
+      updated_at: nowIso,
+    }
+
+    const { error: groupErr } = await supabase
+      .from('order_fulfillment_groups')
+      .insert(fulfillmentGroupRecord)
+
+    if (groupErr) {
+      throw ApiError.internal(`Failed to persist order fulfillment group: ${groupErr.message}`)
+    }
+
+    // 12. Persist order items
+    const orderItemsRecords = pricedLines.map((line) => ({
+      id: `item_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`,
+      order_id: orderId,
+      fulfillment_group_id: fulfillmentGroupId,
+      store_id: store.id,
+      product_id: line.productId,
+      product_name: line.name,
+      product_pack: line.pack,
+      unit_price: line.unitPrice.toFixed(2),
+      quantity: line.quantity,
+      line_subtotal: line.lineSubtotal.toFixed(2),
+      created_at: nowIso,
+    }))
+
+    const { error: itemsErr } = await supabase.from('order_items').insert(orderItemsRecords)
+    if (itemsErr) {
+      throw ApiError.internal(`Failed to persist order items: ${itemsErr.message}`)
+    }
+
+    // 13. Inventory Reservation: attempt atomic RPC hold
+    if (typeof supabase.rpc === 'function') {
+      try {
+        const itemsPayload = pricedLines.map((l) => ({
+          store_id: store.id,
+          product_id: l.productId,
+          quantity: l.quantity,
+        }))
+        await supabase.rpc('reserve_order_inventory', {
+          p_order_id: orderId,
+          p_items: JSON.stringify(itemsPayload),
+          p_ttl_seconds: 420,
+        })
+      } catch {
+        // Non-blocking in environments where stored procedure is optional
+      }
+    }
+
+    feeSlotNeedsRelease = false
+
+    // 14. Return formatted response expected by frontend payment screen
+    const responsePayload = {
+      id: orderId,
+      customerId: req.user.id,
+      storeId: store.id,
+      locationId: location.id,
+      deliveryLocationId: location.id,
+      deliveryLocationSnapshot: orderRecord.delivery_location_snapshot,
+      lines: pricedLines.map((l) => ({
+        productId: l.productId,
+        name: l.name,
+        pack: l.pack,
+        unitPrice: l.unitPrice,
+        quantity: l.quantity,
+        lineSubtotal: l.lineSubtotal,
+      })),
+      customerDetails: customerDetails || null,
+      pricing: {
+        itemSubtotal,
+        deliveryFee,
+        baseAmount,
+        platformFee,
+        total: totalPayable,
+        distanceKm: Number(distanceKm.toFixed(2)),
+        distanceMethod: 'straight_line',
+        pricingVersion: PRICING_VERSION,
+      },
+      payment: {
+        status: 'PENDING',
+        attemptId,
+        feePaise,
+        allocatedAt,
+        windowExpiresAt,
+        cooldownExpiresAt,
+        paidAt: null,
+      },
+      fulfillmentGroups: [
+        {
+          id: fulfillmentGroupId,
+          storeId: store.id,
+          storeSnapshot: fulfillmentGroupRecord.store_snapshot,
+          status: 'PENDING',
+          orderItems: pricedLines.map((l) => ({
+            productId: l.productId,
+            productName: l.name,
+            productPack: l.pack,
+            unitPrice: l.unitPrice,
+            quantity: l.quantity,
+            lineSubtotal: l.lineSubtotal,
+          })),
+        },
+      ],
+      status: 'AWAITING_PAYMENT',
+      paymentStatus: 'PENDING',
+      createdAt: nowIso,
+    }
+
+    res.status(201).json(responsePayload)
+  } catch (err) {
+    if (feeSlotNeedsRelease && (orderId || allocatedFeePaise)) {
+      try {
+        const supabase = getSupabaseAdmin()
+        if (typeof supabase.rpc === 'function' && orderId) {
+          await supabase.rpc('release_platform_fee', { p_order_id: orderId }).catch(() => {})
+        }
+        if (allocatedFeePaise) {
+          await supabase
+            .from('platform_fee_reservations')
+            .update({
+              active_order_id: null,
+              attempt_id: null,
+              allocated_at: null,
+              window_expires_at: null,
+              cooldown_expires_at: null,
+            })
+            .eq('fee_paise', allocatedFeePaise)
+            .eq('is_paid', false)
+            .catch(() => {})
+        }
+        if (orderId) {
+          await supabase.from('order_items').delete().eq('order_id', orderId).catch(() => {})
+          await supabase.from('order_fulfillment_groups').delete().eq('order_id', orderId).catch(() => {})
+          await supabase.from('orders').delete().eq('id', orderId).catch(() => {})
+        }
+      } catch {
+        // Suppress rollback cleanup errors to preserve original exception
+      }
+    }
+    next(err)
+  }
+}
+
+// Customer order creation (REST and RPC-style compatibility)
+ordersRouter.post('/api/v1/orders', authenticate, handleCreateOrder)
+ordersRouter.post('/orders/create', authenticate, handleCreateOrder)
+
 // Customer order history
 ordersRouter.get('/api/v1/orders', authenticate, handleListCustomerOrders)
 ordersRouter.post('/customer/orders/list', authenticate, handleListCustomerOrders)
@@ -996,4 +1513,5 @@ ordersRouter.post('/customer/order/refreshOtp', authenticate, handleRefreshDeliv
 // Runner delivery OTP verification
 ordersRouter.post('/api/v1/runner/orders/:id/verify-handover', authenticate, handleVerifyDeliveryOtp)
 ordersRouter.post('/runner/order/verifyOtp', authenticate, handleVerifyDeliveryOtp)
+
 

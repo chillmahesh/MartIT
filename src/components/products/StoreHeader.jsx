@@ -56,7 +56,9 @@ export function StoreHeader({
           ) : quoteError ? (
             <Badge tone="danger" size="sm" className="gap-1">
               <AlertCircle className="size-3" />
-              {quoteErrObj?.code === 'OUT_OF_SERVICE_AREA' ? 'Outside 5 km delivery radius' : 'Cannot deliver here'}
+              {quoteErrObj?.code === 'OUT_OF_SERVICE_AREA' || quoteErrObj?.code === 'MAX_DISTANCE_EXCEEDED'
+                ? 'Outside 5 km delivery radius'
+                : 'Cannot deliver here'}
             </Badge>
           ) : (
             <span className="text-ink-subtle">Calculating delivery...</span>

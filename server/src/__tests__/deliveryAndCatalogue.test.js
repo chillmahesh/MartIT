@@ -72,14 +72,14 @@ describe('Catalogue & Authoritative Delivery Quote Endpoints', () => {
     expect(res.body[1].isOpen).toBe(false)
   })
 
-  it('calculates short delivery fee (₹10 for <= 0.5 km) and clearly marks as straight-line estimate', async () => {
+  it('calculates flat delivery fee (₹10 for valid campus destination) and clearly marks as straight-line estimate', async () => {
     const res = await request(app)
       .post('/api/v1/delivery/quote')
       .send({ storeId: 'store_open', locationId: 'loc_close' })
 
     expect(res.status).toBe(200)
     expect(res.body.deliveryFee).toBe(10)
-    expect(res.body.feeLabel).toBe('Short campus delivery')
+    expect(res.body.feeLabel).toBe('Flat campus delivery')
     expect(res.body.distanceKm).toBeLessThanOrEqual(0.5)
     expect(res.body.isEstimate).toBe(true)
     expect(res.body.quoteType).toBe('single_store_straight_line_estimate')
@@ -95,14 +95,14 @@ describe('Catalogue & Authoritative Delivery Quote Endpoints', () => {
     expect(res.body.code).toBe('MULTI_STORE_ROUTING_UNAVAILABLE')
   })
 
-  it('calculates mid-distance delivery fee (₹15 for 0.5 - 1.0 km)', async () => {
+  it('calculates flat delivery fee (₹10 across all eligible campus distances up to 5 km)', async () => {
     const res = await request(app)
       .post('/api/v1/delivery/quote')
       .send({ storeId: 'store_open', locationId: 'loc_1km' })
 
     expect(res.status).toBe(200)
-    expect(res.body.deliveryFee).toBe(15)
-    expect(res.body.feeLabel).toBe('Nearby hostel or campus location')
+    expect(res.body.deliveryFee).toBe(10)
+    expect(res.body.feeLabel).toBe('Flat campus delivery')
     expect(res.body.distanceKm).toBeGreaterThan(0.5)
     expect(res.body.distanceKm).toBeLessThanOrEqual(1.0)
     expect(res.body.isEstimate).toBe(true)
@@ -125,6 +125,56 @@ describe('Catalogue & Authoritative Delivery Quote Endpoints', () => {
     expect(res.status).toBe(422)
     expect(res.body.code).toBe('MAX_DISTANCE_EXCEEDED')
     expect(res.body.details.maxKm).toBe(5)
+  })
+
+  it('rejects quote when store coordinates are missing or invalid with 422 INVALID_COORDINATES', async () => {
+    createMockSupabaseClient({
+      stores: [
+        { id: 'store_no_coords', owner_id: 'usr_owner1', name: 'No Coords Mart', is_open: true, latitude: null, longitude: null },
+        { id: 'store_bad_coords', owner_id: 'usr_owner1', name: 'Bad Coords Mart', is_open: true, latitude: 'invalid_lat', longitude: '77.59' },
+      ],
+      locations: [
+        { id: 'loc_close', name: 'Nearby Hostel', latitude: '12.973000', longitude: '77.590000', is_active: true },
+      ],
+    })
+    const testApp = createApp()
+
+    const resNull = await request(testApp)
+      .post('/api/v1/delivery/quote')
+      .send({ storeId: 'store_no_coords', locationId: 'loc_close' })
+    expect(resNull.status).toBe(422)
+    expect(resNull.body.code).toBe('INVALID_COORDINATES')
+
+    const resBad = await request(testApp)
+      .post('/api/v1/delivery/quote')
+      .send({ storeId: 'store_bad_coords', locationId: 'loc_close' })
+    expect(resBad.status).toBe(422)
+    expect(resBad.body.code).toBe('INVALID_COORDINATES')
+  })
+
+  it('rejects quote when destination coordinates are missing or invalid with 422 INVALID_COORDINATES', async () => {
+    createMockSupabaseClient({
+      stores: [
+        { id: 'store_open', owner_id: 'usr_owner1', name: 'Open Mart', is_open: true, latitude: '12.970000', longitude: '77.590000' },
+      ],
+      locations: [
+        { id: 'loc_no_coords', name: 'No Coords Drop', latitude: null, longitude: null, is_active: true },
+        { id: 'loc_bad_coords', name: 'Bad Coords Drop', latitude: '12.97', longitude: 'not_valid', is_active: true },
+      ],
+    })
+    const testApp = createApp()
+
+    const resNull = await request(testApp)
+      .post('/api/v1/delivery/quote')
+      .send({ storeId: 'store_open', locationId: 'loc_no_coords' })
+    expect(resNull.status).toBe(422)
+    expect(resNull.body.code).toBe('INVALID_COORDINATES')
+
+    const resBad = await request(testApp)
+      .post('/api/v1/delivery/quote')
+      .send({ storeId: 'store_open', locationId: 'loc_bad_coords' })
+    expect(resBad.status).toBe(422)
+    expect(resBad.body.code).toBe('INVALID_COORDINATES')
   })
 
   it('error response does not leak stack traces or internal secrets', async () => {

@@ -9,6 +9,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { OrderConfirmationView } from '@/components/cart/OrderConfirmationView'
 import { SAMPLE_PRODUCTS } from '@/mocks/catalogue'
 import { SAMPLE_STORES } from '@/mocks/campus'
+import { PRICING_VERSION } from '@/config/fees'
 
 describe('Cart Store & Multi-Store Protection', () => {
   beforeEach(() => {
@@ -129,21 +130,21 @@ describe('Order Creation & Authoritative Pricing Lifecycle', () => {
     expect(order.locationId).toBe('loc_hostel_b')
     expect(order.lines).toHaveLength(2)
 
-    // Server-authoritative calculation:
+    // Server-authoritative calculation (MVP flat ₹10 delivery policy):
     // Milk: 28 * 2 = 56, Bread: 45 * 1 = 45 => subtotal 101
-    // loc_hostel_b distance is ~0.8 km => fee is 15
-    // Base amount: 101 + 15 = 116
+    // Flat campus delivery fee is 10
+    // Base amount: 101 + 10 = 111
     // Platform fee (smallest available 1 paisa) => 0.01
-    // Total is 116.01
+    // Total is 111.01
     expect(order.pricing).toEqual({
       itemSubtotal: 101,
-      deliveryFee: 15,
-      baseAmount: 116,
+      deliveryFee: 10,
+      baseAmount: 111,
       platformFee: 0.01,
-      total: 116.01,
+      total: 111.01,
       distanceKm: expect.any(Number),
       distanceMethod: 'straight_line',
-      pricingVersion: '2026-10-09.1',
+      pricingVersion: PRICING_VERSION,
     })
   })
 
@@ -402,7 +403,7 @@ describe('Checkout & Order Confirmation Presentation Safeguards', () => {
     expect(htmlBad2).not.toContain('Order Created!')
   })
 
-  it('confirms the authoritative pricing for ₹142 subtotal + ₹15 delivery -> ₹157.01 on order creation and confirmation', async () => {
+  it('confirms the authoritative pricing for ₹142 subtotal + ₹10 delivery -> ₹152.01 on order creation and confirmation', async () => {
     const server = createMockServer()
     const loginToken = (await server.handle('auth.demoLogin', { role: 'customer' })).token
 
@@ -430,12 +431,12 @@ describe('Checkout & Order Confirmation Presentation Safeguards', () => {
       { token: loginToken },
     )
 
-    // Server-authoritative calculations
+    // Server-authoritative calculations (MVP flat ₹10 delivery policy)
     expect(order.pricing.itemSubtotal).toBe(142)
-    expect(order.pricing.deliveryFee).toBe(15)
-    expect(order.pricing.baseAmount).toBe(157)
+    expect(order.pricing.deliveryFee).toBe(10)
+    expect(order.pricing.baseAmount).toBe(152)
     expect(order.pricing.platformFee).toBe(0.01)
-    expect(order.pricing.total).toBe(157.01)
+    expect(order.pricing.total).toBe(152.01)
     expect(order.pricing.total).toBe(order.pricing.baseAmount + order.pricing.platformFee)
 
     // Render into confirmation view
@@ -456,10 +457,10 @@ describe('Checkout & Order Confirmation Presentation Safeguards', () => {
 
     expect(html).toContain('Order Created!')
     expect(html).toContain('₹142')
-    expect(html).toContain('₹15')
+    expect(html).toContain('₹10')
     expect(html).toContain('Platform Fee')
     expect(html).toContain('₹0.01')
-    expect(html).toContain('₹157.01')
+    expect(html).toContain('₹152.01')
   })
 })
 

@@ -629,3 +629,332 @@ describe('Payment State Transitions & Hardening', () => {
     expect(feeSlot.active_order_id).toBe('ord_active_win')
   })
 })
+
+describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', () => {
+  let app
+  let mockState
+
+  const setupMockState = () => {
+    const mock = createMockSupabaseClient({
+      users: [
+        { id: 'usr_alice', token: 'tok_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
+        { id: 'usr_bob', token: 'tok_bob', email: 'bob@campus.edu', name: 'Bob Customer' },
+      ],
+      profiles: [
+        { id: 'usr_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
+        { id: 'usr_bob', email: 'bob@campus.edu', name: 'Bob Customer' },
+      ],
+      userRoles: [
+        { user_id: 'usr_alice', role: ROLES.CUSTOMER },
+        { user_id: 'usr_bob', role: ROLES.CUSTOMER },
+      ],
+      stores: [
+        { id: 'store_campus_mart', name: 'Campus Mart', is_open: true, latitude: 12.9716, longitude: 77.5946 },
+        { id: 'store_closed', name: 'Closed Mart', is_open: false, latitude: 12.9716, longitude: 77.5946 },
+      ],
+      locations: [
+        { id: 'loc_hostel_a', name: 'Hostel A', group_name: 'Hostels', latitude: 12.9740, longitude: 77.5970, is_active: true },
+        { id: 'loc_far_away', name: 'Far Off-Campus', group_name: 'Off-Campus', latitude: 13.0500, longitude: 77.6500, is_active: true },
+        { id: 'loc_inactive', name: 'Inactive Location', group_name: 'Hostels', latitude: 12.9740, longitude: 77.5970, is_active: false },
+      ],
+      products: [
+        { id: 'p_milk', store_id: 'store_campus_mart', name: 'Toned Milk', pack: '500 ml', price: 28.00, stock: 10, is_available: true },
+        { id: 'p_bread', store_id: 'store_campus_mart', name: 'Whole Wheat Bread', pack: '400 g', price: 40.00, stock: 5, is_available: true },
+        { id: 'p_limited', store_id: 'store_campus_mart', name: 'Limited Stock Item', pack: '1 pc', price: 15.00, stock: 2, is_available: true },
+        { id: 'p_unavailable', store_id: 'store_campus_mart', name: 'Unavailable Item', pack: '1 pc', price: 20.00, stock: 10, is_available: false },
+      ],
+      platform_fee_reservations: [
+        { fee_paise: 12, is_paid: false, active_order_id: null },
+        { fee_paise: 15, is_paid: false, active_order_id: null },
+      ],
+      orders: [],
+    })
+    mockState = mock.state
+    app = createApp()
+  }
+
+  beforeEach(() => {
+    setupMockState()
+  })
+
+  it('1. authenticated valid checkout reaches real backend handler via RPC-style POST /orders/create', async () => {
+    const payload = {
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_a',
+      lines: [
+        { productId: 'p_milk', quantity: 2 },
+        { productId: 'p_bread', quantity: 1 },
+      ],
+      customerDetails: {
+        fullName: 'Alice Customer',
+        phoneNumber: '9876543210',
+        selectedDestination: 'Hostel A',
+      },
+    }
+
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send(payload)
+
+    expect(res.status).toBe(201)
+    expect(res.body.id).toMatch(/^ord_/)
+    expect(res.body.customerId).toBe('usr_alice')
+    expect(res.body.storeId).toBe('store_campus_mart')
+    expect(res.body.locationId).toBe('loc_hostel_a')
+
+    // Authoritative math: (2 * 28) + (1 * 40) = 96 item subtotal
+    // Delivery fee: flat ₹10
+    // Base amount: 96 + 10 = 106
+    // Platform fee: ₹0.12 (from fee_paise 12)
+    // Total payable: 106.12
+    expect(res.body.pricing.itemSubtotal).toBe(96)
+    expect(res.body.pricing.deliveryFee).toBe(10)
+    expect(res.body.pricing.baseAmount).toBe(106)
+    expect(res.body.pricing.platformFee).toBe(0.12)
+    expect(res.body.pricing.total).toBe(106.12)
+    expect(res.body.pricing.distanceKm).toBeGreaterThan(0)
+    expect(res.body.pricing.distanceKm).toBeLessThanOrEqual(5)
+
+    // Verify DB insertion
+    const created = mockState.orders.find((o) => o.id === res.body.id)
+    expect(created).toBeDefined()
+    expect(created.customer_id).toBe('usr_alice')
+    expect(created.status).toBe('AWAITING_PAYMENT')
+    expect(created.payment_status).toBe('PENDING')
+  })
+
+  it('2. also supports REST-style POST /api/v1/orders with identical authoritative contract', async () => {
+    const payload = {
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_a',
+      lines: [{ productId: 'p_milk', quantity: 1 }],
+    }
+
+    const res = await request(app)
+      .post('/api/v1/orders')
+      .set('Authorization', 'Bearer tok_alice')
+      .send(payload)
+
+    expect(res.status).toBe(201)
+    expect(res.body.id).toMatch(/^ord_/)
+    expect(res.body.pricing.itemSubtotal).toBe(28)
+    expect(res.body.pricing.deliveryFee).toBe(10)
+    expect(res.body.pricing.baseAmount).toBe(38)
+    expect(res.body.pricing.total).toBe(38.12)
+  })
+
+  it('3. rejects unauthenticated requests with 401 UNAUTHENTICATED', async () => {
+    const payload = {
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_a',
+      lines: [{ productId: 'p_milk', quantity: 1 }],
+    }
+
+    const res = await request(app)
+      .post('/orders/create')
+      .send(payload)
+
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('UNAUTHENTICATED')
+  })
+
+  it('4. rejects empty cart lines with 422 EMPTY_CART', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({ storeId: 'store_campus_mart', locationId: 'loc_hostel_a', lines: [] })
+
+    expect(res.status).toBe(422)
+    expect(res.body.code).toBe('EMPTY_CART')
+  })
+
+  it('5. rejects invalid quantity (< 1 or non-integer) with 422 INVALID_QUANTITY', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 0 }],
+      })
+
+    expect(res.status).toBe(422)
+    expect(res.body.code).toBe('INVALID_QUANTITY')
+  })
+
+  it('6. rejects unavailable product with 409 PRODUCT_UNAVAILABLE', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_unavailable', quantity: 1 }],
+      })
+
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('PRODUCT_UNAVAILABLE')
+  })
+
+  it('7. rejects quantity exceeding available stock with 409 OUT_OF_STOCK', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_limited', quantity: 10 }],
+      })
+
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('OUT_OF_STOCK')
+  })
+
+  it('8. rejects closed store with 409 STORE_CLOSED', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_closed',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+      })
+
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('STORE_CLOSED')
+  })
+
+  it('9. rejects destinations exceeding 5 km service boundary with 422 OUT_OF_SERVICE_AREA', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_far_away',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+      })
+
+    expect(res.status).toBe(422)
+    expect(res.body.code).toBe('OUT_OF_SERVICE_AREA')
+  })
+
+  it('10. guarantees client-supplied prices, delivery fees, or totals CANNOT override server calculations', async () => {
+    // Malicious customer sends fake prices and fees
+    const fraudulentPayload = {
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_a',
+      lines: [{ productId: 'p_milk', quantity: 1, unitPrice: 0.01, price: 0.01 }],
+      pricing: { itemSubtotal: 0.01, deliveryFee: 0, platformFee: 0.01, total: 0.02 },
+      deliveryFee: 0,
+      total: 0.02,
+    }
+
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send(fraudulentPayload)
+
+    expect(res.status).toBe(201)
+    // Server overrides all tampering: unitPrice is authoritative 28.00, deliveryFee is 10.00
+    expect(res.body.pricing.itemSubtotal).toBe(28.00)
+    expect(res.body.pricing.deliveryFee).toBe(10.00)
+    expect(res.body.pricing.baseAmount).toBe(38.00)
+    expect(res.body.pricing.platformFee).toBe(0.12)
+    expect(res.body.pricing.total).toBe(38.12)
+  })
+
+  it('11. returns response shape expected by frontend CartPage and CustomerPaymentView', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_bread', quantity: 2 }],
+        customerDetails: { fullName: 'Alice Customer', phoneNumber: '9876543210' },
+      })
+
+    expect(res.status).toBe(201)
+    const order = res.body
+
+    // CartPage validation assertion check
+    expect(typeof order.pricing.platformFee).toBe('number')
+    expect(typeof order.pricing.baseAmount).toBe('number')
+    expect(typeof order.pricing.total).toBe('number')
+    expect(order.pricing.platformFee).toBeGreaterThan(0)
+    expect(Math.abs(order.pricing.total - (order.pricing.baseAmount + order.pricing.platformFee))).toBeLessThan(0.001)
+
+    // CustomerPaymentView expected fields
+    expect(order.storeId).toBe('store_campus_mart')
+    expect(order.locationId).toBe('loc_hostel_a')
+    expect(order.payment).toBeDefined()
+    expect(order.payment.windowExpiresAt).toBeDefined()
+    expect(order.payment.feePaise).toBeGreaterThanOrEqual(1)
+    expect(order.payment.feePaise).toBeLessThanOrEqual(99)
+  })
+
+  it('12. order creation strictly does NOT mark payment as PAID', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+      })
+
+    expect(res.status).toBe(201)
+    expect(res.body.status).toBe('AWAITING_PAYMENT')
+    expect(res.body.paymentStatus).toBe('PENDING')
+    expect(res.body.payment.status).toBe('PENDING')
+    expect(res.body.payment.paidAt).toBeNull()
+  })
+
+  it('13. prevents duplicate orders on retries with same idempotencyKey', async () => {
+    const payload = {
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_a',
+      lines: [{ productId: 'p_milk', quantity: 1 }],
+      idempotencyKey: 'idem_unique_test_123',
+    }
+
+    const res1 = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send(payload)
+
+    expect(res1.status).toBe(201)
+    const firstOrderId = res1.body.id
+
+    // Retry with identical idempotency key
+    const res2 = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send(payload)
+
+    expect(res2.status).toBe(200)
+    expect(res2.body.id).toBe(firstOrderId)
+    expect(mockState.orders.filter((o) => o.idempotency_key === 'idem_unique_test_123').length).toBe(1)
+  })
+
+  it('14. safely releases platform fee reservation on database insertion failure', async () => {
+    // Force database table error during order insertion
+    mockState.tableErrors = { orders: 'synthetic database disk failure' }
+
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+      })
+
+    expect(res.status).toBe(500)
+
+    // Platform fee slot was safely rolled back / released
+    const slot = mockState.platform_fee_reservations.find((r) => r.fee_paise === 12)
+    expect(slot.active_order_id).toBeNull()
+  })
+})
