@@ -51,4 +51,23 @@ describe('create_order_atomic SQL Migration Contract & Invariants', () => {
     expect(migrationSql).toContain(`REVOKE EXECUTE ON FUNCTION create_order_atomic(${expectedArgs}) FROM PUBLIC, anon, authenticated;`)
     expect(migrationSql).toContain(`GRANT EXECUTE ON FUNCTION create_order_atomic(${expectedArgs}) TO service_role;`)
   })
+
+  it('qualifies pfr.cooldown_expires_at in create_order_atomic to prevent column reference ambiguity', () => {
+    expect(migrationSql).toMatch(/SELECT\s+pfr\.fee_paise\s+INTO\s+v_fee_paise\s+FROM\s+public\.platform_fee_reservations\s+pfr\s+WHERE\s+\(pfr\.active_order_id\s+IS\s+NULL\s+OR\s+v_now\s*>=\s*pfr\.cooldown_expires_at\)/)
+  })
+})
+
+describe('allocate_platform_fee SQL Function Contract', () => {
+  const feeMigrationPath = path.resolve(
+    process.cwd(),
+    'supabase/migrations/20261010000002_platform_fee_functions.sql'
+  )
+  const feeMigrationSql = fs.readFileSync(feeMigrationPath, 'utf8')
+
+  it('unambiguously qualifies pfr.cooldown_expires_at in allocate_platform_fee to avoid collision with RETURNS TABLE column', () => {
+    // RETURNS TABLE declares cooldown_expires_at as an output parameter
+    expect(feeMigrationSql).toMatch(/RETURNS\s+TABLE\s*\([\s\S]*?cooldown_expires_at\s+TIMESTAMPTZ[\s\S]*?\)/)
+    // The SELECT query must qualify pfr.cooldown_expires_at with table alias
+    expect(feeMigrationSql).toMatch(/SELECT\s+pfr\.fee_paise\s+INTO\s+v_paise\s+FROM\s+public\.platform_fee_reservations\s+pfr\s+WHERE\s+\(pfr\.active_order_id\s+IS\s+NULL\s+OR\s+v_now\s*>=\s*pfr\.cooldown_expires_at\)/)
+  })
 })

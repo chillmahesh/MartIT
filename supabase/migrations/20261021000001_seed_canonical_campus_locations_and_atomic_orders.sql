@@ -139,11 +139,11 @@ BEGIN
   -- Uses FOR UPDATE SKIP LOCKED to prevent concurrent orders from acquiring the same slot.
   -- The slot reservation UPDATE is deferred until after parent order insertion to strictly
   -- satisfy the immediate foreign-key constraint on platform_fee_reservations.active_order_id.
-  SELECT fee_paise INTO v_fee_paise
-  FROM public.platform_fee_reservations
-  WHERE (active_order_id IS NULL OR v_now >= cooldown_expires_at)
-    AND is_paid = FALSE
-  ORDER BY fee_paise ASC
+  SELECT pfr.fee_paise INTO v_fee_paise
+  FROM public.platform_fee_reservations pfr
+  WHERE (pfr.active_order_id IS NULL OR v_now >= pfr.cooldown_expires_at)
+    AND pfr.is_paid = FALSE
+  ORDER BY pfr.fee_paise ASC
   LIMIT 1
   FOR UPDATE SKIP LOCKED;
 

@@ -53,11 +53,13 @@ BEGIN
   END IF;
 
   -- Select smallest available paise slot with row-level lock
-  SELECT fee_paise INTO v_paise
-  FROM public.platform_fee_reservations
-  WHERE (active_order_id IS NULL OR v_now >= cooldown_expires_at)
-    AND is_paid = FALSE
-  ORDER BY fee_paise ASC
+  -- Explicitly qualify pfr.cooldown_expires_at to prevent ambiguity with the
+  -- RETURNS TABLE output parameter 'cooldown_expires_at'.
+  SELECT pfr.fee_paise INTO v_paise
+  FROM public.platform_fee_reservations pfr
+  WHERE (pfr.active_order_id IS NULL OR v_now >= pfr.cooldown_expires_at)
+    AND pfr.is_paid = FALSE
+  ORDER BY pfr.fee_paise ASC
   LIMIT 1
   FOR UPDATE SKIP LOCKED;
 
