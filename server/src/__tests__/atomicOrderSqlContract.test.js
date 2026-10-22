@@ -265,3 +265,17 @@ describe('Authoritative payment verification trust contract', () => {
     expect(webhookRouteCode).toContain('if (gatewayVerification?.verified !== true)')
   })
 })
+
+
+describe('Payment transition RPC execute privileges', () => {
+  it('revokes SECURITY DEFINER payment transition from public client roles and grants service role only', () => {
+    const sql = readFileSync(
+      path.resolve(process.cwd(), 'supabase/migrations/20261022160000_restrict_payment_transition_rpc.sql'),
+      'utf8',
+    )
+    expect(sql).toContain('FROM PUBLIC')
+    expect(sql).toContain('FROM anon')
+    expect(sql).toContain('FROM authenticated')
+    expect(sql).toContain('TO service_role')
+  })
+})
