@@ -55,3 +55,18 @@ This register contains confirmed observations from the initial remote review. It
 - **RLS regression test:** assertion added to `supabase/tests/database_integrity_test.sql` for both `anon` and `authenticated` execution privileges on `public.rls_auto_enable()`. Not run against PostgreSQL yet.
 - **Production safety:** the proposed migration remains unapplied. Live SQL inspection calls were blocked by the tool safety layer; do not infer that the production grant was fixed.
 - **Known limitations:** repository clone/build could not run in this environment due DNS/network failure to GitHub. No dead-code deletion is claimed; safe dead-code analysis needs a complete repository-wide reference scan and build/test validation.
+
+
+## Additional code-path finding — 2026-10-22
+
+### MARTIT-AUD-013 — Medium/High — Payment verification evidence predicate is too permissive
+
+**Evidence reviewed:** `server/src/routes/orders.js` (`handleCheckPayment`) and `supabase/migrations/20261010000002_platform_fee_functions.sql` (`mark_platform_fee_paid`).
+
+- The customer payment-check endpoint treats a matching `payment_records` row with `evidence = 'Payment received'` and matching amount as sufficient to call `mark_platform_fee_paid`.
+- The database function's anti-shortcut predicate is broader still: it accepts a matching amount when `status = 'PAID' OR evidence IS NOT NULL`. It does not itself check `verification_source`, provider transaction identity, or an explicit authoritative-verification marker.
+- Current webhook code is designed to set evidence only after `verifyWithAuthoritativePaymentGateway` returns verified. Without a configured verifier, it stores `PROCESSING` and `evidence = NULL`, so the normal webhook path fails closed. This is therefore a **defense-in-depth gap / dangerous trust contract**, not evidence that an unauthenticated caller can currently mark an order paid. Actual exploitability depends on database grants, server-only write paths, and the deployed function definition.
+
+**Required action:** In a test database, strengthen the schema contract so payment confirmation requires a record explicitly marked as authoritatively verified by the server, with exact amount and order linkage. Make `handleCheckPayment` filter for that trusted state, and ensure the verified record update and order transition are transactionally consistent. Add negative tests for `PROCESSING` records, arbitrary non-null evidence, mismatched amount/order, duplicate notifications, and a failed evidence update. Do not apply a production migration until the existing data model, constraints, and all call sites have been tested.
+
+**Status:** OPEN — static code finding; runtime exploitability not established.
