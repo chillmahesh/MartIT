@@ -208,6 +208,9 @@ export function createMockSupabaseClient({
         },
         then(resolve, reject) {
           if (pendingUpdate) {
+            if (state.updateErrors?.[table]) {
+              return resolve({ data: null, error: { message: state.updateErrors[table] } })
+            }
             const updatedRows = []
             for (let i = 0; i < currentTableData.length; i++) {
               if (filters.every((f) => currentTableData[i][f.column] === f.value)) {
