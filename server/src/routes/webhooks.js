@@ -18,6 +18,27 @@ export function setGatewayVerifier(fn) {
 }
 
 /**
+ * Sanitized structured logger for payment webhook operations.
+ * CRITICAL: NEVER logs secrets, tokens, customer credentials, or sensitive banking PII.
+ */
+function logWebhook(level, event, data = {}) {
+  const payload = {
+    tag: 'PAYMENT_WEBHOOK',
+    event,
+    ...data,
+    timestamp: new Date().toISOString(),
+  }
+  const str = JSON.stringify(payload)
+  if (level === 'error') {
+    console.error(str)
+  } else if (level === 'warn') {
+    console.warn(str)
+  } else {
+    console.info(str)
+  }
+}
+
+/**
  * Timing-safe shared-secret authentication middleware for incoming Make.com payment webhooks.
  *
  * Supports:
@@ -31,8 +52,23 @@ export function setGatewayVerifier(fn) {
  * - Never prints or leaks secrets in error messages or logs.
  */
 export function authenticateWebhook(req, res, next) {
+  logWebhook('info', 'REQUEST_RECEIVED', {
+    path: req.originalUrl,
+    method: req.method,
+    hasMakeSecret: Boolean(req.headers['x-make-secret']),
+    hasWebhookSecret: Boolean(req.headers['x-webhook-secret']),
+    hasBearer: Boolean(
+      typeof req.headers['authorization'] === 'string' &&
+        req.headers['authorization'].startsWith('Bearer '),
+    ),
+  })
+
   const configuredSecret = env.MAKE_WEBHOOK_SECRET || process.env.MAKE_WEBHOOK_SECRET
   if (!configuredSecret || typeof configuredSecret !== 'string' || !configuredSecret.trim()) {
+    logWebhook('error', 'AUTH_REJECTED', {
+      reason: 'WEBHOOK_UNCONFIGURED',
+      message: 'MAKE_WEBHOOK_SECRET is not configured on the server.',
+    })
     throw ApiError.internal('Payment webhook service is not configured on the server.', 'WEBHOOK_UNCONFIGURED')
   }
 
@@ -44,6 +80,9 @@ export function authenticateWebhook(req, res, next) {
       : null)
 
   if (!rawHeader || typeof rawHeader !== 'string') {
+    logWebhook('warn', 'AUTH_REJECTED', {
+      reason: 'MISSING_CREDENTIALS',
+    })
     throw ApiError.unauthorized('Missing webhook authentication credentials.', 'UNAUTHENTICATED')
   }
 
@@ -51,8 +90,15 @@ export function authenticateWebhook(req, res, next) {
   const hashHeader = crypto.createHash('sha256').update(rawHeader).digest()
 
   if (!crypto.timingSafeEqual(hashConfigured, hashHeader)) {
+    logWebhook('warn', 'AUTH_REJECTED', {
+      reason: 'INVALID_SECRET',
+    })
     throw ApiError.unauthorized('Invalid webhook authentication secret.', 'UNAUTHENTICATED')
   }
+
+  logWebhook('info', 'AUTH_SUCCESS', {
+    path: req.originalUrl,
+  })
 
   next()
 }
@@ -109,18 +155,38 @@ export async function handleMakePaymentWebhook(req, res, next) {
     const status = body.status ? String(body.status).toUpperCase() : null
     const evidenceText = typeof body.evidence === 'string' ? body.evidence : ''
 
+    logWebhook('info', 'PAYLOAD_RECEIVED', {
+      orderId: orderId || null,
+      rawAmount: rawAmount !== undefined ? rawAmount : null,
+      status: status || null,
+      hasEvidenceText: Boolean(evidenceText),
+      hasUtr: Boolean(body.utr || body.rrn || body.transactionId || body.txnId),
+    })
+
     // 1. Validate order reference
     if (!orderId || typeof orderId !== 'string' || !orderId.trim()) {
+      logWebhook('warn', 'PAYLOAD_REJECTED', {
+        reason: 'INVALID_ORDER_ID',
+      })
       throw ApiError.badRequest('Valid order reference is required.', 'INVALID_ORDER_ID')
     }
 
     // 2. Validate payment amount
     if (rawAmount === undefined || rawAmount === null || rawAmount === '') {
+      logWebhook('warn', 'PAYLOAD_REJECTED', {
+        orderId,
+        reason: 'MISSING_AMOUNT',
+      })
       throw ApiError.badRequest('Payment amount is required.', 'INVALID_AMOUNT')
     }
 
     const parsedAmount = Number(rawAmount)
     if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      logWebhook('warn', 'PAYLOAD_REJECTED', {
+        orderId,
+        reason: 'INVALID_AMOUNT',
+        parsedAmount,
+      })
       throw ApiError.badRequest('Payment amount must be a positive number.', 'INVALID_AMOUNT')
     }
 
@@ -131,9 +197,14 @@ export async function handleMakePaymentWebhook(req, res, next) {
       status === 'DECLINED' ||
       /fail|declin|bounc|reject/i.test(evidenceText)
     ) {
+      logWebhook('warn', 'NOTIFICATION_REJECTED', {
+        orderId,
+        status,
+        reason: 'PAYMENT_FAILED_NOTIFICATION',
+      })
       throw ApiError.badRequest(
         'Webhook notification indicates a failed or declined transaction.',
-        'PAYMENT_FAILED_NOTIFICATION'
+        'PAYMENT_FAILED_NOTIFICATION',
       )
     }
 
@@ -145,9 +216,14 @@ export async function handleMakePaymentWebhook(req, res, next) {
       /payment received|received rs|credited/i.test(evidenceText)
 
     if (!hasNotificationEvidence) {
+      logWebhook('warn', 'NOTIFICATION_REJECTED', {
+        orderId,
+        status,
+        reason: 'UNVERIFIED_EVIDENCE',
+      })
       throw ApiError.badRequest(
         'Webhook notification lacks payment evidence.',
-        'UNVERIFIED_EVIDENCE'
+        'UNVERIFIED_EVIDENCE',
       )
     }
 
@@ -161,15 +237,25 @@ export async function handleMakePaymentWebhook(req, res, next) {
       .maybeSingle()
 
     if (orderErr) {
+      logWebhook('error', 'DATABASE_ERROR', {
+        orderId,
+        error: orderErr.message,
+      })
       throw ApiError.internal(`Database error querying order: ${orderErr.message}`)
     }
 
     if (!order) {
+      logWebhook('warn', 'ORDER_NOT_FOUND', {
+        orderId,
+      })
       throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
     }
 
     // 6. Idempotency Check: Already paid
     if (order.payment_status === 'PAID') {
+      logWebhook('info', 'IDEMPOTENT_ALREADY_PAID', {
+        orderId: order.id,
+      })
       return res.status(200).json({
         success: true,
         orderId: order.id,
@@ -182,9 +268,14 @@ export async function handleMakePaymentWebhook(req, res, next) {
 
     // 7. Terminal State Guard: CANCELLED or terminal payment states cannot transition
     if (order.status === 'CANCELLED' || ['EXPIRED', 'FAILED', 'REFUNDED'].includes(order.payment_status)) {
+      logWebhook('warn', 'TERMINAL_STATE_REJECTED', {
+        orderId: order.id,
+        orderStatus: order.status,
+        paymentStatus: order.payment_status,
+      })
       throw ApiError.conflict(
         'Order is cancelled or in a terminal payment state and cannot be marked paid.',
-        'TERMINAL_STATE'
+        'TERMINAL_STATE',
       )
     }
 
@@ -192,6 +283,11 @@ export async function handleMakePaymentWebhook(req, res, next) {
     const now = Date.now()
     const windowExpiry = new Date(order.payment_window_expires_at).getTime()
     if (Number.isFinite(windowExpiry) && now >= windowExpiry) {
+      logWebhook('warn', 'WINDOW_EXPIRED_REJECTED', {
+        orderId: order.id,
+        windowExpiresAt: order.payment_window_expires_at,
+        expiredByMs: now - windowExpiry,
+      })
       throw ApiError.badRequest('Payment verification window has expired.', 'PAYMENT_WINDOW_EXPIRED')
     }
 
@@ -200,10 +296,16 @@ export async function handleMakePaymentWebhook(req, res, next) {
     const amountDiff = Math.abs(parsedAmount - expectedTotal)
 
     if (amountDiff > 0.005) {
+      logWebhook('warn', 'AMOUNT_MISMATCH_REJECTED', {
+        orderId: order.id,
+        expectedTotal,
+        receivedAmount: parsedAmount,
+        difference: Number(amountDiff.toFixed(4)),
+      })
       throw ApiError.badRequest(
         `Payment amount (${parsedAmount.toFixed(2)}) does not match order total payable (${expectedTotal.toFixed(2)}).`,
         'PAYMENT_AMOUNT_MISMATCH',
-        { expectedAmount: expectedTotal, receivedAmount: parsedAmount }
+        { expectedAmount: expectedTotal, receivedAmount: parsedAmount },
       )
     }
 
@@ -249,11 +351,28 @@ export async function handleMakePaymentWebhook(req, res, next) {
 
       if (insertErr) {
         if (insertErr.message?.includes('PAYMENT_AMOUNT_MISMATCH')) {
+          logWebhook('warn', 'PAYMENT_RECORD_INSERT_REJECTED', {
+            orderId: order.id,
+            error: insertErr.message,
+          })
           throw ApiError.badRequest('Payment record amount rejected by database constraint.', 'PAYMENT_AMOUNT_MISMATCH')
         }
+        logWebhook('error', 'PAYMENT_RECORD_INSERT_FAILED', {
+          orderId: order.id,
+          error: insertErr.message,
+        })
         throw ApiError.internal(`Failed to persist payment evidence: ${insertErr.message || 'Database error'}`)
       }
     }
+
+    logWebhook('info', 'EVIDENCE_INGESTION', {
+      orderId: order.id,
+      recordId,
+      attemptId: dedupeKey,
+      amount: expectedTotal,
+      isDuplicate: Boolean(existingRecord),
+      status: 'PROCESSING',
+    })
 
     // 11. Authoritative Payment Gateway Verification
     // Never trust client/Make claims alone; verify directly against authoritative banking provider.
@@ -263,9 +382,20 @@ export async function handleMakePaymentWebhook(req, res, next) {
       utr,
     })
 
+    logWebhook('info', 'GATEWAY_VERIFICATION_EVALUATED', {
+      orderId: order.id,
+      verified: gatewayVerification.verified,
+      reason: gatewayVerification.reason || null,
+    })
+
     if (!gatewayVerification.verified) {
       // FAIL CLOSED: No authoritative gateway confirmed bank settlement.
       // Do NOT call executeAtomicPaymentVerification(). Order remains PENDING.
+      logWebhook('info', 'INGESTION_FAILED_CLOSED', {
+        orderId: order.id,
+        reason: gatewayVerification.reason,
+        orderRemainsStatus: order.payment_status,
+      })
       return res.status(200).json({
         success: true,
         orderId: order.id,
@@ -288,6 +418,11 @@ export async function handleMakePaymentWebhook(req, res, next) {
       .eq('id', recordId)
 
     await executeAtomicPaymentVerification(supabase, order.id)
+
+    logWebhook('info', 'GATEWAY_VERIFIED_SETTLED', {
+      orderId: order.id,
+      amount: expectedTotal,
+    })
 
     return res.status(200).json({
       success: true,
