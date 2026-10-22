@@ -117,6 +117,52 @@ describe('Auth UI Components (LoginPage & SignupPage)', () => {
 
     expect(html).toContain('Your password has been successfully reset. Please log in with your new password.')
   })
+
+  it('redirects dual-role user according to activeMode in RedirectIfAuthed', async () => {
+    const { targetPathForAuthed } = await import('@/app/RouteGuards')
+
+    const dualUser = {
+      id: 'usr_dual',
+      name: 'Dual User',
+      email: 'dual@campus.edu',
+      roles: ['customer', 'runner'],
+      runnerStatus: 'approved',
+    }
+
+    expect(targetPathForAuthed(dualUser, 'runner')).toBe('/runner')
+    expect(targetPathForAuthed(dualUser, 'customer')).toBe('/app')
+    expect(targetPathForAuthed(dualUser, null)).toBe('/app')
+  })
+
+  it('redirects runner-only and customer-only users correctly in targetPathForAuthed', async () => {
+    const { targetPathForAuthed } = await import('@/app/RouteGuards')
+
+    const runnerOnly = {
+      id: 'usr_run',
+      name: 'Runner',
+      email: 'runner@campus.edu',
+      roles: ['runner'],
+      runnerStatus: 'approved',
+    }
+    const customerOnly = {
+      id: 'usr_cust',
+      name: 'Customer',
+      email: 'customer@campus.edu',
+      roles: ['customer'],
+      runnerStatus: null,
+    }
+    const unapprovedRunner = {
+      id: 'usr_unapproved',
+      name: 'Unapproved',
+      email: 'unapproved@campus.edu',
+      roles: ['customer', 'runner'],
+      runnerStatus: null,
+    }
+
+    expect(targetPathForAuthed(runnerOnly, null)).toBe('/runner')
+    expect(targetPathForAuthed(customerOnly, null)).toBe('/app')
+    expect(targetPathForAuthed(unapprovedRunner, null)).toBe('/app')
+  })
 })
 
 describe('Password Recovery UI (ResetPasswordPage)', () => {

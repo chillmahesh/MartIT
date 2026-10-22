@@ -11,7 +11,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { toast } from '@/components/ui/Toaster'
 import { useAuthStore } from '@/stores/authStore'
 import { env, isMockBackend } from '@/config/env'
-import { homePathFor } from '@/utils/permissions'
+import { homePathFor, hasPermission, PERMISSIONS, ROLES } from '@/utils/permissions'
 
 /** Only allow same-site relative redirects (prevents open-redirects via ?next=). */
 function safeNext(next) {
@@ -36,6 +36,12 @@ export default function LoginPage() {
   const [hydrationError, setHydrationError] = useState(null)
   const [retryingHydration, setRetryingHydration] = useState(false)
   const [pendingDemo, setPendingDemo] = useState(null)
+
+  // Mode selection and runner diagnostic modal state
+  const [modeModalOpen, setModeModalOpen] = useState(false)
+  const [modeModalUser, setModeModalUser] = useState(null)
+  const [diagnosticOpen, setDiagnosticOpen] = useState(false)
+  const [diagnosticUser, setDiagnosticUser] = useState(null)
 
   const noticeMessage = location.state?.notice || params.get('notice')
 
@@ -78,6 +84,38 @@ export default function LoginPage() {
     }
   }
 
+  const handlePostLoginRouting = (authenticatedUser) => {
+    const canShop = hasPermission(authenticatedUser, PERMISSIONS.SHOP)
+    const canDeliver = hasPermission(authenticatedUser, PERMISSIONS.RUNNER_DELIVER)
+    const hasRunnerRole = authenticatedUser?.roles?.includes(ROLES.RUNNER)
+
+    if (canShop && canDeliver) {
+      // Dual-role approved: show mode-selection dialog
+      setModeModalUser(authenticatedUser)
+      setModeModalOpen(true)
+      return
+    }
+
+    if (canDeliver && !canShop) {
+      // Runner-only approved: route to /runner
+      useAuthStore.getState().setActiveMode('runner')
+      navigate(safeNext(params.get('next')) ?? '/runner', { replace: true })
+      return
+    }
+
+    if (hasRunnerRole && authenticatedUser?.runnerStatus !== 'approved') {
+      // Runner role assigned, but runnerStatus is not approved:
+      // Show diagnostic status modal explaining why runner delivery access is not active.
+      setDiagnosticUser(authenticatedUser)
+      setDiagnosticOpen(true)
+      return
+    }
+
+    // Customer-only or default role: preserve /app (or next)
+    useAuthStore.getState().setActiveMode('customer')
+    navigate(safeNext(params.get('next')) ?? homePathFor(authenticatedUser), { replace: true })
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     setFormError(null)
@@ -97,7 +135,7 @@ export default function LoginPage() {
     try {
       const user = await login(cleanEmail, password)
       toast.success(`Welcome back, ${user.name}!`)
-      navigate(safeNext(params.get('next')) ?? homePathFor(user), { replace: true })
+      handlePostLoginRouting(user)
     } catch (err) {
       if (err.authStage === 'profile_hydration') {
         setHydrationError(err)
@@ -115,7 +153,7 @@ export default function LoginPage() {
       const user = await hydrateProfile()
       toast.success(`Welcome back, ${user.name}!`)
       setHydrationError(null)
-      navigate(safeNext(params.get('next')) ?? homePathFor(user), { replace: true })
+      handlePostLoginRouting(user)
     } catch (err) {
       setHydrationError(err)
       toast.error(err.message || 'Retry failed. Server may still be waking up.')
@@ -137,7 +175,7 @@ export default function LoginPage() {
     try {
       const user = await demoLogin(role)
       toast.success(`Signed in as ${user.name}`)
-      navigate(safeNext(params.get('next')) ?? homePathFor(user), { replace: true })
+      handlePostLoginRouting(user)
     } catch (e) {
       toast.error(e.message)
     } finally {
@@ -444,6 +482,119 @@ export default function LoginPage() {
               </div>
             </form>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Mode Selection Dialog for Dual-Role Approved Users */}
+      <Dialog open={modeModalOpen} onOpenChange={setModeModalOpen}>
+        <DialogContent
+          title="Choose your mode"
+          description="Your account is approved for both customer orders and runner deliveries. Choose where you would like to start:"
+        >
+          <div className="mt-4 grid gap-3">
+            <Card
+              as="button"
+              type="button"
+              id="mode-select-customer"
+              interactive
+              onClick={() => {
+                useAuthStore.getState().setActiveMode('customer')
+                setModeModalOpen(false)
+                navigate(safeNext(params.get('next')) ?? '/app', { replace: true })
+              }}
+              className="flex w-full items-center gap-4 p-4 text-left transition-all hover:border-brand"
+            >
+              <span className="grid size-12 shrink-0 place-items-center rounded-tile bg-surface-2 text-ink">
+                <ShoppingBasket className="size-6 text-brand" aria-hidden="true" />
+              </span>
+              <span className="flex-1">
+                <span className="block font-semibold text-base text-ink">Customer Dashboard</span>
+                <span className="block text-xs text-ink-muted mt-0.5">
+                  Browse campus food &amp; groceries, build carts, and place delivery orders
+                </span>
+              </span>
+            </Card>
+
+            <Card
+              as="button"
+              type="button"
+              id="mode-select-runner"
+              interactive
+              onClick={() => {
+                useAuthStore.getState().setActiveMode('runner')
+                setModeModalOpen(false)
+                navigate(safeNext(params.get('next')) ?? '/runner', { replace: true })
+              }}
+              className="flex w-full items-center gap-4 p-4 text-left transition-all hover:border-brand"
+            >
+              <span className="grid size-12 shrink-0 place-items-center rounded-tile bg-brand-soft text-fresh-ink">
+                <Bike className="size-6 text-fresh-ink" aria-hidden="true" />
+              </span>
+              <span className="flex-1">
+                <span className="block font-semibold text-base text-ink">Runner Dashboard</span>
+                <span className="block text-xs text-ink-muted mt-0.5">
+                  Accept pending delivery requests, manage pickups, and deliver across campus
+                </span>
+              </span>
+            </Card>
+          </div>
+          <p className="mt-4 text-center text-xs text-ink-subtle">
+            You can switch between Customer Mode and Runner Mode anytime using the button in the header.
+          </p>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diagnostic Dialog for Runner Role without Approved Status */}
+      <Dialog open={diagnosticOpen} onOpenChange={setDiagnosticOpen}>
+        <DialogContent
+          title="Runner Account Status Notice"
+          description="Your account has the runner role assigned, but runner delivery privileges are not yet active."
+        >
+          <div className="space-y-4">
+            <div
+              role="alert"
+              id="login-runner-diagnostic-alert"
+              className="rounded-card border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-900 dark:text-amber-200"
+            >
+              <div className="flex items-start gap-3">
+                <AlertCircle className="size-5 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" aria-hidden="true" />
+                <div className="flex-1 space-y-1.5">
+                  <p className="font-semibold">
+                    {diagnosticUser?.runnerStatus === 'suspended'
+                      ? 'Runner Privileges Suspended'
+                      : diagnosticUser?.runnerStatus === 'applicant' || diagnosticUser?.runnerStatus === 'pending'
+                      ? 'Runner Application Pending Review'
+                      : 'Runner Approval Required'}
+                  </p>
+                  <p className="text-xs text-ink">
+                    {diagnosticUser?.runnerStatus === 'suspended'
+                      ? 'Your runner delivery privileges are currently suspended by platform administrators. You can continue shopping in Customer Mode.'
+                      : diagnosticUser?.runnerStatus === 'applicant' || diagnosticUser?.runnerStatus === 'pending'
+                      ? 'Your runner application is under review by campus administrators. Once approved, the Runner Dashboard will become available. In the meantime, you can use Customer Mode.'
+                      : 'Your user profile in the database has role "runner", but runner_status is currently unapproved (null or not approved). An administrator must set runner_status = \'approved\' in the profiles table to activate delivery permissions.'}
+                  </p>
+                  <div className="mt-2 text-[11px] font-mono text-ink-muted">
+                    Assigned Role: runner | Profile Status: {diagnosticUser?.runnerStatus ?? 'unapproved (null)'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="primary"
+                id="diagnostic-continue-customer"
+                onClick={() => {
+                  setDiagnosticOpen(false)
+                  useAuthStore.getState().setActiveMode('customer')
+                  navigate(safeNext(params.get('next')) ?? '/app', { replace: true })
+                }}
+              >
+                Continue to Customer Dashboard
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </section>

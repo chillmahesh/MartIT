@@ -29,6 +29,11 @@ export function ForbiddenPage({ role }) {
         title: 'Runner access suspended',
         body: 'Your runner delivery privileges are currently suspended. Please contact platform administrators for assistance. You can still use customer mode to place orders.',
       }
+    } else if (user?.roles?.includes('runner') && user?.runnerStatus !== 'approved') {
+      copy = {
+        title: 'Runner role unapproved',
+        body: 'Your account has the runner role assigned in the database, but your profile status is unapproved (runner_status is missing or not approved). An administrator must approve your runner status in the profiles table before delivery access is granted.',
+      }
     }
   }
 

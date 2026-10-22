@@ -20,7 +20,10 @@ const AREA_PERMISSION = {
 }
 
 export function RequireRole({ role }) {
-  const { token, user, isInitialized } = useAuthStore()
+  const authState = useAuthStore()
+  const isInitialized = authState.isInitialized || useAuthStore.getState().isInitialized
+  const token = authState.token ?? useAuthStore.getState().token
+  const user = authState.user ?? useAuthStore.getState().user
   const location = useLocation()
 
   if (!isInitialized) {
@@ -36,12 +39,32 @@ export function RequireRole({ role }) {
   return <Outlet />
 }
 
+/**
+ * Determines target destination for signed-in user, respecting activeMode for dual-role users.
+ */
+export function targetPathForAuthed(user, activeMode) {
+  if (!user) return '/app'
+  const canShop = hasPermission(user, PERMISSIONS.SHOP)
+  const canDeliver = hasPermission(user, PERMISSIONS.RUNNER_DELIVER)
+  if (canShop && canDeliver) {
+    return activeMode === 'runner' ? '/runner' : '/app'
+  }
+  return homePathFor(user)
+}
+
 /** Sends signed-in users away from login/signup to their home area. */
 export function RedirectIfAuthed() {
-  const { user, isInitialized, isPasswordRecovery } = useAuthStore()
+  const authState = useAuthStore()
+  const isInitialized = authState.isInitialized || useAuthStore.getState().isInitialized
+  const user = authState.user ?? useAuthStore.getState().user
+  const isPasswordRecovery = authState.isPasswordRecovery ?? useAuthStore.getState().isPasswordRecovery
+  const activeMode = authState.activeMode ?? useAuthStore.getState().activeMode
+
   if (!isInitialized) {
     return <RouteFallback />
   }
-  if (user && !isPasswordRecovery) return <Navigate to={homePathFor(user)} replace />
+  if (user && !isPasswordRecovery) {
+    return <Navigate to={targetPathForAuthed(user, activeMode)} replace />
+  }
   return <Outlet />
 }

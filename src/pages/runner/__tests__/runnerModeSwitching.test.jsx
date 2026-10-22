@@ -216,4 +216,90 @@ describe('Customer & Runner Mode Switching Flow', () => {
     expect(html).toContain('/runner')
     expect(html).toContain('Switch to Runner Mode')
   })
+
+  it('displays "Runner unapproved" badge for user with runner role but unapproved runnerStatus', () => {
+    useAuthStore.setState({
+      user: {
+        id: 'usr_unapproved_sql',
+        name: 'Manual SQL Runner',
+        email: 'sql@campus.edu',
+        roles: [ROLES.CUSTOMER, ROLES.RUNNER],
+        runnerStatus: null,
+      },
+    })
+
+    const html = renderWithProviders(<AppHeader variant="customer" />)
+
+    expect(html).toContain('header-runner-unapproved-badge')
+    expect(html).toContain('Runner unapproved')
+    expect(html).not.toContain('header-mode-switch-runner')
+    expect(hasPermission(useAuthStore.getState().user, PERMISSIONS.RUNNER_DELIVER)).toBe(false)
+  })
+
+  it('displays tailored unapproved message on ForbiddenPage when unapproved runner accesses /runner', () => {
+    useAuthStore.setState({
+      user: {
+        id: 'usr_unapproved_sql',
+        name: 'Manual SQL Runner',
+        email: 'sql@campus.edu',
+        roles: [ROLES.CUSTOMER, ROLES.RUNNER],
+        runnerStatus: null,
+      },
+    })
+
+    const html = renderWithProviders(<ForbiddenPage role="runner" />)
+
+    expect(html).toContain('Runner role unapproved')
+    expect(html).toContain('runner_status is missing or not approved')
+    expect(html).toContain('/app')
+    expect(html).toContain('Go to shopping')
+  })
+
+  it('correctly separates permissions for runner-only versus customer-only user', () => {
+    const runnerOnly = {
+      id: 'usr_runner_only',
+      name: 'Sole Runner',
+      email: 'sole@campus.edu',
+      roles: [ROLES.RUNNER],
+      runnerStatus: 'approved',
+    }
+
+    const customerOnly = {
+      id: 'usr_customer_only',
+      name: 'Sole Customer',
+      email: 'customer@campus.edu',
+      roles: [ROLES.CUSTOMER],
+      runnerStatus: null,
+    }
+
+    expect(hasPermission(runnerOnly, PERMISSIONS.RUNNER_DELIVER)).toBe(true)
+    expect(hasPermission(runnerOnly, PERMISSIONS.SHOP)).toBe(false)
+
+    expect(hasPermission(customerOnly, PERMISSIONS.RUNNER_DELIVER)).toBe(false)
+    expect(hasPermission(customerOnly, PERMISSIONS.SHOP)).toBe(true)
+  })
+
+  it('renders visible labels on mobile in AppHeader mode switch for dual-role users', () => {
+    useAuthStore.setState({
+      user: {
+        id: 'usr_approved_runner',
+        name: 'Rachel Runner',
+        email: 'rachel@campus.edu',
+        roles: [ROLES.CUSTOMER, ROLES.RUNNER],
+        runnerStatus: 'approved',
+      },
+    })
+
+    // In customer layout: includes both mobile and desktop label spans
+    const customerHeader = renderWithProviders(<AppHeader variant="customer" />)
+    expect(customerHeader).toContain('header-mode-switch-runner')
+    expect(customerHeader).toContain('Runner')
+    expect(customerHeader).toContain('Runner Mode')
+
+    // In runner layout: includes both mobile and desktop label spans
+    const runnerHeader = renderWithProviders(<AppHeader variant="runner" />)
+    expect(runnerHeader).toContain('header-mode-switch-customer')
+    expect(runnerHeader).toContain('Customer')
+    expect(runnerHeader).toContain('Customer Mode')
+  })
 })
