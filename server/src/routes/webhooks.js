@@ -325,8 +325,8 @@ export async function handleMakePaymentWebhook(req, res, next) {
     if (!existingRecord) {
       // FAIL-CLOSED INGESTION:
       // Store notification evidence as PROCESSING with evidence = null.
-      // This strictly avoids satisfying the mark_platform_fee_paid anti-shortcut constraint
-      // (which requires status = 'PAID' OR evidence IS NOT NULL) until authoritative verification succeeds.
+      // The database payment transition additionally requires status = 'PAID',
+      // evidence = 'Payment received', and verification_source = 'AUTHORITATIVE_GATEWAY'.
       const { error: insertErr } = await supabase.from('payment_records').insert({
         id: recordId,
         order_id: order.id,
