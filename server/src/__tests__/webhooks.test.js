@@ -684,6 +684,32 @@ describe('Make.com Payment Verification Webhook Integration', () => {
       expect(checkAfter.body.paymentStatus).toBe('PAID')
     })
 
+    it('does not confirm an order when persisting authoritative evidence fails', async () => {
+      setGatewayVerifier(async () => ({
+        verified: true,
+        provider: 'PAYTM_AUTHORITATIVE',
+        terminalStatus: 'TXN_SUCCESS',
+      }))
+      mockState.updateErrors = { payment_records: 'simulated evidence write failure' }
+
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          utr: 'verified_but_unpersisted_123',
+          evidence: 'Payment received',
+        })
+
+      expect(res.status).toBe(500)
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_active')
+      expect(order.payment_status).toBe('PENDING')
+      expect(order.status).toBe('AWAITING_PAYMENT')
+      expect(mockState.payment_records[0].status).toBe('PROCESSING')
+      expect(mockState.payment_records[0].evidence).toBeNull()
+    })
+
     it('fails closed and keeps order PENDING when authoritative gateway rejects the transaction', async () => {
       // Inject gateway verifier that finds transaction invalid or unconfirmed
       setGatewayVerifier(async () => {
