@@ -711,6 +711,32 @@ describe('Make.com Payment Verification Webhook Integration', () => {
       expect(mockState.payment_records[0].evidence).toBeNull()
     })
 
+    it('fails closed when a verifier returns a truthy non-boolean verification value', async () => {
+      setGatewayVerifier(async () => ({
+        verified: 'true',
+        provider: 'PAYTM_AUTHORITATIVE',
+        terminalStatus: 'TXN_SUCCESS',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          utr: 'string_verified_value_123',
+          evidence: 'Payment received',
+        })
+
+      expect(res.status).toBe(200)
+      expect(res.body.verified).toBe(false)
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_active')
+      expect(order.payment_status).toBe('PENDING')
+      expect(order.status).toBe('AWAITING_PAYMENT')
+      expect(mockState.payment_records[0].status).toBe('PROCESSING')
+      expect(mockState.payment_records[0].evidence).toBeNull()
+    })
+
     it('fails closed and keeps order PENDING when authoritative gateway rejects the transaction', async () => {
       // Inject gateway verifier that finds transaction invalid or unconfirmed
       setGatewayVerifier(async () => {
