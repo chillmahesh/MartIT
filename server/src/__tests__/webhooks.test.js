@@ -668,6 +668,7 @@ describe('Make.com Payment Verification Webhook Integration', () => {
       expect(Number(record.amount)).toBe(115.15)
       expect(record.status).toBe('PAID')
       expect(record.evidence).toBe('Payment received')
+      expect(record.verification_source).toBe('AUTHORITATIVE_GATEWAY')
 
       // Verify dynamic platform fee slot locked as is_paid = true
       const feeSlot = mockState.platform_fee_reservations.find((r) => r.fee_paise === 15)
