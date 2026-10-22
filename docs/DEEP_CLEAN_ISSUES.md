@@ -51,7 +51,7 @@ This register contains confirmed observations from the initial remote review. It
 - **Render root directory:** metadata reports `src/`, but the deployed service is live. Do not change this configuration based on metadata alone; verify build logs and actual working directory first.
 - **Open pull requests:** GitHub search returned no open PRs at the time of this check.
 - **Diverged branches reviewed:** `bhosaleshivendra-patch-1` contains one unique commit changing README.md (392 additions / 76 deletions); `feat/flat-10-delivery-fee` contains two unique commits, with the reported net diff touching README.md by one line. Neither is safe to delete without reviewing the unique commit messages and contents. They remain preserved.
-- **Audit branch diff:** nine commits ahead of `main`, zero behind; the current diff contains only this register, the proposed RLS grant migration, and the database regression test.
+- **Audit branch diff:** contains the issue register, proposed RLS grant migration, database regression test, README correction, and payment-verification hardening. Historical migrations are preserved; payment hardening is delivered as a forward migration.
 - **RLS regression test:** assertion added to `supabase/tests/database_integrity_test.sql` for both `anon` and `authenticated` execution privileges on `public.rls_auto_enable()`. Not run against PostgreSQL yet.
 - **Production safety:** the proposed migration remains unapplied. Live SQL inspection calls were blocked by the tool safety layer; do not infer that the production grant was fixed.
 - **Known limitations:** repository clone/build could not run in this environment due DNS/network failure to GitHub. No dead-code deletion is claimed; safe dead-code analysis needs a complete repository-wide reference scan and build/test validation.
@@ -61,12 +61,14 @@ This register contains confirmed observations from the initial remote review. It
 
 ### MARTIT-AUD-013 — Medium/High — Payment verification evidence predicate is too permissive
 
-**Evidence reviewed:** `server/src/routes/orders.js` (`handleCheckPayment`) and `supabase/migrations/20261010000002_platform_fee_functions.sql` (`mark_platform_fee_paid`).
+**Evidence reviewed:** `server/src/routes/orders.js` (`handleCheckPayment`), `server/src/routes/webhooks.js`, and `mark_platform_fee_paid` in the payment-function migration.
 
-- The customer payment-check endpoint treats a matching `payment_records` row with `evidence = 'Payment received'` and matching amount as sufficient to call `mark_platform_fee_paid`.
-- The database function's anti-shortcut predicate is broader still: it accepts a matching amount when `status = 'PAID' OR evidence IS NOT NULL`. It does not itself check `verification_source`, provider transaction identity, or an explicit authoritative-verification marker.
+- At the original audited revision, the customer payment-check endpoint and database function did not require an explicit authoritative-verification marker. The audit branch now requires `status = 'PAID'`, `evidence = 'Payment received'`, and `verification_source = 'AUTHORITATIVE_GATEWAY'` in both code paths.
+- The webhook writes that marker only after the injected authoritative gateway verifier returns verified, and it now stops if the evidence update reports an error. The SQL change is packaged as a forward migration, not a rewrite of the historical migration.
 - Current webhook code is designed to set evidence only after `verifyWithAuthoritativePaymentGateway` returns verified. Without a configured verifier, it stores `PROCESSING` and `evidence = NULL`, so the normal webhook path fails closed. This is therefore a **defense-in-depth gap / dangerous trust contract**, not evidence that an unauthenticated caller can currently mark an order paid. Actual exploitability depends on database grants, server-only write paths, and the deployed function definition.
 
-**Required action:** In a test database, strengthen the schema contract so payment confirmation requires a record explicitly marked as authoritatively verified by the server, with exact amount and order linkage. Make `handleCheckPayment` filter for that trusted state, and ensure the verified record update and order transition are transactionally consistent. Add negative tests for `PROCESSING` records, arbitrary non-null evidence, mismatched amount/order, duplicate notifications, and a failed evidence update. Do not apply a production migration until the existing data model, constraints, and all call sites have been tested.
+**Changes on audit branch:** Forward migration `20261022150000_require_authoritative_payment_verification.sql`; API query filters on paid status, evidence, and verification source; webhook sets the authoritative marker only after verifier success and checks persistence errors; three static contract tests added.
 
-**Status:** OPEN — static code finding; runtime exploitability not established.
+**Remaining validation:** Tests have not been executed, the forward migration has not been run against PostgreSQL, and the webhook evidence update plus order transition are still separate database requests rather than one transaction. Add negative runtime tests for `PROCESSING`, arbitrary evidence, mismatched amount/order, duplicate notifications, and failed evidence updates. Do not apply to production until migration execution and all call sites are validated.
+
+**Status:** FIX PROPOSED ON AUDIT BRANCH — static tests added but not run; runtime exploitability not established.
