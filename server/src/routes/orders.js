@@ -346,7 +346,9 @@ async function handleCheckPayment(req, res, next) {
       .from('payment_records')
       .select('*')
       .eq('order_id', order.id)
+      .eq('status', 'PAID')
       .eq('evidence', 'Payment received')
+      .eq('verification_source', 'AUTHORITATIVE_GATEWAY')
       .maybeSingle()
 
     if (verifiedPayment && Number(verifiedPayment.amount) === Number(order.total_payable)) {
