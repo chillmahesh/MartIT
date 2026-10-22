@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMockServer } from '@/services/mockServer/handlers'
 import { buildUpiPayload } from '@/utils/upi'
+import { env } from '@/config/env'
 import { calculateOrderTotals } from '@/utils/orderTotals'
 import { PaymentQr } from '@/components/payment/PaymentQr'
 import { CustomerPaymentView } from '@/components/payment/CustomerPaymentView'
@@ -61,10 +62,63 @@ describe('UPI QR Payload & Payee Configuration Rules (Scope B)', () => {
       }),
     )
 
-    // With VITE_UPI_PAYEE_VPA configured in .env.local, PaymentQr renders with omkarrakhonde485@oksbi
-    expect(html).toContain('omkarrakhonde485@oksbi')
+    const configuredVpa = env.upiPayeeVpa || 'omkarrakhonde485@oksbi'
+    expect(html).toContain(configuredVpa)
     expect(html).toContain('₹60.01')
     expect(html).not.toContain('UPI Payee VPA Not Configured')
+  })
+
+  it('PaymentQr only generates QR when payment is pending and active', () => {
+    // 1. Pending and active: genuine QR rendered
+    const htmlActive = renderToString(
+      React.createElement(PaymentQr, {
+        amount: 60.01,
+        orderId: 'ord_active',
+        payeeVpa: 'merchant@oksbi',
+        paymentStatus: PAYMENT_STATUS.PENDING,
+        isExpired: false,
+      }),
+    )
+    expect(htmlActive).toContain('data-testid="genuine-upi-qr"')
+
+    // 2. Already PAID: QR suppressed with inactive notice
+    const htmlPaid = renderToString(
+      React.createElement(PaymentQr, {
+        amount: 60.01,
+        orderId: 'ord_paid',
+        payeeVpa: 'merchant@oksbi',
+        paymentStatus: PAYMENT_STATUS.PAID,
+        isExpired: false,
+      }),
+    )
+    expect(htmlPaid).not.toContain('data-testid="genuine-upi-qr"')
+    expect(htmlPaid).toContain('Payment QR Inactive')
+
+    // 3. Expired window: QR suppressed with expired notice
+    const htmlExpired = renderToString(
+      React.createElement(PaymentQr, {
+        amount: 60.01,
+        orderId: 'ord_expired',
+        payeeVpa: 'merchant@oksbi',
+        paymentStatus: PAYMENT_STATUS.PENDING,
+        isExpired: true,
+      }),
+    )
+    expect(htmlExpired).not.toContain('data-testid="genuine-upi-qr"')
+    expect(htmlExpired).toContain('Payment Window Expired')
+
+    // 4. Non-positive or invalid amount: QR suppressed with error notice
+    const htmlBadAmount = renderToString(
+      React.createElement(PaymentQr, {
+        amount: 0,
+        orderId: 'ord_bad_amt',
+        payeeVpa: 'merchant@oksbi',
+        paymentStatus: PAYMENT_STATUS.PENDING,
+        isExpired: false,
+      }),
+    )
+    expect(htmlBadAmount).not.toContain('data-testid="genuine-upi-qr"')
+    expect(htmlBadAmount).toContain('Authoritative payable amount must be a positive number.')
   })
 
   it('fails safely when UPI payee configuration is missing and does NOT invent fake credentials', () => {
@@ -478,6 +532,68 @@ describe('Customer Payment Screen UI & Countdown (Scope A & F)', () => {
     const htmlMissing = renderWithProviders(React.createElement(PaymentPage))
     expect(htmlMissing).toContain('Missing Order Reference')
     expect(htmlMissing).toContain('Back to Shopping')
+  })
+
+  it('correctly parses ISO-8601 string windowExpiresAt without immediately expiring', () => {
+    const fixedNow = 1000000000000
+    const futureIso = new Date(fixedNow + 110 * 1000).toISOString() // 1 min 50s left
+
+    const isoOrder = {
+      id: 'ord_iso_test',
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_b',
+      lines: [{ productId: 'p_milk_500', name: 'Milk 500ml', unitPrice: 28, quantity: 1 }],
+      pricing: { itemSubtotal: 28, deliveryFee: 10, baseAmount: 38, platformFee: 0.01, total: 38.01 },
+      payment: {
+        status: PAYMENT_STATUS.PENDING,
+        feePaise: 1,
+        allocatedAt: new Date(fixedNow - 10000).toISOString(),
+        windowExpiresAt: futureIso,
+      },
+      status: ORDER_STATUS.AWAITING_PAYMENT,
+      paymentStatus: PAYMENT_STATUS.PENDING,
+      createdAt: new Date(fixedNow - 10000).toISOString(),
+    }
+
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(fixedNow)
+    try {
+      const html = renderWithProviders(React.createElement(CustomerPaymentView, { initialOrder: isoOrder }))
+      expect(html).toContain('1:50')
+      expect(html).not.toContain('Payment Window Expired')
+      expect(html).toContain('Complete Your UPI Payment')
+    } finally {
+      dateSpy.mockRestore()
+    }
+  })
+
+  it('renders defensibly without crashing when refreshed order omits lines or pricing', () => {
+    // Malformed/incomplete order returned from server refresh: lines and pricing missing
+    const incompleteOrder = {
+      id: 'ord_malformed',
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_b',
+      // lines: missing entirely!
+      // pricing: missing entirely!
+      payment: {
+        status: PAYMENT_STATUS.PENDING,
+        windowExpiresAt: Date.now() + 60000,
+      },
+      status: ORDER_STATUS.AWAITING_PAYMENT,
+      paymentStatus: PAYMENT_STATUS.PENDING,
+    }
+
+    expect(() => {
+      const html = renderWithProviders(React.createElement(CustomerPaymentView, { initialOrder: incompleteOrder }))
+      expect(html).toContain('Order #ord_malformed')
+      expect(html).toContain('Items Ordered')
+      expect(html).toContain('Item details temporarily unavailable.')
+    }).not.toThrow()
+  })
+
+  it('safely recovers and renders empty order view if order is null or has no id', () => {
+    const htmlNull = renderWithProviders(React.createElement(CustomerPaymentView, { initialOrder: null }))
+    expect(htmlNull).toContain('Payment Details Unavailable')
+    expect(htmlNull).toContain('View My Orders')
   })
 })
 

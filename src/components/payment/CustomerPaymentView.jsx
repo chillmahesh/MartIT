@@ -12,7 +12,6 @@ import {
   RefreshCw,
   HelpCircle,
   ShoppingBag,
-  ExternalLink,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
@@ -24,6 +23,29 @@ import { SAMPLE_STORES } from '@/mocks/campus'
 import { useLocations } from '@/hooks/useLocations'
 import { orderService } from '@/services/orderService'
 import { PAYMENT_STATUS, PAYMENT_STATUS_LABEL } from '@/utils/paymentMachine'
+
+/**
+ * Robust epoch millisecond timestamp parser.
+ * Safely parses ISO-8601 strings, numeric strings, numbers, or Date instances.
+ */
+export function parseTimestampMs(value) {
+  if (!value) return null
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (/^\d+$/.test(trimmed)) {
+      const num = Number(trimmed)
+      if (Number.isFinite(num)) return num
+    }
+    const parsed = new Date(trimmed).getTime()
+    if (Number.isFinite(parsed)) return parsed
+  }
+  if (value instanceof Date) {
+    const t = value.getTime()
+    return Number.isFinite(t) ? t : null
+  }
+  return null
+}
 
 /**
  * CustomerPaymentView Component
@@ -51,17 +73,36 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
     if (initialOrder) setOrder(initialOrder)
   }, [initialOrder])
 
-  const store = SAMPLE_STORES.find((s) => s.id === order.storeId)
-  const location = locations.find((l) => l.id === order.locationId)
+  // Diagnostic logging in development mode
+  useEffect(() => {
+    if (import.meta.env.DEV && order) {
+      if (!order.pricing) {
+        console.warn('[CustomerPaymentView] Diagnostic: order.pricing is missing from order payload', order)
+      }
+      if (!Array.isArray(order.lines)) {
+        console.warn('[CustomerPaymentView] Diagnostic: order.lines is missing or not an array', order)
+      }
+    }
+  }, [order])
 
-  // Authoritative window expiry timestamp
-  const windowExpiresAt = order.payment?.windowExpiresAt
-    ? Number(order.payment.windowExpiresAt)
-    : order.createdAt
-    ? new Date(order.createdAt).getTime() + 2 * 60 * 1000
-    : null
+  const store = SAMPLE_STORES.find((s) => s.id === order?.storeId)
+  const location = locations.find((l) => l.id === order?.locationId)
 
-  // Calculate remaining seconds based strictly on authoritative expiry
+  // Authoritative window expiry timestamp: derives from windowExpiresAt, or allocatedAt/createdAt + 2 min
+  const windowExpiresAt = useMemo(() => {
+    const directExpiry = parseTimestampMs(order?.payment?.windowExpiresAt)
+    if (directExpiry) return directExpiry
+
+    const allocatedAt = parseTimestampMs(order?.payment?.allocatedAt)
+    if (allocatedAt) return allocatedAt + 2 * 60 * 1000
+
+    const createdAt = parseTimestampMs(order?.createdAt)
+    if (createdAt) return createdAt + 2 * 60 * 1000
+
+    return null
+  }, [order?.payment?.windowExpiresAt, order?.payment?.allocatedAt, order?.createdAt])
+
+  // Calculate remaining milliseconds based strictly on authoritative expiry
   const computeRemainingMs = useCallback(() => {
     if (!windowExpiresAt) return 0
     return Math.max(0, windowExpiresAt - Date.now())
@@ -69,8 +110,15 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
 
   const [remainingMs, setRemainingMs] = useState(computeRemainingMs)
 
+  // Keep remainingMs in sync if windowExpiresAt changes (e.g. from props or retry)
+  useEffect(() => {
+    setRemainingMs(computeRemainingMs())
+  }, [computeRemainingMs])
+
   // Countdown timer derived strictly from authoritative timestamp
   useEffect(() => {
+    if (!order) return
+
     // If already paid or expired, stop ticking
     if (
       order.paymentStatus === PAYMENT_STATUS.PAID ||
@@ -86,18 +134,26 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
       // When window reaches 0, check authoritative server status to update to EXPIRED
       if (ms <= 0 && order.paymentStatus !== PAYMENT_STATUS.EXPIRED) {
         clearInterval(interval)
-        orderService
-          .get(order.id)
-          .then((updated) => {
-            setOrder(updated)
-            onOrderUpdate?.(updated)
-          })
-          .catch(() => {})
+        if (order.id) {
+          orderService
+            .get(order.id)
+            .then((updated) => {
+              if (updated) {
+                setOrder(updated)
+                onOrderUpdate?.(updated)
+              }
+            })
+            .catch((err) => {
+              if (import.meta.env.DEV) {
+                console.warn('[CustomerPaymentView] Failed to refresh order on window expiry:', err)
+              }
+            })
+        }
       }
     }, 1000)
 
     return () => clearInterval(interval)
-  }, [computeRemainingMs, order.paymentStatus, order.id, onOrderUpdate])
+  }, [computeRemainingMs, order?.paymentStatus, order?.id, onOrderUpdate])
 
   // Minutes and seconds formatting
   const formattedCountdown = useMemo(() => {
@@ -107,14 +163,57 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }, [remainingMs])
 
+  const isPaid = order?.paymentStatus === PAYMENT_STATUS.PAID
   const isExpired =
-    order.paymentStatus === PAYMENT_STATUS.EXPIRED ||
-    (order.paymentStatus !== PAYMENT_STATUS.PAID && remainingMs <= 0)
+    order?.paymentStatus === PAYMENT_STATUS.EXPIRED ||
+    (!isPaid && remainingMs <= 0)
 
-  const isPaid = order.paymentStatus === PAYMENT_STATUS.PAID
+  // Defensive pricing snapshot derivation
+  const pricing = useMemo(() => {
+    const p = order?.pricing || {}
+    const itemSubtotal = Number(p.itemSubtotal ?? 0)
+    const deliveryFee = Number(p.deliveryFee ?? 0)
+    const platformFee = Number(
+      p.platformFee ?? (order?.payment?.feePaise ? order.payment.feePaise / 100 : 0),
+    )
+    const total = Number(p.total ?? itemSubtotal + deliveryFee + platformFee)
+    return {
+      itemSubtotal,
+      deliveryFee,
+      baseAmount: Number(p.baseAmount ?? itemSubtotal + deliveryFee),
+      platformFee,
+      total,
+      distanceKm: p.distanceKm != null ? Number(p.distanceKm) : null,
+      distanceMethod: p.distanceMethod || 'straight_line',
+      pricingVersion: p.pricingVersion,
+    }
+  }, [order?.pricing, order?.payment?.feePaise])
+
+  // Defensive lines mapping fallback
+  const lines = useMemo(() => {
+    if (Array.isArray(order?.lines)) return order.lines
+    if (Array.isArray(order?.fulfillmentGroups)) {
+      return order.fulfillmentGroups.flatMap((g) =>
+        (g.orderItems || g.order_items || []).map((item) => ({
+          productId: item.productId || item.product_id,
+          name: item.name || item.productName || item.product_name || 'Item',
+          pack: item.pack || item.productPack || item.product_pack || null,
+          unitPrice: Number(item.unitPrice ?? item.unit_price ?? 0),
+          quantity: Number(item.quantity ?? 1),
+          lineSubtotal: Number(
+            item.lineSubtotal ??
+              item.line_subtotal ??
+              (Number(item.unitPrice ?? item.unit_price ?? 0) * Number(item.quantity ?? 1)),
+          ),
+        })),
+      )
+    }
+    return []
+  }, [order?.lines, order?.fulfillmentGroups])
 
   // Check payment status with server
   const handleCheckStatus = async () => {
+    if (!order?.id) return
     setIsChecking(true)
     setActionError(null)
     setInconclusiveFeedback(null)
@@ -141,6 +240,7 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
 
   // Explicit retry payment allocation for expired orders
   const handleRetryPayment = async () => {
+    if (!order?.id) return
     setIsRetrying(true)
     setActionError(null)
     setInconclusiveFeedback(null)
@@ -149,8 +249,9 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
       const updatedOrder = await orderService.retryPayment(order.id)
       setOrder(updatedOrder)
       onOrderUpdate?.(updatedOrder)
-      if (updatedOrder.payment?.windowExpiresAt) {
-        setRemainingMs(Math.max(0, updatedOrder.payment.windowExpiresAt - Date.now()))
+      const newExpiry = parseTimestampMs(updatedOrder?.payment?.windowExpiresAt)
+      if (newExpiry) {
+        setRemainingMs(Math.max(0, newExpiry - Date.now()))
       }
     } catch (err) {
       setActionError(err.message || 'Could not retry payment allocation. Please try again.')
@@ -159,10 +260,28 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
     }
   }
 
+  // Fallback recovery UI if order reference is missing or invalid
+  if (!order || !order.id) {
+    return (
+      <div className="mx-auto max-w-xl px-4 py-12">
+        <div className="rounded-card border border-line bg-surface p-6 text-center space-y-4 shadow-2">
+          <AlertCircle className="size-10 text-amber-500 mx-auto" />
+          <h2 className="font-display text-lg font-bold text-ink">Payment Details Unavailable</h2>
+          <p className="text-xs text-ink-muted">
+            The order details are incomplete or could not be loaded. Please return to your orders or try again.
+          </p>
+          <Button asChild variant="primary" size="md">
+            <Link to="/app/orders">View My Orders</Link>
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   const distanceMethodLabel =
-    order.pricing?.distanceMethod === 'straight_line'
+    pricing.distanceMethod === 'straight_line'
       ? 'straight-line distance'
-      : order.pricing?.distanceMethod === 'route'
+      : pricing.distanceMethod === 'route'
       ? 'route distance'
       : 'distance'
 
@@ -332,8 +451,10 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
             {!isExpired && !isPaid ? (
               <div className="space-y-4">
                 <PaymentQr
-                  amount={order.pricing.total}
+                  amount={pricing.total}
                   orderId={order.id}
+                  paymentStatus={order.paymentStatus}
+                  isExpired={isExpired}
                   className="py-2"
                 />
 
@@ -362,7 +483,7 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
                 </div>
                 <h3 className="font-display text-lg font-bold text-ink">Payment Complete</h3>
                 <p className="text-xs text-ink-muted max-w-xs mx-auto">
-                  Authoritative total of {formatINR(order.pricing.total)} has been verified.
+                  Authoritative total of {formatINR(pricing.total)} has been verified.
                 </p>
               </div>
             ) : (
@@ -402,7 +523,7 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
                 <Store className="size-4 text-brand shrink-0 mt-0.5" aria-hidden="true" />
                 <div>
                   <p className="text-[11px] font-medium text-ink-subtle">Store</p>
-                  <p className="font-semibold text-ink">{store ? store.name : order.storeId}</p>
+                  <p className="font-semibold text-ink">{store ? store.name : (order.storeId || 'Campus Store')}</p>
                 </div>
               </div>
 
@@ -413,7 +534,7 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
                   <p className="font-semibold text-ink">
                     {order.customerDetails?.deliveryLocation?.formattedAddress ||
                       order.customerDetails?.selectedDestination ||
-                      (location ? location.name : order.locationId)}
+                      (location ? location.name : (order.locationId || 'Delivery Spot'))}
                   </p>
                   {order.customerDetails?.detailedAddress && !order.customerDetails?.deliveryLocation?.formattedAddress?.includes(order.customerDetails.detailedAddress) && (
                     <p className="text-[11px] text-ink-muted mt-0.5">
@@ -436,26 +557,32 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
               <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-ink-subtle">
                 <span className="flex items-center gap-1.5">
                   <Package className="size-3.5" aria-hidden="true" />
-                  <span>Items Ordered ({order.lines.length})</span>
+                  <span>Items Ordered ({lines.length})</span>
                 </span>
               </div>
 
-              <div className="divide-y divide-line/60 rounded-tile border border-line/60 bg-surface px-3 py-1">
-                {order.lines.map((item) => (
-                  <div key={item.productId} className="flex items-center justify-between py-2 text-xs">
-                    <div className="min-w-0 pr-2">
-                      <p className="font-medium text-ink truncate">{item.name}</p>
-                      <p className="text-[11px] text-ink-subtle">
-                        {item.pack && `${item.pack} • `}
-                        {formatINR(item.unitPrice)} × {item.quantity}
-                      </p>
+              {lines.length === 0 ? (
+                <div className="rounded-tile border border-dashed border-line/80 bg-surface-2/40 px-3 py-3 text-center text-xs text-ink-muted">
+                  Item details temporarily unavailable.
+                </div>
+              ) : (
+                <div className="divide-y divide-line/60 rounded-tile border border-line/60 bg-surface px-3 py-1">
+                  {lines.map((item, idx) => (
+                    <div key={item.productId || `line-${idx}`} className="flex items-center justify-between py-2 text-xs">
+                      <div className="min-w-0 pr-2">
+                        <p className="font-medium text-ink truncate">{item.name || 'Item'}</p>
+                        <p className="text-[11px] text-ink-subtle">
+                          {item.pack && `${item.pack} • `}
+                          {formatINR(item.unitPrice ?? 0)} × {item.quantity ?? 1}
+                        </p>
+                      </div>
+                      <span className="tabular font-semibold text-ink shrink-0">
+                        {formatINR(item.lineSubtotal ?? ((item.unitPrice ?? 0) * (item.quantity ?? 1)))}
+                      </span>
                     </div>
-                    <span className="tabular font-semibold text-ink shrink-0">
-                      {formatINR(item.unitPrice * item.quantity)}
-                    </span>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Exact Authoritative Calculation */}
@@ -463,35 +590,35 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
               <div className="flex justify-between text-ink-muted">
                 <span>Item Subtotal</span>
                 <span className="tabular font-medium text-ink">
-                  {formatINR(order.pricing.itemSubtotal)}
+                  {formatINR(pricing.itemSubtotal)}
                 </span>
               </div>
 
               <div className="flex justify-between text-ink-muted">
                 <div>
                   <span>Delivery Fee</span>
-                  {order.pricing.distanceKm != null && (
+                  {pricing.distanceKm != null && (
                     <span className="text-xs text-ink-subtle block">
-                      {`(${formatDistanceKm(order.pricing.distanceKm)} km ${distanceMethodLabel})`}
+                      {`(${formatDistanceKm(pricing.distanceKm)} km ${distanceMethodLabel})`}
                     </span>
                   )}
                 </div>
                 <span className="tabular font-medium text-ink">
-                  {formatINR(order.pricing.deliveryFee)}
+                  {formatINR(pricing.deliveryFee)}
                 </span>
               </div>
 
               <div className="flex justify-between text-ink-muted">
                 <span>Allocated Platform Fee</span>
                 <span className="tabular font-medium text-ink">
-                  {formatINR(order.pricing.platformFee)}
+                  {formatINR(pricing.platformFee)}
                 </span>
               </div>
 
               {/* Total Row */}
               <div className="flex justify-between items-baseline pt-3 border-t border-line font-bold text-base text-ink">
                 <span>Final Authoritative Total</span>
-                <Price amount={order.pricing.total} size="lg" className="text-brand tabular" />
+                <Price amount={pricing.total} size="lg" className="text-brand tabular" />
               </div>
 
               <p className="text-[11px] text-ink-subtle text-right pt-0.5">

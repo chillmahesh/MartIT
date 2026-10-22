@@ -73,6 +73,109 @@ async function handleListCustomerOrders(req, res, next) {
 
 
 /**
+ * Formats an authoritative database order row (including joined fulfillment groups
+ * and order items) into the canonical frontend order structure.
+ *
+ * Ensures full schema parity between order creation and order retrieval:
+ * - Maps order_fulfillment_groups[].order_items[] into top-level lines:
+ *   [ { productId, name, pack, unitPrice, quantity, lineSubtotal } ]
+ * - Exposes top-level storeId, locationId, customerDetails from database snapshots
+ * - Preserves server-authoritative pricing and payment objects
+ */
+export function formatCanonicalOrder(order) {
+  if (!order) return null
+
+  const fulfillmentGroups = order.order_fulfillment_groups || order.fulfillmentGroups || []
+  const primaryGroup = fulfillmentGroups[0]
+
+  const storeId =
+    primaryGroup?.store_id ||
+    primaryGroup?.storeId ||
+    order.store_id ||
+    order.storeId ||
+    null
+
+  const locationId =
+    order.delivery_location_id ||
+    order.location_id ||
+    order.locationId ||
+    order.delivery_location_snapshot?.id ||
+    null
+
+  // Extract customer details from trusted location snapshot or order record
+  const customerDetails =
+    order.delivery_location_snapshot?.customerDetails ||
+    order.customer_details ||
+    order.customerDetails ||
+    null
+
+  // Map order_fulfillment_groups[].order_items[] into canonical top-level lines
+  const mappedLines = fulfillmentGroups.flatMap((group) => {
+    const items = group.order_items || group.orderItems || []
+    return items.map((item) => {
+      const unitPrice = Number(item.unit_price ?? item.unitPrice ?? 0)
+      const quantity = Number(item.quantity ?? 0)
+      const lineSubtotal = Number(
+        item.line_subtotal ?? item.lineSubtotal ?? (unitPrice * quantity)
+      )
+      return {
+        productId: item.product_id || item.productId,
+        name: item.product_name || item.name || '',
+        pack: item.product_pack || item.pack || null,
+        unitPrice,
+        quantity,
+        lineSubtotal,
+      }
+    })
+  })
+
+  const lines = mappedLines.length > 0
+    ? mappedLines
+    : (Array.isArray(order.lines) ? order.lines : [])
+
+  const itemSubtotal = Number(order.item_subtotal ?? order.pricing?.itemSubtotal ?? 0)
+  const deliveryFee = Number(order.combined_delivery_fee ?? order.pricing?.deliveryFee ?? 0)
+  const baseAmount = Number(order.base_amount ?? order.pricing?.baseAmount ?? 0)
+  const platformFee = Number(order.platform_fee ?? order.pricing?.platformFee ?? 0)
+  const total = Number(order.total_payable ?? order.pricing?.total ?? 0)
+  const distanceKm = Number(order.route_distance_km ?? order.pricing?.distanceKm ?? 0)
+
+  return {
+    id: order.id,
+    customerId: order.customer_id || order.customerId,
+    storeId,
+    locationId,
+    deliveryLocationId: locationId,
+    deliveryLocationSnapshot: order.delivery_location_snapshot || order.deliveryLocationSnapshot || null,
+    lines,
+    customerDetails,
+    status: order.status,
+    paymentStatus: order.payment_status || order.paymentStatus || order.payment?.status,
+    pricing: {
+      itemSubtotal,
+      deliveryFee,
+      baseAmount,
+      platformFee,
+      total,
+      distanceKm: Number(distanceKm.toFixed(2)),
+      distanceMethod: order.pricing?.distanceMethod || 'straight_line',
+      pricingVersion: order.fee_policy_version || order.pricing?.pricingVersion || PRICING_VERSION,
+    },
+    payment: {
+      status: order.payment_status || order.paymentStatus || order.payment?.status,
+      attemptId: order.payment_attempt_id || order.payment?.attemptId || null,
+      feePaise: order.fee_paise ?? order.payment?.feePaise ?? null,
+      allocatedAt: order.payment_allocated_at || order.payment?.allocatedAt || null,
+      windowExpiresAt: order.payment_window_expires_at || order.payment?.windowExpiresAt || null,
+      cooldownExpiresAt: order.payment_cooldown_expires_at || order.payment?.cooldownExpiresAt || null,
+      paidAt: order.paid_at || order.payment?.paidAt || null,
+    },
+    fulfillmentGroups,
+    createdAt: order.created_at || order.createdAt,
+  }
+}
+
+/**
  * Single order retrieval.
  * STRICTLY READ-ONLY: Never mutates payment state or database records on GET.
  */
@@ -153,39 +256,15 @@ async function handleGetOrder(req, res, next) {
 
     const now = Date.now()
     const windowExpiry = new Date(order.payment_window_expires_at).getTime()
-    const isWindowExpired = now >= windowExpiry
+    const isWindowExpired = Number.isFinite(windowExpiry) ? now >= windowExpiry : false
 
-    // Format response without internal OTP hash or secrets
+    // Format authoritative canonical order conforming to frontend contract
     // Notice: does NOT mutate database records on GET request!
+    const canonicalOrder = formatCanonicalOrder(order)
     const responseOrder = {
-      id: order.id,
-      customerId: order.customer_id,
-      runnerId: order.runner_id,
-      deliveryLocationId: order.delivery_location_id,
-      deliveryLocationSnapshot: order.delivery_location_snapshot,
-      status: order.status,
-      paymentStatus: order.payment_status,
+      ...canonicalOrder,
+      runnerId: order.runner_id || null,
       isWindowExpired,
-      pricing: {
-        itemSubtotal: Number(order.item_subtotal),
-        deliveryFee: Number(order.combined_delivery_fee),
-        baseAmount: Number(order.base_amount),
-        platformFee: Number(order.platform_fee),
-        total: Number(order.total_payable),
-        distanceKm: Number(order.route_distance_km),
-        pricingVersion: order.fee_policy_version,
-      },
-      payment: {
-        status: order.payment_status,
-        attemptId: order.payment_attempt_id,
-        feePaise: order.fee_paise,
-        allocatedAt: order.payment_allocated_at,
-        windowExpiresAt: order.payment_window_expires_at,
-        cooldownExpiresAt: order.payment_cooldown_expires_at,
-        paidAt: order.paid_at,
-      },
-      fulfillmentGroups: order.order_fulfillment_groups,
-      createdAt: order.created_at,
     }
 
     res.status(200).json(responseOrder)
@@ -969,48 +1048,7 @@ async function handleRefreshDeliveryOtp(req, res, next) {
 }
 
 // Customer order creation helper for idempotency hits
-function formatCreatedOrderResponse(order) {
-  const storeId = order.order_fulfillment_groups?.[0]?.store_id || order.store_id || null
-  const locationId = order.delivery_location_id || order.location_id
-  const itemSubtotal = Number(order.item_subtotal)
-  const deliveryFee = Number(order.combined_delivery_fee)
-  const baseAmount = Number(order.base_amount)
-  const platformFee = Number(order.platform_fee)
-  const total = Number(order.total_payable)
-  const distanceKm = Number(order.route_distance_km)
-
-  return {
-    id: order.id,
-    customerId: order.customer_id,
-    storeId,
-    locationId,
-    deliveryLocationId: locationId,
-    deliveryLocationSnapshot: order.delivery_location_snapshot,
-    status: order.status,
-    paymentStatus: order.payment_status,
-    pricing: {
-      itemSubtotal,
-      deliveryFee,
-      baseAmount,
-      platformFee,
-      total,
-      distanceKm: Number(distanceKm.toFixed(2)),
-      distanceMethod: 'straight_line',
-      pricingVersion: order.fee_policy_version,
-    },
-    payment: {
-      status: order.payment_status,
-      attemptId: order.payment_attempt_id,
-      feePaise: order.fee_paise,
-      allocatedAt: order.payment_allocated_at,
-      windowExpiresAt: order.payment_window_expires_at,
-      cooldownExpiresAt: order.payment_cooldown_expires_at,
-      paidAt: order.paid_at,
-    },
-    fulfillmentGroups: order.order_fulfillment_groups || [],
-    createdAt: order.created_at,
-  }
-}
+const formatCreatedOrderResponse = formatCanonicalOrder
 
 /**
  * Customer Order Creation Endpoint.

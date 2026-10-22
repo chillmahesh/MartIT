@@ -4,27 +4,71 @@ import { AlertCircle, QrCode, ShieldAlert, Smartphone } from 'lucide-react'
 import { env } from '@/config/env'
 import { buildUpiPayload } from '@/utils/upi'
 import { formatINR } from '@/utils/currency'
+import { PAYMENT_STATUS } from '@/utils/paymentMachine'
 import { cn } from '@/utils/cn'
 
 /**
  * PaymentQr Component — Generates a genuine, scannable UPI QR code.
  *
  * SAFETY GUARANTEES:
- * 1. Encodes the exact authoritative total including platform fee.
- * 2. Uses configured UPI payee details only (never invents fake credentials).
- * 3. If payee VPA is missing, fails safely and displays a clear configuration requirement.
- * 4. Never claims that scanning a QR confirms payment.
+ * 1. Only generates a QR when the order payment status is pending.
+ * 2. Only generates a QR when the payment window is strictly active (not expired).
+ * 3. Encodes the exact authoritative total including platform fee (positive finite number).
+ * 4. Uses configured UPI payee details only (never invents fake credentials).
+ * 5. If payee VPA is missing, fails safely and displays a clear configuration requirement.
+ * 6. Never claims that scanning a QR confirms payment, nor marks the order as paid.
  */
 export function PaymentQr({
   amount,
   orderId,
   payeeVpa = env.upiPayeeVpa,
   payeeName = env.upiPayeeName,
+  paymentStatus = PAYMENT_STATUS.PENDING,
+  isExpired = false,
   className,
 }) {
   const [svgString, setSvgString] = useState('')
   const [qrError, setQrError] = useState(null)
 
+  // 1. Guard: Only generate QR when order payment is pending
+  const isPending =
+    !paymentStatus ||
+    paymentStatus === PAYMENT_STATUS.PENDING ||
+    paymentStatus === 'PENDING'
+
+  if (!isPending) {
+    return (
+      <div
+        data-testid="upi-inactive-status-notice"
+        className={cn(
+          'rounded-card border border-line bg-surface-2 p-5 text-center space-y-2 text-xs text-ink-muted',
+          className,
+        )}
+      >
+        <p className="font-semibold text-ink">Payment QR Inactive</p>
+        <p>This order is no longer awaiting payment (current status: {paymentStatus}).</p>
+      </div>
+    )
+  }
+
+  // 2. Guard: Only generate QR when payment window is active
+  if (isExpired) {
+    return (
+      <div
+        data-testid="upi-expired-notice"
+        className={cn(
+          'rounded-card border border-red-500/30 bg-red-500/10 p-5 text-center space-y-2 text-danger text-xs',
+          className,
+        )}
+      >
+        <AlertCircle className="size-6 mx-auto text-danger" />
+        <p className="font-semibold">Payment Window Expired</p>
+        <p>Payment QR code cannot be generated because the payment window has expired.</p>
+      </div>
+    )
+  }
+
+  // 3. Amount & Payload Validation
   const upiPayload = buildUpiPayload({
     payeeVpa,
     payeeName,
@@ -93,6 +137,7 @@ export function PaymentQr({
 
     return (
       <div
+        data-testid="upi-error-notice"
         className={cn(
           'rounded-card border border-red-500/30 bg-red-500/10 p-4 text-center space-y-2 text-danger',
           className,
