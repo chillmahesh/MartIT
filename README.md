@@ -48,22 +48,33 @@ docs/           design research, fee policy, brand assets
 
 Components never call the backend directly. They call `services/*`, which go through `services/api.js`. When `VITE_API_BASE_URL` is empty, `api.js` routes calls to the in-browser mock server. When it's set, it POSTs to `${VITE_API_BASE_URL}/<service>/<action>` with a bearer token.
 
-## What's mocked vs real
+## What's real vs incomplete
 
 | Capability | Status | Notes |
 |---|---|---|
-| Delivery-fee rules | **Real logic** | `utils/deliveryFee.js`, fully unit-tested. The backend must mirror `config/fees.js` |
-| Order totals (items + delivery) | **Real logic** | Taxes, platform fees and discounts are excluded until defined |
-| Order & payment state machines | **Real logic** | Separate machines. Only a `server_verified` source can mark a payment PAID |
-| Backend / database | Mock | `services/mockServer/` keeps in-memory data that resets on reload |
-| Authentication | Mock | Sample accounts only. The real login form comes in Phase 3 |
-| Server re-pricing at order creation | Mock (behaviour real) | The mock ignores browser prices and fees, re-checks stock, re-quotes delivery and snapshots the pricing |
-| Distance | Mock: straight-line | No routing service yet. The UI says "straight-line distance". A routing provider plugs into `mockServer/routing.js` |
-| Store, product and location data | Sample data | `src/mocks/`, labelled as sample in the UI |
-| UPI payment verification | Not built | Phase 4. The status will only come from a verified server source |
-| Runner assignment (atomic accept) | Not built | Phase 5. It will be a single server call that fails if the order is already taken |
-| Delivery OTP | UI only | Phase 5. Codes will be short-lived, attempt-limited and verified on the backend |
-| Realtime tracking | Not built | Phase 4. It will be a clearly labelled simulation until realtime is wired |
+| Frontend | Real | React + Vite app; Vercel deployment is separate from backend deployment. |
+| Backend / database | Real integration | Express API and Supabase PostgreSQL are present. Local mock services remain available for development. |
+| Authentication / roles | Real integration | Server validates Supabase sessions and enforces role checks; UI route guards are not a security boundary. |
+| Catalogue | Mixed | Sample/mock data remains in the frontend; verify each configured API path before treating catalogue data as production-backed. |
+| Order creation and pricing | Server-backed | The API and database contain order/pricing logic; validate current deployment and tests before assuming every documented workflow is production-ready. |
+| UPI notification ingestion | Implemented, unverified | Authenticated Make webhook can ingest notifications as PROCESSING evidence. A notification, UTR, email/SMS text, or shared webhook secret is not proof of settlement. |
+| Payment settlement verification | Incomplete / fail-closed | No authoritative server-to-server gateway verifier is implemented in this repository. Notifications must not mark orders PAID until trusted verification is configured and tested. |
+| Runner assignment and fulfilment | Partially implemented | Database atomic-order and fulfilment routines exist; verify deployed migration parity and end-to-end behavior before relying on production guarantees. |
+| Handover OTP | Backend implementation present | OTP-related routes, database changes, and tests exist; validate current migration state and deployed behavior. |
+| Realtime tracking | Not established by this README | Do not present simulated or UI-only tracking as live tracking. |
+| Automated CI | Not configured in GitHub Actions | No workflow runs were found during this audit. Run the documented tests locally or add a CI workflow. |
+
+## Running checks
+
+```bash
+npm ci
+npm test
+npm run test:server
+npm run db:validate
+npm run build
+```
+
+The migration validator checks repository structure; it does **not** execute SQL against PostgreSQL. Database migrations and privilege changes must be validated against a disposable or staging Supabase database before production deployment.
 
 ## Business rules baked into the code
 
