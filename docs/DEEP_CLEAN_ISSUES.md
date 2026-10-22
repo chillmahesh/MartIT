@@ -43,3 +43,15 @@ This register contains confirmed observations from the initial remote review. It
 - [ ] Vercel and Render deployment SHAs and production smoke tests verified.
 - [ ] No dead code removed without evidence and regression tests.
 - [ ] Final issue summary distinguishes fixed, accepted risk, external action, and still-open work.
+
+
+## Verification update — 2026-10-22
+
+- **Latest Render deploy:** commit `0ac83ac27dafc5e2aba3ad782f9ae718943b6d57` is live. Render logs show the service became live and bound port 10000. The `GET /` 404 is consistent with an API-only service and is not by itself evidence of an outage. Recent logs include `POST /auth/me` returning both 401 and 200; the 401 requires request context before classifying as a defect.
+- **Render root directory:** metadata reports `src/`, but the deployed service is live. Do not change this configuration based on metadata alone; verify build logs and actual working directory first.
+- **Open pull requests:** GitHub search returned no open PRs at the time of this check.
+- **Diverged branches reviewed:** `bhosaleshivendra-patch-1` contains one unique commit changing README.md (392 additions / 76 deletions); `feat/flat-10-delivery-fee` contains two unique commits, with the reported net diff touching README.md by one line. Neither is safe to delete without reviewing the unique commit messages and contents. They remain preserved.
+- **Audit branch diff:** eight commits ahead of `main`, zero behind; the current diff contains only this register, the proposed RLS grant migration, and the database regression test.
+- **RLS regression test:** assertion added to `supabase/tests/database_integrity_test.sql` for both `anon` and `authenticated` execution privileges on `public.rls_auto_enable()`. Not run against PostgreSQL yet.
+- **Production safety:** the proposed migration remains unapplied. Live SQL inspection calls were blocked by the tool safety layer; do not infer that the production grant was fixed.
+- **Known limitations:** repository clone/build could not run in this environment due DNS/network failure to GitHub. No dead-code deletion is claimed; safe dead-code analysis needs a complete repository-wide reference scan and build/test validation.
