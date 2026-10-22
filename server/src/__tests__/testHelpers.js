@@ -134,7 +134,11 @@ export function createMockSupabaseClient({
             filters.every((f) => row[f.column] === f.value) &&
             inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
-          return { data: results[0] || null, error: null }
+          let row = results[0] || null
+          if (row && table === 'profiles') {
+            row = { ...row, user_roles: (state.user_roles || []).filter((r) => r.user_id === row.id) }
+          }
+          return { data: row, error: null }
         },
         async single() {
           let results = currentTableData.filter((row) =>
@@ -144,7 +148,11 @@ export function createMockSupabaseClient({
           if (results.length === 0) {
             return { data: null, error: { message: 'No rows found', code: 'PGRST116' } }
           }
-          return { data: results[0], error: null }
+          let row = results[0]
+          if (row && table === 'profiles') {
+            row = { ...row, user_roles: (state.user_roles || []).filter((r) => r.user_id === row.id) }
+          }
+          return { data: row, error: null }
         },
         insert(values) {
           const arr = Array.isArray(values) ? values : [values]

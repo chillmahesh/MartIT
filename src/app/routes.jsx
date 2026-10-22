@@ -23,6 +23,7 @@ const OrdersPage = lazy(() => import('@/pages/customer/OrdersPage'))
 const ProfilePage = lazy(() => import('@/pages/customer/ProfilePage'))
 const RunnerDashboardPage = lazy(() => import('@/pages/runner/RunnerDashboardPage'))
 const AdminConsolePage = lazy(() => import('@/pages/admin/AdminConsolePage'))
+const AdminLoginPage = lazy(() => import('@/pages/admin/AdminLoginPage'))
 const StyleguidePage = lazy(() => import('@/pages/dev/StyleguidePage'))
 
 function Root() {
@@ -84,6 +85,11 @@ export const routes = [
         path: 'runner',
         element: <RequireRole role="runner" />,
         children: [{ element: <RunnerLayout />, children: [{ index: true, element: <RunnerDashboardPage /> }] }],
+      },
+      {
+        path: 'admin/login',
+        element: <AuthLayout />,
+        children: [{ index: true, element: <AdminLoginPage /> }],
       },
       {
         path: 'admin',

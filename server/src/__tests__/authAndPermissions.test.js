@@ -98,6 +98,8 @@ describe('Authentication & Authorization Endpoints', () => {
 
     expect(res.status).toBe(200)
     expect(res.body.runnerStatus).toBe('approved')
+    expect(res.body.name).toBe('Eve Applicant')
+    expect(res.body.roles).toContain(ROLES.RUNNER)
 
     const updatedProfile = state.profiles.find((p) => p.id === 'usr_applicant')
     expect(updatedProfile.runner_status).toBe('approved')
@@ -108,11 +110,59 @@ describe('Authentication & Authorization Endpoints', () => {
     expect(hasRunnerRole).toBe(true)
   })
 
+  it('rejects a runner applicant (status suspended) and ensures runner role is not granted', async () => {
+    const res = await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_applicant', status: 'suspended' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.runnerStatus).toBe('suspended')
+    expect(res.body.roles).not.toContain(ROLES.RUNNER)
+
+    const updatedProfile = state.profiles.find((p) => p.id === 'usr_applicant')
+    expect(updatedProfile.runner_status).toBe('suspended')
+
+    const hasRunnerRole = (state.user_roles || state.userRoles).some(
+      (r) => r.user_id === 'usr_applicant' && r.role === ROLES.RUNNER,
+    )
+    expect(hasRunnerRole).toBe(false)
+  })
+
+  it('suspends an approved runner and revokes runner role', async () => {
+    const res = await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_runner', status: 'suspended' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.runnerStatus).toBe('suspended')
+    expect(res.body.roles).not.toContain(ROLES.RUNNER)
+
+    const updatedProfile = state.profiles.find((p) => p.id === 'usr_runner')
+    expect(updatedProfile.runner_status).toBe('suspended')
+
+    const hasRunnerRole = (state.user_roles || state.userRoles).some(
+      (r) => r.user_id === 'usr_runner' && r.role === ROLES.RUNNER,
+    )
+    expect(hasRunnerRole).toBe(false)
+  })
+
   it('prevents approving a user who never applied', async () => {
     const res = await request(app)
       .post('/admin/runners/setStatus')
       .set('Authorization', 'Bearer tok_admin')
       .send({ userId: 'usr_customer', status: 'approved' })
+
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('NOT_AN_APPLICANT')
+  })
+
+  it('prevents granting runner role to a user who never applied', async () => {
+    const res = await request(app)
+      .post('/admin/roles/set')
+      .set('Authorization', 'Bearer tok_super')
+      .send({ userId: 'usr_customer', role: ROLES.RUNNER, granted: true })
 
     expect(res.status).toBe(409)
     expect(res.body.code).toBe('NOT_AN_APPLICANT')
