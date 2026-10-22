@@ -409,13 +409,26 @@ export async function handleMakePaymentWebhook(req, res, next) {
     }
 
     // 12. Authoritative Gateway Confirmed: Upgrade evidence to verified and execute atomic transition
-    await supabase
+    const { error: verificationUpdateError } = await supabase
       .from('payment_records')
       .update({
         status: 'PAID',
         evidence: 'Payment received',
       })
       .eq('id', recordId)
+
+    // Do not continue to the order state transition unless the verified evidence
+    // was successfully persisted. The database function also validates the record,
+    // but this explicit check avoids relying on a later RPC failure to detect a
+    // failed evidence write.
+    if (verificationUpdateError) {
+      logWebhook('error', 'VERIFIED_EVIDENCE_PERSIST_FAILED', {
+        orderId: order.id,
+        recordId,
+        error: verificationUpdateError.message,
+      })
+      throw ApiError.internal('Failed to persist authoritative payment verification evidence.')
+    }
 
     await executeAtomicPaymentVerification(supabase, order.id)
 
