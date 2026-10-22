@@ -231,5 +231,18 @@ describe('Admin Authorization & Gate Execution', () => {
       code: 'PRIVILEGE_ESCALATION_FORBIDDEN',
     })
   })
+
+  it('guarantees RunnerDashboardPage is defined and bound to runner route in routes.jsx', async () => {
+    const { routes } = await import('@/app/routes')
+    const rootRoute = routes[0]
+    const runnerRoute = rootRoute.children.find((r) => r.path === 'runner')
+    expect(runnerRoute).toBeDefined()
+    expect(runnerRoute.children).toBeDefined()
+    const runnerChild = runnerRoute.children[0]
+    expect(runnerChild.children).toBeDefined()
+    const indexRoute = runnerChild.children[0]
+    expect(indexRoute.index).toBe(true)
+    expect(indexRoute.element).toBeDefined()
+  })
 })
 

@@ -90,16 +90,49 @@ async function handleSetRunnerStatus(req, res, next) {
       throw ApiError.internal('Failed to update runner status.')
     }
 
-    // If approved, ensure runner role exists in user_roles
+    // If approved, ensure runner role exists in user_roles; if suspended, revoke runner role
     if (status === 'approved') {
       await supabase
         .from('user_roles')
         .upsert({ user_id: userId, role: ROLES.RUNNER }, { onConflict: 'user_id, role' })
+    } else if (status === 'suspended') {
+      await supabase
+        .from('user_roles')
+        .delete()
+        .eq('user_id', userId)
+        .eq('role', ROLES.RUNNER)
     }
 
+    // Query full updated profile with user_roles
+    const { data: updatedProfile } = await supabase
+      .from('profiles')
+      .select(`
+        id,
+        email,
+        name,
+        runner_status,
+        default_location_id,
+        user_roles (
+          role
+        )
+      `)
+      .eq('id', userId)
+      .maybeSingle()
+
+    const formatted = updatedProfile
+      ? {
+          id: updatedProfile.id,
+          userId: updatedProfile.id,
+          email: updatedProfile.email,
+          name: updatedProfile.name,
+          roles: (updatedProfile.user_roles || []).map((r) => r.role),
+          runnerStatus: updatedProfile.runner_status,
+          defaultLocationId: updatedProfile.default_location_id,
+        }
+      : { id: userId, userId, runnerStatus: status }
+
     res.status(200).json({
-      id: userId,
-      runnerStatus: status,
+      ...formatted,
       message: `Runner status updated to ${status}.`,
     })
   } catch (err) {
@@ -139,6 +172,24 @@ async function handleSetRole(req, res, next) {
       }
     }
 
+    // Target profile check
+    const { data: targetProfile, error: targetErr } = await supabase
+      .from('profiles')
+      .select('id, name, runner_status')
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (targetErr || !targetProfile) {
+      throw ApiError.notFound('User not found.', 'USER_NOT_FOUND')
+    }
+
+    // Task 6: Only grant the runner role to runner applicants
+    if (role === ROLES.RUNNER && granted) {
+      if (targetProfile.runner_status == null) {
+        throw ApiError.conflict('This user has not applied to be a runner.', 'NOT_AN_APPLICANT')
+      }
+    }
+
     if (granted) {
       await supabase
         .from('user_roles')
@@ -156,10 +207,45 @@ async function handleSetRole(req, res, next) {
         .delete()
         .eq('user_id', userId)
         .eq('role', role)
+
+      if (role === ROLES.RUNNER) {
+        await supabase
+          .from('profiles')
+          .update({ runner_status: 'suspended' })
+          .eq('id', userId)
+      }
     }
 
+    // Query full updated profile with user_roles
+    const { data: updatedProfile } = await supabase
+      .from('profiles')
+      .select(`
+        id,
+        email,
+        name,
+        runner_status,
+        default_location_id,
+        user_roles (
+          role
+        )
+      `)
+      .eq('id', userId)
+      .maybeSingle()
+
+    const formatted = updatedProfile
+      ? {
+          id: updatedProfile.id,
+          userId: updatedProfile.id,
+          email: updatedProfile.email,
+          name: updatedProfile.name,
+          roles: (updatedProfile.user_roles || []).map((r) => r.role),
+          runnerStatus: updatedProfile.runner_status,
+          defaultLocationId: updatedProfile.default_location_id,
+        }
+      : { id: userId, userId, role, granted }
+
     res.status(200).json({
-      userId,
+      ...formatted,
       role,
       granted,
       message: `Role ${role} ${granted ? 'granted to' : 'revoked from'} user.`,

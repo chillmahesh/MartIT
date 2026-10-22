@@ -42,9 +42,24 @@ describe('admin endpoints', () => {
     expect(u.runnerStatus).toBe('approved')
   })
 
+  it('super admin suspends an approved runner, which revokes the runner role', async () => {
+    const token = await login('super_admin')
+    // First approve
+    await server.handle('admin.runners.setStatus', { userId: 'u_applicant_1', status: 'approved' }, { token })
+    // Then suspend
+    const suspended = await server.handle('admin.runners.setStatus', { userId: 'u_applicant_1', status: 'suspended' }, { token })
+    expect(suspended.roles).not.toContain('runner')
+    expect(suspended.runnerStatus).toBe('suspended')
+  })
+
   it('cannot approve someone who never applied', async () => {
     const token = await login('super_admin')
     await expect(server.handle('admin.runners.setStatus', { userId: 'u_customer_1', status: 'approved' }, { token })).rejects.toMatchObject({ code: 'NOT_AN_APPLICANT' })
+  })
+
+  it('cannot grant runner role to someone who never applied', async () => {
+    const token = await login('super_admin')
+    await expect(server.handle('admin.roles.set', { userId: 'u_customer_1', role: 'runner', granted: true }, { token })).rejects.toMatchObject({ code: 'NOT_AN_APPLICANT' })
   })
 
   it('super admin can grant admin roles but cannot remove the last super admin', async () => {

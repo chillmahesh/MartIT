@@ -27,19 +27,34 @@ export default function AdminConsolePage() {
   const [activeTab, setActiveTab] = useState('all')
 
   const onDone = (msg) => (updated) => {
-    qc.setQueryData(['admin', 'users'], (list) => list?.map((u) => (u.id === updated.id ? updated : u)))
-    toast.success(msg(updated))
+    const targetId = updated.id || updated.userId
+    qc.setQueryData(['admin', 'users'], (list) =>
+      list?.map((u) => {
+        if (u.id !== targetId) return u
+        return {
+          ...u,
+          ...updated,
+          id: u.id,
+          name: updated.name ?? u.name,
+          email: updated.email ?? u.email,
+          roles: updated.roles ?? u.roles,
+          runnerStatus: updated.runnerStatus !== undefined ? updated.runnerStatus : u.runnerStatus,
+        }
+      })
+    )
+    qc.invalidateQueries({ queryKey: ['admin', 'users'] })
+    toast.success(typeof msg === 'function' ? msg(updated) : msg)
   }
-  const onError = (e) => toast.error(e.message)
+  const onError = (e) => toast.error(e.message || 'Action failed. Please try again.')
 
   const runnerMutation = useMutation({
     mutationFn: ({ userId, status }) => adminService.setRunnerStatus(userId, status),
-    onSuccess: onDone((u) => `${u.name}: runner ${u.runnerStatus}`),
+    onSuccess: onDone((u) => `${u.name || 'User'}: runner ${u.runnerStatus}`),
     onError,
   })
   const roleMutation = useMutation({
     mutationFn: ({ userId, role, granted }) => adminService.setRole(userId, role, granted),
-    onSuccess: onDone((u) => `${u.name}: roles updated`),
+    onSuccess: onDone((u) => `${u.name || 'User'}: roles updated`),
     onError,
   })
 
@@ -53,7 +68,7 @@ export default function AdminConsolePage() {
     const totalUsers = list.length
     const applicants = list.filter((u) => u.runnerStatus === 'applicant' || u.runnerStatus === 'pending').length
     const activeRunners = list.filter((u) => u.runnerStatus === 'approved').length
-    const admins = list.filter((u) => u.roles.includes(ROLES.ADMIN) || u.roles.includes(ROLES.SUPER_ADMIN)).length
+    const admins = list.filter((u) => Array.isArray(u.roles) && (u.roles.includes(ROLES.ADMIN) || u.roles.includes(ROLES.SUPER_ADMIN))).length
     return { totalUsers, applicants, activeRunners, admins }
   }, [users])
 
@@ -77,9 +92,9 @@ export default function AdminConsolePage() {
     } else if (activeTab === 'runners') {
       list = list.filter((u) => u.runnerStatus === 'approved')
     } else if (activeTab === 'admins') {
-      list = list.filter((u) => u.roles.includes(ROLES.ADMIN) || u.roles.includes(ROLES.SUPER_ADMIN))
+      list = list.filter((u) => Array.isArray(u.roles) && (u.roles.includes(ROLES.ADMIN) || u.roles.includes(ROLES.SUPER_ADMIN)))
     } else if (activeTab === 'customers') {
-      list = list.filter((u) => !u.roles.includes(ROLES.ADMIN) && !u.roles.includes(ROLES.SUPER_ADMIN) && u.runnerStatus !== 'approved')
+      list = list.filter((u) => !Array.isArray(u.roles) || (!u.roles.includes(ROLES.ADMIN) && !u.roles.includes(ROLES.SUPER_ADMIN) && u.runnerStatus !== 'approved'))
     }
 
     return list
@@ -205,8 +220,9 @@ export default function AdminConsolePage() {
         )}
 
         {filteredUsers.map((u) => {
-          const isAdmin = u.roles.includes(ROLES.ADMIN)
-          const isSuperAdmin = u.roles.includes(ROLES.SUPER_ADMIN)
+          const userRoles = Array.isArray(u.roles) ? u.roles : []
+          const isAdmin = userRoles.includes(ROLES.ADMIN)
+          const isSuperAdmin = userRoles.includes(ROLES.SUPER_ADMIN)
           const isApplicant = u.runnerStatus === 'applicant' || u.runnerStatus === 'pending'
           const isApproved = u.runnerStatus === 'approved'
 
@@ -225,9 +241,9 @@ export default function AdminConsolePage() {
                     </div>
                     <p className="truncate text-sm text-ink-subtle">{u.email}</p>
                     <div className="mt-2 flex flex-wrap gap-1.5">
-                      {u.roles.map((r) => (
+                      {userRoles.map((r) => (
                         <Badge key={r} tone={r === ROLES.SUPER_ADMIN ? 'info' : r === ROLES.ADMIN ? 'brand' : 'neutral'}>
-                          {ROLE_LABEL[r]}
+                          {ROLE_LABEL[r] || r}
                         </Badge>
                       ))}
                       {u.runnerStatus && (
@@ -241,14 +257,25 @@ export default function AdminConsolePage() {
 
                 <div className="flex flex-wrap gap-2 md:justify-end">
                   {canApprove && isApplicant && (
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      disabled={busy}
-                      onClick={() => runnerMutation.mutate({ userId: u.id, status: 'approved' })}
-                    >
-                      Approve runner
-                    </Button>
+                    <>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        disabled={busy}
+                        onClick={() => runnerMutation.mutate({ userId: u.id, status: 'approved' })}
+                      >
+                        Approve runner
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-danger hover:bg-danger-soft hover:text-danger"
+                        disabled={busy}
+                        onClick={() => runnerMutation.mutate({ userId: u.id, status: 'suspended' })}
+                      >
+                        Reject applicant
+                      </Button>
+                    </>
                   )}
                   {canApprove && isApproved && (
                     <Button
@@ -258,6 +285,16 @@ export default function AdminConsolePage() {
                       onClick={() => runnerMutation.mutate({ userId: u.id, status: 'suspended' })}
                     >
                       Suspend runner
+                    </Button>
+                  )}
+                  {canApprove && u.runnerStatus === 'suspended' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => runnerMutation.mutate({ userId: u.id, status: 'approved' })}
+                    >
+                      Re-approve runner
                     </Button>
                   )}
                   {canAssign && !isSuperAdmin && (

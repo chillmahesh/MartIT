@@ -21,6 +21,7 @@ const OrderConfirmationPage = lazy(() => import('@/pages/customer/OrderConfirmat
 const PaymentPage = lazy(() => import('@/pages/customer/PaymentPage'))
 const OrdersPage = lazy(() => import('@/pages/customer/OrdersPage'))
 const ProfilePage = lazy(() => import('@/pages/customer/ProfilePage'))
+const RunnerDashboardPage = lazy(() => import('@/pages/runner/RunnerDashboardPage'))
 const AdminConsolePage = lazy(() => import('@/pages/admin/AdminConsolePage'))
 const AdminLoginPage = lazy(() => import('@/pages/admin/AdminLoginPage'))
 const StyleguidePage = lazy(() => import('@/pages/dev/StyleguidePage'))

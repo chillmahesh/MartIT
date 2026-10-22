@@ -190,7 +190,11 @@ export function createMockServer({ routingProvider = null } = {}) {
       const target = findUser(userId)
       if (target.runnerStatus == null) throw new ApiError('NOT_AN_APPLICANT', 'This user has not applied to be a runner.', 409)
       target.runnerStatus = status
-      if (status === 'approved' && !target.roles.includes(ROLES.RUNNER)) target.roles.push(ROLES.RUNNER)
+      if (status === 'approved') {
+        if (!target.roles.includes(ROLES.RUNNER)) target.roles.push(ROLES.RUNNER)
+      } else if (status === 'suspended') {
+        target.roles = target.roles.filter((r) => r !== ROLES.RUNNER)
+      }
       return publicUser(target)
     },
 
@@ -204,7 +208,15 @@ export function createMockServer({ routingProvider = null } = {}) {
         const remaining = db.users.filter((u) => u.roles.includes(ROLES.SUPER_ADMIN) && u.id !== target.id)
         if (remaining.length === 0) throw new ApiError('LAST_SUPER_ADMIN', 'There must always be at least one super admin.', 409)
       }
-      if (role === ROLES.RUNNER && granted) target.runnerStatus = 'approved'
+      if (role === ROLES.RUNNER && granted) {
+        if (target.runnerStatus == null) {
+          throw new ApiError('NOT_AN_APPLICANT', 'This user has not applied to be a runner.', 409)
+        }
+        target.runnerStatus = 'approved'
+      }
+      if (role === ROLES.RUNNER && !granted) {
+        target.runnerStatus = 'suspended'
+      }
       target.roles = granted ? [...new Set([...target.roles, role])] : target.roles.filter((r) => r !== role)
       return publicUser(target)
     },
