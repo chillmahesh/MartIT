@@ -414,6 +414,7 @@ export async function handleMakePaymentWebhook(req, res, next) {
       .update({
         status: 'PAID',
         evidence: 'Payment received',
+        verification_source: 'AUTHORITATIVE_GATEWAY',
       })
       .eq('id', recordId)
 
