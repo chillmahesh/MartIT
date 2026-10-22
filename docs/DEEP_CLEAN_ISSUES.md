@@ -1,4 +1,5 @@
 # MartIT Deep-Clean Audit — Issue Register
+| MARTIT-AUD-014 | High | SECURITY DEFINER RPC privileges | `mark_platform_fee_paid(VARCHAR)` contains an `auth.uid() IS NOT NULL` authorization check. When called by an anonymous database role, `auth.uid()` is NULL, so that branch does not deny execution. PostgreSQL functions commonly receive EXECUTE for PUBLIC by default unless explicitly revoked; the reviewed repository migrations did not establish a clear service-role-only grant for this function. Exploitability in the deployed database is not confirmed without effective privilege inspection. | Revoke EXECUTE from PUBLIC, anon, and authenticated; grant only to `service_role`; inspect effective grants in a test database and confirm the backend uses the service-role client. | FIX PROPOSED ON AUDIT BRANCH — migration and static contract test added; SQL not executed |
 
 **Audit status:** IN PROGRESS  
 **Baseline branch:** `main`  
