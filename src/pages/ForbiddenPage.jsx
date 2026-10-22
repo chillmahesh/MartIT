@@ -6,7 +6,7 @@ import { Logo } from '@/components/ui/Logo'
 const COPY = {
   runner: {
     title: 'Runner access is by approval',
-    body: "Runner accounts are assigned by the MartIT team after verification. You can't choose this role at sign-up. If you've applied, we'll let you know once you're approved.",
+    body: "Runner accounts require MartIT team verification before accepting deliveries. If you registered as a runner, your application is currently under review and we'll let you know once you're approved.",
   },
   admin: { title: 'Admins only', body: 'The admin console is for the MartIT team. Admin access is granted by a super admin.' },
   customer: { title: 'Not available for this account', body: 'This area needs a customer account.' },

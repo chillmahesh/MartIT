@@ -81,8 +81,9 @@ MartIT supports campus-wide grocery discovery and checkout across multiple retai
    - Mode and provider are strictly configured; straight-line distance is prohibited in production routing.
 
 5. **Reconciliation Webhook (Make.com):**
-   - Authoritative incoming channel for bank/UPI payment verification.
-   - Only exact match `"Payment received"` transitions parent payment status to `PAID`.
+   - Ingestion channel for merchant UPI/banking notifications (email/SMS parsing).
+   - Ingests notifications as unverified evidence (`status = 'PROCESSING'`, `evidence = NULL`) for staff audit and reconciliation.
+   - Parent payment transitions to `PAID` **only** upon authoritative server-to-server gateway verification (or pluggable bank settlement confirmation). See [`docs/make-payment-webhook-integration.md`](file:///c:/Users/omkar/OneDrive/Desktop/MyProjects/MartIT/docs/make-payment-webhook-integration.md) for scenario configuration.
 
 ---
 
@@ -359,7 +360,7 @@ The payable total is computed entirely on the server using integer-paise math:
 ### 5.3 Single Customer Payment Transaction
 - One UPI QR code is rendered encoding the parent order's `total_payable`.
 - Group-level fulfillment statuses remain independent from the payment status.
-- Payment transitions from `PENDING` $\to$ `PAID` **only** upon receipt of trusted server-side verification evidence (`"Payment received"` from the Make.com webhook adapter).
+- Payment transitions from `PENDING` $\to$ `PAID` **only** upon authoritative server-to-server gateway verification (validating merchant MID, order identity, exact amount, and terminal success). Make.com notifications are ingested as unverified pending evidence to prevent unverified bypass.
 
 ---
 

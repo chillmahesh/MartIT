@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
-import { AlertCircle, CheckCircle2, Lock, Mail, Phone, User } from 'lucide-react'
+import { AlertCircle, Bike, CheckCircle2, Lock, Mail, Phone, ShoppingBag, User } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -10,6 +10,7 @@ import { toast } from '@/components/ui/Toaster'
 import { useAuthStore } from '@/stores/authStore'
 import { isMockBackend } from '@/config/env'
 import { homePathFor } from '@/utils/permissions'
+import { cn } from '@/utils/cn'
 
 /** Only allow same-site relative redirects (prevents open-redirects via ?next=). */
 function safeNext(next) {
@@ -22,6 +23,7 @@ export default function SignupPage() {
   const navigate = useNavigate()
   const [params] = useSearchParams()
 
+  const [role, setRole] = useState('customer')
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
@@ -41,6 +43,11 @@ export default function SignupPage() {
     const cleanPhone = phone.trim()
 
     // Client-side validations
+    if (!role || (role !== 'customer' && role !== 'runner')) {
+      setFormError('Please select a valid account role (Customer or Runner).')
+      return
+    }
+
     if (!cleanName || cleanName.length < 2) {
       setFormError('Please enter your full name (minimum 2 characters).')
       return
@@ -66,6 +73,7 @@ export default function SignupPage() {
       const result = await signup(cleanEmail, password, {
         name: cleanName,
         phone: cleanPhone || undefined,
+        role,
       })
 
       // Wipe passwords immediately
@@ -75,7 +83,11 @@ export default function SignupPage() {
       if (result.needsConfirmation) {
         setConfirmationNotice(cleanEmail)
       } else {
-        toast.success(`Account created! Welcome, ${result.user?.name || cleanName}!`)
+        if (role === 'runner') {
+          toast.success(`Runner account created! Welcome, ${result.user?.name || cleanName}! Review is pending.`)
+        } else {
+          toast.success(`Account created! Welcome, ${result.user?.name || cleanName}!`)
+        }
         navigate(safeNext(params.get('next')) ?? homePathFor(result.user), { replace: true })
       }
     } catch (err) {
@@ -125,8 +137,12 @@ export default function SignupPage() {
   return (
     <section className="mx-auto max-w-lg px-4 py-10 md:py-16">
       <div className="flex items-center gap-2">
-        <Badge tone={isMockMode ? 'outline' : 'success'} size="md">
-          {isMockMode ? 'Demo Mock Mode' : 'Customer Account'}
+        <Badge tone={isMockMode ? 'outline' : role === 'runner' ? 'warning' : 'success'} size="md">
+          {isMockMode
+            ? `Demo Mock Mode (${role === 'runner' ? 'Runner' : 'Customer'})`
+            : role === 'runner'
+              ? 'Runner Applicant'
+              : 'Customer Account'}
         </Badge>
       </div>
 
@@ -163,6 +179,113 @@ export default function SignupPage() {
       )}
 
       <form onSubmit={handleSubmit} className="mt-8 grid gap-4" noValidate>
+        {/* Account Role Selection */}
+        <Field label="I want to sign up as" hint="Select whether you want to order or deliver on campus">
+          <div
+            role="radiogroup"
+            aria-label="Account Type"
+            className="grid grid-cols-1 sm:grid-cols-2 gap-3"
+          >
+            {/* Customer option */}
+            <div
+              role="radio"
+              aria-checked={role === 'customer'}
+              tabIndex={0}
+              onClick={() => setRole('customer')}
+              onKeyDown={(e) => {
+                if (e.key === ' ' || e.key === 'Enter') {
+                  e.preventDefault()
+                  setRole('customer')
+                }
+              }}
+              className={cn(
+                'relative flex flex-col p-4 rounded-card border-2 transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand',
+                role === 'customer'
+                  ? 'border-brand bg-brand-soft/25 text-ink shadow-1'
+                  : 'border-line bg-surface hover:border-line-hover text-ink-muted'
+              )}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <div
+                  className={cn(
+                    'grid size-9 place-items-center rounded-full',
+                    role === 'customer' ? 'bg-brand text-fresh-ink' : 'bg-surface-2 text-ink-subtle'
+                  )}
+                >
+                  <ShoppingBag className="size-4" aria-hidden="true" />
+                </div>
+                <span
+                  className={cn(
+                    'text-[11px] font-semibold px-2 py-0.5 rounded-full',
+                    role === 'customer' ? 'bg-brand/20 text-fresh-ink' : 'bg-surface-3 text-ink-subtle'
+                  )}
+                >
+                  Instant Access
+                </span>
+              </div>
+              <p className="font-display font-bold text-base text-ink">Customer</p>
+              <p className="mt-1 text-xs text-ink-muted leading-relaxed">
+                Order meals, snacks & essentials delivered right to your campus spot.
+              </p>
+            </div>
+
+            {/* Runner option */}
+            <div
+              role="radio"
+              aria-checked={role === 'runner'}
+              tabIndex={0}
+              onClick={() => setRole('runner')}
+              onKeyDown={(e) => {
+                if (e.key === ' ' || e.key === 'Enter') {
+                  e.preventDefault()
+                  setRole('runner')
+                }
+              }}
+              className={cn(
+                'relative flex flex-col p-4 rounded-card border-2 transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-brand',
+                role === 'runner'
+                  ? 'border-brand bg-brand-soft/25 text-ink shadow-1'
+                  : 'border-line bg-surface hover:border-line-hover text-ink-muted'
+              )}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <div
+                  className={cn(
+                    'grid size-9 place-items-center rounded-full',
+                    role === 'runner' ? 'bg-brand text-fresh-ink' : 'bg-surface-2 text-ink-subtle'
+                  )}
+                >
+                  <Bike className="size-4" aria-hidden="true" />
+                </div>
+                <span
+                  className={cn(
+                    'text-[11px] font-semibold px-2 py-0.5 rounded-full',
+                    role === 'runner' ? 'bg-warning/20 text-warning-ink' : 'bg-surface-3 text-ink-subtle'
+                  )}
+                >
+                  Application
+                </span>
+              </div>
+              <p className="font-display font-bold text-base text-ink">Runner</p>
+              <p className="mt-1 text-xs text-ink-muted leading-relaxed">
+                Deliver orders on campus & earn flexible income on your schedule.
+              </p>
+            </div>
+          </div>
+        </Field>
+
+        {role === 'runner' && (
+          <div
+            role="note"
+            className="flex items-start gap-2.5 rounded-card border border-warning/30 bg-warning/10 p-3 text-xs text-ink-muted"
+          >
+            <AlertCircle className="size-4 shrink-0 text-warning mt-0.5" aria-hidden="true" />
+            <p className="leading-relaxed">
+              <strong className="text-ink font-semibold">Runner Verification:</strong> After registration, runner accounts require student ID verification and administrator approval before accepting delivery runs. You can still order food anytime.
+            </p>
+          </div>
+        )}
+
         <Field label="Full Name">
           <Input
             type="text"

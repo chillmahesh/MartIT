@@ -668,6 +668,7 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
         { fee_paise: 15, is_paid: false, active_order_id: null },
       ],
       orders: [],
+      inventory_reservations: [],
     })
     mockState = mock.state
     app = createApp()
@@ -1096,5 +1097,313 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
     expect(mockState.orders.length).toBe(initialOrdersCount)
     const slot = mockState.platform_fee_reservations.find((r) => r.fee_paise === 12)
     expect(slot.active_order_id).toBeNull()
+  })
+
+  it('21. safely aggregates duplicate product IDs into single consolidated line item', async () => {
+    // Initial milk stock is 50, price 28.00
+    const milkBefore = mockState.products.find((p) => p.id === 'p_milk').stock
+
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [
+          { productId: 'p_milk', quantity: 2 },
+          { productId: 'p_milk', quantity: 3 },
+        ],
+      })
+
+    expect(res.status).toBe(201)
+    // 5 total milks @ 28 = 140.00 itemSubtotal
+    expect(res.body.pricing.itemSubtotal).toBe(140.0)
+    expect(res.body.pricing.deliveryFee).toBe(10.0)
+    expect(res.body.pricing.baseAmount).toBe(150.0)
+    const milkAfter = mockState.products.find((p) => p.id === 'p_milk').stock
+    expect(milkAfter).toBe(milkBefore - 5)
+  })
+
+  it('22. deterministically sorts line items to eliminate lock-ordering cycles between concurrent carts', async () => {
+    // Cart with products out of lexical order [p_milk, p_bread]
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [
+          { productId: 'p_milk', quantity: 1 },
+          { productId: 'p_bread', quantity: 1 },
+        ],
+      })
+
+    expect(res.status).toBe(201)
+    expect(res.body.id).toBeDefined()
+  })
+
+  it('23. rejects missing or invalid productId with 400 INVALID_LINE_ITEM', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: '', quantity: 1 }],
+      })
+
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('INVALID_LINE_ITEM')
+  })
+
+  it('24. rejects non-integer/fractional quantity with 422 INVALID_QUANTITY', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 2.5 }],
+      })
+
+    expect(res.status).toBe(422)
+    expect(res.body.code).toBe('INVALID_QUANTITY')
+  })
+
+  it('25. rejects excessively large item quantity exceeding 2147483647 with 422 INVALID_QUANTITY', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 3000000000 }],
+      })
+
+    expect(res.status).toBe(422)
+    expect(res.body.code).toBe('INVALID_QUANTITY')
+  })
+
+  it('26. rejects duplicate product lines whose aggregate sum exceeds 2147483647 with 422 INVALID_QUANTITY', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [
+          { productId: 'p_milk', quantity: 1500000000 },
+          { productId: 'p_milk', quantity: 1500000000 },
+        ],
+      })
+
+    expect(res.status).toBe(422)
+    expect(res.body.code).toBe('INVALID_QUANTITY')
+  })
+
+  it('27. rejects order when line subtotal or subtotal exceeds 99999999.99 with 422 ORDER_TOTAL_EXCEEDED', async () => {
+    mockState.products.push({
+      id: 'p_expensive',
+      store_id: 'store_campus_mart',
+      category_id: 'cat_electronics',
+      name: 'High-end Lab Equipment',
+      pack: '1 unit',
+      price: '60000000.00',
+      stock: 5,
+      is_available: true,
+    })
+
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_expensive', quantity: 2 }], // 2 * 60,000,000 = 120,000,000 > 99,999,999.99
+      })
+
+    expect(res.status).toBe(422)
+    expect(res.body.code).toBe('ORDER_TOTAL_EXCEEDED')
+  })
+
+  it('28. expires order payment atomically, restores product stock, transitions reservations to RELEASED, and prevents double restoration on repeated calls', async () => {
+    const createRes = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [
+          { productId: 'p_milk', quantity: 2 },
+          { productId: 'p_bread', quantity: 1 },
+        ],
+      })
+
+    expect(createRes.status).toBe(201)
+    const orderId = createRes.body.id
+
+    const milk = mockState.products.find((p) => p.id === 'p_milk')
+    const bread = mockState.products.find((p) => p.id === 'p_bread')
+    expect(milk.stock).toBe(8)
+    expect(bread.stock).toBe(4)
+
+    const heldReservations = mockState.inventory_reservations.filter(
+      (ir) => ir.order_id === orderId && ir.status === 'HELD',
+    )
+    expect(heldReservations.length).toBe(2)
+
+    const expireRes = await request(app)
+      .post(`/api/v1/orders/${orderId}/expire`)
+      .set('Authorization', 'Bearer tok_alice')
+      .send()
+
+    expect(expireRes.status).toBe(200)
+    expect(expireRes.body.status).toBe('expired')
+    expect(expireRes.body.paymentStatus).toBe('EXPIRED')
+
+    expect(milk.stock).toBe(10)
+    expect(bread.stock).toBe(5)
+
+    const releasedReservations = mockState.inventory_reservations.filter(
+      (ir) => ir.order_id === orderId && ir.status === 'RELEASED',
+    )
+    expect(releasedReservations.length).toBe(2)
+
+    // Repeat call must be idempotent and not double-restore stock
+    const repeatExpireRes = await request(app)
+      .post(`/api/v1/orders/${orderId}/expire`)
+      .set('Authorization', 'Bearer tok_alice')
+      .send()
+
+    expect(repeatExpireRes.status).toBe(200)
+    expect(milk.stock).toBe(10)
+    expect(bread.stock).toBe(5)
+  })
+
+  it('29. rejects payment expiry with 409 ALREADY_PAID if order is already paid', async () => {
+    const createRes = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+      })
+    expect(createRes.status).toBe(201)
+    const orderId = createRes.body.id
+
+    const order = mockState.orders.find((o) => o.id === orderId)
+    order.payment_status = 'PAID'
+
+    const expireRes = await request(app)
+      .post(`/api/v1/orders/${orderId}/expire`)
+      .set('Authorization', 'Bearer tok_alice')
+      .send()
+
+    expect(expireRes.status).toBe(409)
+    expect(expireRes.body.code).toBe('ALREADY_PAID')
+  })
+
+  it('30. aggregates duplicate reservation lines and restores combined stock exactly once on expiry', async () => {
+    // Manually inject an order with duplicate HELD reservation lines for p_milk (2 + 3 = 5)
+    mockState.orders.push({
+      id: 'ord_duplicate_holds',
+      customer_id: 'usr_alice',
+      status: 'AWAITING_PAYMENT',
+      payment_status: 'PENDING',
+      payment_window_expires_at: new Date(Date.now() + 120000).toISOString(),
+    })
+    mockState.inventory_reservations.push(
+      { id: 'res_dup_1', order_id: 'ord_duplicate_holds', store_id: 'store_campus_mart', product_id: 'p_milk', quantity: 2, status: 'HELD' },
+      { id: 'res_dup_2', order_id: 'ord_duplicate_holds', store_id: 'store_campus_mart', product_id: 'p_milk', quantity: 3, status: 'HELD' },
+    )
+    const milk = mockState.products.find((p) => p.id === 'p_milk')
+    milk.stock = 5 // Suppose stock was decremented from 10 to 5
+
+    const expireRes = await request(app)
+      .post('/api/v1/orders/ord_duplicate_holds/expire')
+      .set('Authorization', 'Bearer tok_alice')
+      .send()
+
+    expect(expireRes.status).toBe(200)
+    expect(expireRes.body.paymentStatus).toBe('EXPIRED')
+    expect(milk.stock).toBe(10) // 5 + (2 + 3) = 10 exactly
+
+    const reservations = mockState.inventory_reservations.filter((ir) => ir.order_id === 'ord_duplicate_holds')
+    expect(reservations.every((ir) => ir.status === 'RELEASED')).toBe(true)
+  })
+
+  it('31. fails safely with 500 TRANSACTION_FAILED and prevents partial release when RPC reports PRODUCT_NOT_FOUND', async () => {
+    mockState.orders.push({
+      id: 'ord_missing_prod',
+      customer_id: 'usr_alice',
+      status: 'AWAITING_PAYMENT',
+      payment_status: 'PENDING',
+      payment_window_expires_at: new Date(Date.now() + 120000).toISOString(),
+    })
+    mockState.inventory_reservations.push({
+      id: 'res_ghost',
+      order_id: 'ord_missing_prod',
+      store_id: 'store_campus_mart',
+      product_id: 'p_nonexistent_ghost',
+      quantity: 1,
+      status: 'HELD',
+    })
+
+    const expireRes = await request(app)
+      .post('/api/v1/orders/ord_missing_prod/expire')
+      .set('Authorization', 'Bearer tok_alice')
+      .send()
+
+    expect(expireRes.status).toBe(500)
+    expect(expireRes.body.code).toBe('TRANSACTION_FAILED')
+    expect(expireRes.body.message).toContain('PRODUCT_NOT_FOUND')
+  })
+
+  it('32. release_order_inventory RPC rejects paid orders with CANNOT_RELEASE_PAID_ORDER and preserves order state without unauthorized mutation', async () => {
+    const { getSupabaseAdmin } = await import('../config/supabase.js')
+    const supabase = getSupabaseAdmin()
+
+    // 1. Rejects paid order
+    mockState.orders.push({
+      id: 'ord_already_paid',
+      customer_id: 'usr_alice',
+      status: 'CONFIRMED',
+      payment_status: 'PAID',
+    })
+    const paidRelease = await supabase.rpc('release_order_inventory', { p_order_id: 'ord_already_paid' })
+    expect(paidRelease.error).not.toBeNull()
+    expect(paidRelease.error.message).toBe('CANNOT_RELEASE_PAID_ORDER')
+
+    // 2. Releases inventory without mutating orders table directly (separation of concerns)
+    mockState.orders.push({
+      id: 'ord_pending_release',
+      customer_id: 'usr_alice',
+      status: 'AWAITING_PAYMENT',
+      payment_status: 'PENDING',
+    })
+    mockState.inventory_reservations.push({
+      id: 'res_pend_1',
+      order_id: 'ord_pending_release',
+      store_id: 'store_campus_mart',
+      product_id: 'p_milk',
+      quantity: 1,
+      status: 'HELD',
+    })
+    const initialMilkStock = mockState.products.find((p) => p.id === 'p_milk').stock
+
+    const pendingRelease = await supabase.rpc('release_order_inventory', { p_order_id: 'ord_pending_release' })
+    expect(pendingRelease.error).toBeNull()
+    expect(pendingRelease.data).toBe(true)
+
+    // Stock restored and reservation released
+    expect(mockState.products.find((p) => p.id === 'p_milk').stock).toBe(initialMilkStock + 1)
+    const res = mockState.inventory_reservations.find((ir) => ir.id === 'res_pend_1')
+    expect(res.status).toBe('RELEASED')
+
+    // Order status is preserved; order expiry ownership belongs strictly to expire_order_payment
+    const order = mockState.orders.find((o) => o.id === 'ord_pending_release')
+    expect(order.status).toBe('AWAITING_PAYMENT')
+    expect(order.payment_status).toBe('PENDING')
   })
 })

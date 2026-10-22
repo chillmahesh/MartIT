@@ -14,6 +14,7 @@ import { storesRouter } from './routes/stores.js'
 import { deliveryRouter } from './routes/delivery.js'
 import { ordersRouter } from './routes/orders.js'
 import { adminRouter } from './routes/admin.js'
+import { webhooksRouter } from './routes/webhooks.js'
 
 export function createApp() {
   const app = express()
@@ -48,6 +49,7 @@ export function createApp() {
   app.use(deliveryRouter)
   app.use(ordersRouter)
   app.use(adminRouter)
+  app.use(webhooksRouter)
 
   // 404 catch-all
   app.use((req, res, next) => {

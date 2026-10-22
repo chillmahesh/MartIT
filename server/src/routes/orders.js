@@ -377,7 +377,7 @@ async function executeAtomicPaymentExpiry(supabase, orderId, force = true) {
  * Helper to execute genuine atomic payment verification in PostgreSQL via stored procedure.
  * STRICT: Does NOT fall back to sequential REST updates on failure.
  */
-async function executeAtomicPaymentVerification(supabase, orderId) {
+export async function executeAtomicPaymentVerification(supabase, orderId) {
   if (typeof supabase.rpc !== 'function') {
     throw ApiError.internal('Database transaction engine unavailable.', 'RPC_UNAVAILABLE')
   }
@@ -1057,14 +1057,18 @@ async function handleCreateOrder(req, res, next) {
     // Line item consolidation & format check
     const lineMap = new Map()
     for (const item of lines) {
-      if (!item || !item.productId || typeof item.productId !== 'string') {
+      if (!item || !item.productId || typeof item.productId !== 'string' || !item.productId.trim()) {
         throw ApiError.badRequest('Valid product ID is required for each line item.', 'INVALID_LINE_ITEM')
       }
-      if (!Number.isInteger(item.quantity) || item.quantity < 1) {
+      if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 2147483647) {
         throw ApiError.unprocessable('Invalid quantity.', 'INVALID_QUANTITY', { productId: item.productId })
       }
       const existingQty = lineMap.get(item.productId) || 0
-      lineMap.set(item.productId, existingQty + item.quantity)
+      const nextQty = existingQty + item.quantity
+      if (nextQty > 2147483647) {
+        throw ApiError.unprocessable('Invalid quantity.', 'INVALID_QUANTITY', { productId: item.productId })
+      }
+      lineMap.set(item.productId, nextQty)
     }
 
     // 3. Idempotency Check: if idempotencyKey is supplied, check if order already exists
@@ -1160,6 +1164,9 @@ async function handleCreateOrder(req, res, next) {
       }
       const unitPrice = Number(product.price)
       const lineSubtotal = Math.round(unitPrice * quantity * 100) / 100
+      if (lineSubtotal > 99999999.99) {
+        throw ApiError.unprocessable('Order line subtotal exceeds maximum allowable limit.', 'ORDER_TOTAL_EXCEEDED')
+      }
       pricedLines.push({
         productId,
         name: product.name,
@@ -1170,9 +1177,15 @@ async function handleCreateOrder(req, res, next) {
       })
     }
 
+    // Sort priced lines deterministically by productId to prevent lock-ordering cycles
+    pricedLines.sort((a, b) => a.productId.localeCompare(b.productId))
+
     // 8. Financial totals calculation under MVP Flat ₹10 Delivery Fee Policy
     const deliveryFee = FLAT_DELIVERY_FEE
     const itemSubtotal = Math.round(pricedLines.reduce((acc, l) => acc + l.lineSubtotal, 0) * 100) / 100
+    if (itemSubtotal > 99999999.99) {
+      throw ApiError.unprocessable('Order subtotal exceeds maximum allowable limit.', 'ORDER_TOTAL_EXCEEDED')
+    }
     const baseAmount = Math.round(itemSubtotal + deliveryFee)
 
     orderId = `ord_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`
@@ -1224,6 +1237,15 @@ async function handleCreateOrder(req, res, next) {
       }
       if (atomicErr.message && atomicErr.message.includes('IDEMPOTENCY_CONFLICT')) {
         throw ApiError.forbidden('Idempotency key belongs to another customer.', 'IDEMPOTENCY_CONFLICT')
+      }
+      if (atomicErr.message && atomicErr.message.includes('INVALID_LINE_ITEM')) {
+        throw ApiError.badRequest('Valid product ID is required for each line item.', 'INVALID_LINE_ITEM')
+      }
+      if (atomicErr.message && atomicErr.message.includes('INVALID_QUANTITY')) {
+        throw ApiError.unprocessable('Invalid quantity.', 'INVALID_QUANTITY')
+      }
+      if (atomicErr.message && atomicErr.message.includes('ORDER_TOTAL_EXCEEDED')) {
+        throw ApiError.unprocessable('Order subtotal exceeds maximum allowable limit.', 'ORDER_TOTAL_EXCEEDED')
       }
       if (atomicErr.message && (atomicErr.message.includes('idempotency_key') || atomicErr.code === '23505')) {
         // Concurrent racer order with the same idempotency key

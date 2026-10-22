@@ -55,7 +55,7 @@ describe('Auth UI Components (LoginPage & SignupPage)', () => {
     expect(html).not.toContain('Sample customer')
   })
 
-  it('renders SignupPage with accessible form fields and MartIT styling', () => {
+  it('renders SignupPage with accessible form fields and MartIT styling including role selection', () => {
     const html = renderToString(
       React.createElement(
         MemoryRouter,
@@ -71,6 +71,14 @@ describe('Auth UI Components (LoginPage & SignupPage)', () => {
     expect(html).toContain('Password')
     expect(html).toContain('Confirm Password')
     expect(html).toContain('Create account')
+
+    // Role selection controls
+    expect(html).toContain('I want to sign up as')
+    expect(html).toContain('Customer')
+    expect(html).toContain('Runner')
+    expect(html).toContain('Deliver orders on campus')
+    expect(html).toContain('role="radiogroup"')
+    expect(html).toContain('aria-label="Account Type"')
   })
 
   it('renders SignupPage configuration alert when Supabase config is missing in remote mode', () => {

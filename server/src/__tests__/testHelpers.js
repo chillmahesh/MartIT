@@ -15,6 +15,7 @@ export function createMockSupabaseClient({
   orders = [],
   platform_fee_reservations = [],
   payment_records = [],
+  inventory_reservations = [],
 } = {}) {
   const state = {
     users: structuredClone(users),
@@ -27,6 +28,7 @@ export function createMockSupabaseClient({
     orders: structuredClone(orders),
     platform_fee_reservations: structuredClone(platform_fee_reservations),
     payment_records: structuredClone(payment_records),
+    inventory_reservations: structuredClone(inventory_reservations),
   }
 
   const client = {
@@ -290,12 +292,37 @@ export function createMockSupabaseClient({
           }
         }
 
-        // Validate products and deduct stock
+        // Validate products, aggregate duplicate items, and deduct stock deterministically
         let subtotal = 0
         const items = args?.p_items || []
+
+        // Pre-validate individual items
         for (const item of items) {
           const pid = item.product_id || item.productId
           const qty = item.quantity
+          if (!pid || typeof pid !== 'string' || !pid.trim()) {
+            return { data: null, error: { message: 'INVALID_LINE_ITEM' } }
+          }
+          if (typeof qty !== 'number' || !Number.isInteger(qty) || qty <= 0 || qty > 2147483647) {
+            return { data: null, error: { message: 'INVALID_QUANTITY' } }
+          }
+        }
+
+        // Aggregate duplicates and sort deterministically by product ID
+        const aggregatedMap = new Map()
+        for (const item of items) {
+          const pid = item.product_id || item.productId
+          const current = aggregatedMap.get(pid) || 0
+          const next = current + item.quantity
+          if (next > 2147483647) {
+            return { data: null, error: { message: 'INVALID_QUANTITY' } }
+          }
+          aggregatedMap.set(pid, next)
+        }
+
+        const sortedProductIds = Array.from(aggregatedMap.keys()).sort((a, b) => a.localeCompare(b))
+        for (const pid of sortedProductIds) {
+          const qty = aggregatedMap.get(pid)
           const prod = (state.products || []).find((p) => p.id === pid)
           if (!prod || !prod.is_available) {
             return { data: null, error: { message: 'PRODUCT_UNAVAILABLE' } }
@@ -303,8 +330,12 @@ export function createMockSupabaseClient({
           if (prod.stock < qty) {
             return { data: null, error: { message: 'OUT_OF_STOCK' } }
           }
+          const lineCost = Math.round(Number(prod.price) * qty * 100) / 100
+          if (lineCost > 99999999.99 || (subtotal + lineCost) > 99999999.99) {
+            return { data: null, error: { message: 'ORDER_TOTAL_EXCEEDED' } }
+          }
           prod.stock -= qty
-          subtotal += Number(prod.price) * qty
+          subtotal += lineCost
         }
         subtotal = Math.round(subtotal * 100) / 100
         const baseAmount = Math.round(subtotal + deliveryFee)
@@ -362,6 +393,21 @@ export function createMockSupabaseClient({
         }
         if (!state.orders) state.orders = []
         state.orders.push(orderRecord)
+
+        if (!state.inventory_reservations) state.inventory_reservations = []
+        for (const pid of sortedProductIds) {
+          const qty = aggregatedMap.get(pid)
+          state.inventory_reservations.push({
+            id: `res_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+            order_id: orderId,
+            store_id: args?.p_store_id,
+            product_id: pid,
+            quantity: qty,
+            status: 'HELD',
+            expires_at: windowExp,
+            created_at: nowIso,
+          })
+        }
 
         return {
           data: {
@@ -441,6 +487,39 @@ export function createMockSupabaseClient({
       }
 
       if (fn === 'release_order_inventory') {
+        const orderId = args?.p_order_id
+        const order = (state.orders || []).find((o) => o.id === orderId)
+        if (!order) {
+          return { data: null, error: { message: 'ORDER_NOT_FOUND' } }
+        }
+        if (order.payment_status === 'PAID') {
+          return { data: null, error: { message: 'CANNOT_RELEASE_PAID_ORDER' } }
+        }
+        const reservations = (state.inventory_reservations || []).filter(
+          (ir) => ir.order_id === orderId && ir.status === 'HELD',
+        )
+        if (reservations.length === 0) {
+          return { data: true, error: null }
+        }
+        const aggregated = new Map()
+        for (const res of reservations) {
+          aggregated.set(res.product_id, (aggregated.get(res.product_id) || 0) + res.quantity)
+        }
+        const sortedPids = Array.from(aggregated.keys()).sort((a, b) => a.localeCompare(b))
+        for (const pid of sortedPids) {
+          const prod = (state.products || []).find((p) => p.id === pid)
+          if (!prod) {
+            return { data: null, error: { message: 'PRODUCT_NOT_FOUND' } }
+          }
+          if (prod.stock + aggregated.get(pid) > 2147483647) {
+            return { data: null, error: { message: 'STOCK_OVERFLOW' } }
+          }
+          prod.stock += aggregated.get(pid)
+        }
+        reservations.forEach((ir) => {
+          ir.status = 'RELEASED'
+          ir.released_at = new Date().toISOString()
+        })
         return { data: true, error: null }
       }
 
@@ -469,12 +548,26 @@ export function createMockSupabaseClient({
           )
           if (fee) fee.active_order_id = null
           if (state.inventory_reservations) {
-            state.inventory_reservations
-              .filter((ir) => ir.order_id === orderId && ir.status === 'HELD')
-              .forEach((ir) => {
-                ir.status = 'RELEASED'
-                ir.released_at = new Date().toISOString()
-              })
+            const held = state.inventory_reservations.filter((ir) => ir.order_id === orderId && ir.status === 'HELD')
+            const aggregated = new Map()
+            for (const res of held) {
+              aggregated.set(res.product_id, (aggregated.get(res.product_id) || 0) + res.quantity)
+            }
+            const sortedPids = Array.from(aggregated.keys()).sort((a, b) => a.localeCompare(b))
+            for (const pid of sortedPids) {
+              const prod = (state.products || []).find((p) => p.id === pid)
+              if (!prod) {
+                return { data: null, error: { message: 'PRODUCT_NOT_FOUND' } }
+              }
+              if (prod.stock + aggregated.get(pid) > 2147483647) {
+                return { data: null, error: { message: 'STOCK_OVERFLOW' } }
+              }
+              prod.stock += aggregated.get(pid)
+            }
+            held.forEach((ir) => {
+              ir.status = 'RELEASED'
+              ir.released_at = new Date().toISOString()
+            })
           }
           return { data: [{ expired: true, previous_status: prevStatus }], error: null }
         }
@@ -499,7 +592,10 @@ export function createMockSupabaseClient({
           return { data: null, error: { message: 'PAYMENT_WINDOW_EXPIRED' } }
         }
         const hasVerifiedRecord = (state.payment_records || []).some(
-          (pr) => pr.order_id === orderId && Number(pr.amount) === Number(order.total_payable),
+          (pr) =>
+            pr.order_id === orderId &&
+            Number(pr.amount) === Number(order.total_payable) &&
+            (pr.status === 'PAID' || (pr.evidence !== null && pr.evidence !== undefined)),
         )
         if (!hasVerifiedRecord) {
           return { data: null, error: { message: 'UNVERIFIED_PAYMENT_SHORTCUT_PROHIBITED' } }
