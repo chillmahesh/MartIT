@@ -339,11 +339,11 @@ describe('Public Registration & Role Assignment Enforcement', () => {
     expect(res.body.success).toBe(true)
     expect(res.body.user.email).toBe('newrunner@campus.edu')
     expect(res.body.user.roles).toContain(ROLES.CUSTOMER)
-    expect(res.body.user.roles).toContain(ROLES.RUNNER)
+    expect(res.body.user.roles).not.toContain(ROLES.RUNNER)
     expect(res.body.user.runnerStatus).toBe('applicant')
     expect(res.body.message).toContain('application is pending review')
 
-    // Verify DB state: runner_status must be 'applicant' (NOT approved)
+    // Verify DB state: runner_status must be 'applicant' (NOT approved) and only customer role granted
     const createdProfile = state.profiles.find((p) => p.email === 'newrunner@campus.edu')
     expect(createdProfile).toBeDefined()
     expect(createdProfile.runner_status).toBe('applicant')
@@ -351,7 +351,30 @@ describe('Public Registration & Role Assignment Enforcement', () => {
     const createdRoles = state.user_roles.filter((r) => r.user_id === createdProfile.id)
     const rolesList = createdRoles.map((r) => r.role)
     expect(rolesList).toContain(ROLES.CUSTOMER)
-    expect(rolesList).toContain(ROLES.RUNNER)
+    expect(rolesList).not.toContain(ROLES.RUNNER)
+  })
+
+  it('allows authenticated customer to submit runner application via /api/v1/auth/apply-runner', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/apply-runner')
+      .set('Authorization', 'Bearer tok_existing')
+
+    expect(res.status).toBe(200)
+    expect(res.body.runnerStatus).toBe('applicant')
+    expect(res.body.roles).toContain(ROLES.CUSTOMER)
+    expect(res.body.roles).not.toContain(ROLES.RUNNER)
+
+    const updatedProfile = state.profiles.find((p) => p.id === 'usr_existing')
+    expect(updatedProfile.runner_status).toBe('applicant')
+  })
+
+  it('allows authenticated customer to submit runner application via RPC /auth/applyRunner', async () => {
+    const res = await request(app)
+      .post('/auth/applyRunner')
+      .set('Authorization', 'Bearer tok_existing')
+
+    expect(res.status).toBe(200)
+    expect(res.body.runnerStatus).toBe('applicant')
   })
 
   it('strictly rejects attempted public registration as admin with 403 PRIVILEGE_ESCALATION_FORBIDDEN', async () => {

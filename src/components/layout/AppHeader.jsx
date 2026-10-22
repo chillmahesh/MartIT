@@ -12,7 +12,8 @@ import { hasPermission, PERMISSIONS, ROLE_LABEL, ROLES } from '@/utils/permissio
 
 /** Header for signed-in areas. `variant` = customer | runner | admin; non-customer variants hide shopping controls. */
 export function AppHeader({ variant = 'customer' }) {
-  const user = useAuthStore((s) => s.user)
+  const userFromHook = useAuthStore((s) => s.user)
+  const user = userFromHook ?? useAuthStore.getState().user
   const cartCount = useCartStore(selectCartCount)
   const locationName = useLocationName(user?.defaultLocationId)
   const home = { customer: '/app', runner: '/runner', admin: '/admin' }[variant]
@@ -40,6 +41,47 @@ export function AppHeader({ variant = 'customer' }) {
             </p>
           </div>
         )}
+
+        {/* Mode switcher or runner status in header bar */}
+        {hasPermission(user, PERMISSIONS.RUNNER_DELIVER) ? (
+          variant === 'customer' ? (
+            <Link
+              to="/runner"
+              id="header-mode-switch-runner"
+              className="inline-flex items-center gap-1.5 rounded-full border border-brand/40 bg-brand-soft/60 px-3 py-1.5 text-xs font-semibold text-fresh-ink transition-colors hover:bg-brand-soft"
+              aria-label="Switch to Runner mode"
+            >
+              <Bike className="size-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">Runner Mode</span>
+            </Link>
+          ) : (
+            <Link
+              to="/app"
+              id="header-mode-switch-customer"
+              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface-2 px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-surface-3"
+              aria-label="Switch to Customer mode"
+            >
+              <ShoppingBag className="size-3.5" aria-hidden="true" />
+              <span className="hidden sm:inline">Customer Mode</span>
+            </Link>
+          )
+        ) : (user?.runnerStatus === 'applicant' || user?.runnerStatus === 'pending') ? (
+          <div
+            id="header-runner-pending-badge"
+            className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning-ink"
+          >
+            <Bike className="size-3 text-warning" aria-hidden="true" />
+            <span>Runner application pending</span>
+          </div>
+        ) : user?.runnerStatus === 'suspended' ? (
+          <div
+            id="header-runner-suspended-badge"
+            className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/10 px-2.5 py-1 text-xs font-medium text-danger"
+          >
+            <Bike className="size-3 text-danger" aria-hidden="true" />
+            <span>Runner suspended</span>
+          </div>
+        ) : null}
 
         <div className="ml-auto flex items-center gap-1">
           <ThemeToggle />
@@ -71,6 +113,10 @@ function AccountMenu({ user, variant }) {
   const navigate = useNavigate()
   const initial = user?.name?.[0]?.toUpperCase() ?? '?'
 
+  const isApprovedRunner = hasPermission(user, PERMISSIONS.RUNNER_DELIVER)
+  const isApplicant = user?.runnerStatus === 'applicant' || user?.runnerStatus === 'pending'
+  const isSuspended = user?.runnerStatus === 'suspended'
+
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger
@@ -90,6 +136,52 @@ function AccountMenu({ user, variant }) {
             <p className="text-[13px] text-ink-subtle">{user?.email}</p>
           </div>
           <DropdownMenu.Separator className="my-1 h-px bg-line" />
+
+          {/* Mode Switcher in Account Menu for Dual-Role Users */}
+          {isApprovedRunner && (
+            variant === 'customer' ? (
+              <DropdownMenu.Item asChild>
+                <Link
+                  to="/runner"
+                  id="menu-mode-switch-runner"
+                  className="flex h-10 items-center gap-2.5 rounded-tile px-3 text-sm font-medium text-fresh-ink bg-brand-soft/30 outline-none data-[highlighted]:bg-brand-soft/60 mb-1"
+                >
+                  <Bike className="size-4" aria-hidden="true" /> Switch to Runner Mode
+                </Link>
+              </DropdownMenu.Item>
+            ) : (
+              <DropdownMenu.Item asChild>
+                <Link
+                  to="/app"
+                  id="menu-mode-switch-customer"
+                  className="flex h-10 items-center gap-2.5 rounded-tile px-3 text-sm font-medium text-ink bg-surface-2 outline-none data-[highlighted]:bg-surface-3 mb-1"
+                >
+                  <ShoppingBag className="size-4" aria-hidden="true" /> Switch to Customer Mode
+                </Link>
+              </DropdownMenu.Item>
+            )
+          )}
+
+          {/* Applicant & Suspended runner status notices in menu */}
+          {isApplicant && (
+            <div
+              id="menu-runner-pending-status"
+              className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-warning-ink bg-warning/10 rounded-tile mx-1 mb-1"
+            >
+              <Bike className="size-3.5 shrink-0 text-warning" aria-hidden="true" />
+              <span>Runner application pending</span>
+            </div>
+          )}
+          {isSuspended && (
+            <div
+              id="menu-runner-suspended-status"
+              className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-danger bg-danger/10 rounded-tile mx-1 mb-1"
+            >
+              <Bike className="size-3.5 shrink-0 text-danger" aria-hidden="true" />
+              <span>Runner privileges suspended</span>
+            </div>
+          )}
+
           {variant === 'customer' && (
             <DropdownMenu.Item asChild>
               <Link to="/app/profile" className="flex h-10 items-center gap-2.5 rounded-tile px-3 text-sm outline-none data-[highlighted]:bg-surface-2">
@@ -97,7 +189,7 @@ function AccountMenu({ user, variant }) {
               </Link>
             </DropdownMenu.Item>
           )}
-          {AREA_LINKS.filter((a) => a.variant !== variant && hasPermission(user, a.permission)).map(({ to, label, icon: Icon }) => (
+          {AREA_LINKS.filter((a) => a.variant !== variant && hasPermission(user, a.permission) && !(isApprovedRunner && (a.variant === 'runner' || a.variant === 'customer'))).map(({ to, label, icon: Icon }) => (
             <DropdownMenu.Item key={to} asChild>
               <Link to={to} className="flex h-10 items-center gap-2.5 rounded-tile px-3 text-sm outline-none data-[highlighted]:bg-surface-2">
                 <Icon className="size-4" aria-hidden="true" /> {label}

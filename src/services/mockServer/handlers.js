@@ -150,7 +150,7 @@ export function createMockServer({ routingProvider = null } = {}) {
         name: name.trim(),
         email: email.trim().toLowerCase(),
         phone: phone && typeof phone === 'string' ? phone.trim() : null,
-        roles: isRunner ? [ROLES.CUSTOMER, ROLES.RUNNER] : [ROLES.CUSTOMER],
+        roles: [ROLES.CUSTOMER],
         runnerStatus,
         defaultLocationId: null,
       }
@@ -164,6 +164,16 @@ export function createMockServer({ routingProvider = null } = {}) {
         user: publicUser(newUser),
         needsConfirmation: false,
       }
+    },
+    'auth.applyRunner': (_payload, { token }) => {
+      const user = requireUser(token)
+      if (user.runnerStatus === 'suspended') {
+        throw new ApiError('RUNNER_SUSPENDED', 'Runner privileges are suspended. Please contact platform administrators.', 403)
+      }
+      if (user.runnerStatus !== 'approved') {
+        user.runnerStatus = 'applicant'
+      }
+      return publicUser(user)
     },
     'auth.logout': (_payload, { token }) => {
       db.sessions.delete(token)
