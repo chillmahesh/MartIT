@@ -236,7 +236,7 @@ describe.skip('PENDING: Live PostgreSQL Concurrent Transaction Lock-Ordering Cyc
 
 describe('Authoritative payment verification trust contract', () => {
   const feeMigrationSql = fs.readFileSync(
-    path.resolve(process.cwd(), 'supabase/migrations/20261010000002_platform_fee_functions.sql'),
+    path.resolve(process.cwd(), 'supabase/migrations/20261022150000_require_authoritative_payment_verification.sql'),
     'utf8',
   )
   const ordersRouteCode = fs.readFileSync(
