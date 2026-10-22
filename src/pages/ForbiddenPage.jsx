@@ -28,6 +28,11 @@ export function ForbiddenPage({ role }) {
         <Button asChild>
           <Link to="/app">Go to shopping</Link>
         </Button>
+        {role === 'admin' && (
+          <Button asChild variant="outline">
+            <Link to="/admin/login">Admin login</Link>
+          </Button>
+        )}
         <Button asChild variant="secondary">
           <Link to="/">Home</Link>
         </Button>

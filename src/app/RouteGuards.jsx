@@ -29,7 +29,8 @@ export function RequireRole({ role }) {
 
   if (!token || !user) {
     const next = encodeURIComponent(location.pathname + location.search)
-    return <Navigate to={`/login?next=${next}`} replace />
+    const loginTarget = role === 'admin' ? `/admin/login?next=${next}` : `/login?next=${next}`
+    return <Navigate to={loginTarget} replace />
   }
   if (!hasPermission(user, AREA_PERMISSION[role])) return <ForbiddenPage role={role} />
   return <Outlet />

@@ -76,7 +76,7 @@ async function handleSignup(req, res, next) {
       throw ApiError.conflict('An account with this email already exists. Please log in instead.', 'DUPLICATE_EMAIL')
     }
 
-    const userId = `usr_${crypto.randomUUID().replace(/-/g, '').slice(0, 20)}`
+    const userId = crypto.randomUUID()
     const isRunner = cleanRole === ROLES.RUNNER
     const runnerStatus = isRunner ? 'applicant' : null
 
