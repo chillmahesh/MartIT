@@ -96,10 +96,10 @@ async function handleSignup(req, res, next) {
     }
 
     // 2. Insert assigned roles in user_roles table
+    // Non-escalatable: All new signups receive strictly the 'customer' role.
+    // Runner applicants receive runner_status = 'applicant' on their profile, but
+    // the active 'runner' role is only granted upon administrative approval.
     const assignedRoles = [ROLES.CUSTOMER]
-    if (isRunner) {
-      assignedRoles.push(ROLES.RUNNER)
-    }
 
     for (const r of assignedRoles) {
       await supabase.from('user_roles').insert({
@@ -141,12 +141,89 @@ async function handleSignup(req, res, next) {
   }
 }
 
+/**
+ * Runner Application endpoint for authenticated users.
+ * Persists runner_status = 'applicant' in the user's profile.
+ * Does NOT grant the active runner role (requires admin approval).
+ */
+async function handleApplyRunner(req, res, next) {
+  try {
+    const supabase = getSupabaseAdmin()
+    const userId = req.user.id
+
+    // Fetch existing profile
+    const { data: profile, error: profileErr } = await supabase
+      .from('profiles')
+      .select(`
+        id,
+        email,
+        name,
+        phone,
+        runner_status,
+        default_location_id,
+        user_roles (
+          role
+        )
+      `)
+      .eq('id', userId)
+      .maybeSingle()
+
+    if (profileErr || !profile) {
+      throw ApiError.notFound('User profile not found.', 'PROFILE_NOT_FOUND')
+    }
+
+    if (profile.runner_status === 'suspended') {
+      throw ApiError.forbidden(
+        'Runner privileges are suspended. Please contact platform administrators.',
+        'RUNNER_SUSPENDED'
+      )
+    }
+
+    let runnerStatus = profile.runner_status
+    if (runnerStatus !== 'approved') {
+      runnerStatus = 'applicant'
+      const { error: updateErr } = await supabase
+        .from('profiles')
+        .update({
+          runner_status: 'applicant',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', userId)
+
+      if (updateErr) {
+        throw ApiError.internal(`Failed to submit runner application: ${updateErr.message || 'Database error'}`)
+      }
+    }
+
+    const currentRoles = (profile.user_roles || []).map((r) => r.role)
+    const roles = currentRoles.length > 0 ? currentRoles : [ROLES.CUSTOMER]
+
+    return res.status(200).json({
+      id: profile.id,
+      name: profile.name,
+      email: profile.email,
+      phone: profile.phone || undefined,
+      roles,
+      runnerStatus,
+      defaultLocationId: profile.default_location_id,
+      message:
+        runnerStatus === 'approved'
+          ? 'Runner account is already approved.'
+          : 'Runner application submitted and pending review.',
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
 // REST routes
 authRouter.get('/api/v1/auth/me', authenticate, handleMe)
 authRouter.post('/api/v1/auth/signup', handleSignup)
 authRouter.post('/api/v1/auth/register', handleSignup)
+authRouter.post('/api/v1/auth/apply-runner', authenticate, handleApplyRunner)
 
-// RPC routes (for frontend api.js request('auth.me'), request('auth.signup'))
+// RPC routes (for frontend api.js request('auth.me'), request('auth.signup'), request('auth.applyRunner'))
 authRouter.post('/auth/me', authenticate, handleMe)
 authRouter.post('/auth/signup', handleSignup)
 authRouter.post('/auth/register', handleSignup)
+authRouter.post('/auth/applyRunner', authenticate, handleApplyRunner)

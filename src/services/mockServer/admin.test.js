@@ -76,4 +76,67 @@ describe('admin endpoints', () => {
     await expect(server.handle('admin.users.list', {}, { token: adminToken })).resolves.toBeTruthy()
     await expect(server.handle('admin.roles.set', { userId: 'u_customer_1', role: 'super_admin', granted: true }, { token: adminToken })).rejects.toMatchObject({ code: 'FORBIDDEN' })
   })
+
+  it('runner signup creates an applicant with only customer role until approved', async () => {
+    const signupRes = await server.handle('auth.signup', {
+      name: 'Applicant Jane',
+      email: 'jane.applicant@campus.edu',
+      password: 'password123',
+      role: 'runner',
+    })
+
+    expect(signupRes.user.roles).toEqual(['customer'])
+    expect(signupRes.user.runnerStatus).toBe('applicant')
+    expect(signupRes.user.roles).not.toContain('runner')
+
+    // Applicant cannot access delivery endpoints
+    await expect(
+      server.handle('runner.orders.assigned', {}, { token: signupRes.token })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' })
+
+    // Applicant appears in the admin user list
+    const adminToken = await login('super_admin')
+    const users = await server.handle('admin.users.list', {}, { token: adminToken })
+    const applicantUser = users.find((u) => u.email === 'jane.applicant@campus.edu')
+    expect(applicantUser).toBeDefined()
+    expect(applicantUser.runnerStatus).toBe('applicant')
+    expect(applicantUser.roles).toEqual(['customer'])
+
+    // Admin approves applicant
+    const approved = await server.handle(
+      'admin.runners.setStatus',
+      { userId: applicantUser.id, status: 'approved' },
+      { token: adminToken }
+    )
+    expect(approved.runnerStatus).toBe('approved')
+    expect(approved.roles).toContain('customer')
+    expect(approved.roles).toContain('runner')
+
+    // Dual-role user can now access runner endpoints
+    const runnerOrders = await server.handle(
+      'runner.orders.assigned',
+      {},
+      { token: signupRes.token }
+    )
+    expect(Array.isArray(runnerOrders)).toBe(true)
+
+    // Admin suspends runner
+    const suspended = await server.handle(
+      'admin.runners.setStatus',
+      { userId: applicantUser.id, status: 'suspended' },
+      { token: adminToken }
+    )
+    expect(suspended.runnerStatus).toBe('suspended')
+    expect(suspended.roles).not.toContain('runner')
+    expect(suspended.roles).toContain('customer')
+
+    // Suspended runner is blocked from delivery endpoints
+    await expect(
+      server.handle('runner.orders.assigned', {}, { token: signupRes.token })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' })
+
+    // But customer shopping remains intact
+    const me = await server.handle('auth.me', {}, { token: signupRes.token })
+    expect(me.roles).toContain('customer')
+  })
 })

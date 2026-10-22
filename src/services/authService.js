@@ -121,12 +121,48 @@ export const authService = {
 
     // If confirmation is required, session will be null
     const needsConfirmation = !data?.session
+
     return {
       session: data?.session || null,
       authUser: data?.user || null,
       needsConfirmation,
+      role: cleanRole,
     }
   },
+
+  /**
+   * Submits a runner application for the currently authenticated user.
+   * In remote mode: calls supabase.rpc('apply_for_runner') using the authenticated user's session.
+   * Refreshes authoritative user profile via authService.me() after applying.
+   */
+  async applyRunner() {
+    if (isMockBackend) {
+      await request('auth.applyRunner')
+      return this.me()
+    }
+
+    const supabase = getSupabaseClient()
+    if (!supabase) {
+      throw new ApiError('CONFIG_ERROR', 'Supabase client is not configured.', 500)
+    }
+
+    const { error } = await supabase.rpc('apply_for_runner')
+    if (error) {
+      // If direct RPC returns an error, attempt trusted backend endpoint fallback
+      try {
+        await request('auth.applyRunner')
+      } catch (backendErr) {
+        throw new ApiError(
+          error.code || backendErr.code || 'APPLY_RUNNER_FAILED',
+          error.message || backendErr.message || 'Failed to submit runner application. Please try again.',
+          error.status || backendErr.status || 400
+        )
+      }
+    }
+
+    return this.me()
+  },
+
 
   /**
    * Signs out current user session.

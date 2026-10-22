@@ -529,11 +529,11 @@ describe('Signup & Role Selection Enforcement in Auth Store', () => {
   })
 
   it('signs up runner and hydrates runner applicant profile', async () => {
-    const mockRunner = {
+    const mockApplicant = {
       id: 'usr_new_run',
       email: 'runner@campus.edu',
       name: 'Bob Runner',
-      roles: ['customer', 'runner'],
+      roles: ['customer'],
       runnerStatus: 'applicant',
     }
     const mockSession = { access_token: 'jwt_runner_token' }
@@ -543,7 +543,8 @@ describe('Signup & Role Selection Enforcement in Auth Store', () => {
       authUser: { id: 'usr_new_run', email: 'runner@campus.edu' },
       needsConfirmation: false,
     })
-    vi.spyOn(authService, 'me').mockResolvedValue(mockRunner)
+    vi.spyOn(authService, 'applyRunner').mockResolvedValue(mockApplicant)
+    vi.spyOn(authService, 'me').mockResolvedValue(mockApplicant)
 
     const result = await useAuthStore.getState().signup('runner@campus.edu', 'secret123', {
       name: 'Bob Runner',
@@ -551,9 +552,68 @@ describe('Signup & Role Selection Enforcement in Auth Store', () => {
       role: 'runner',
     })
 
-    expect(result.user).toEqual(mockRunner)
+    expect(result.user).toEqual(mockApplicant)
     expect(useAuthStore.getState().user.runnerStatus).toBe('applicant')
-    expect(useAuthStore.getState().hasRole('runner')).toBe(true)
+    expect(useAuthStore.getState().hasRole('customer')).toBe(true)
+    expect(useAuthStore.getState().hasRole('runner')).toBe(false)
+  })
+
+  it('propagates errors when runner application fails during signup', async () => {
+    const mockSession = { access_token: 'jwt_runner_token' }
+
+    vi.spyOn(authService, 'signup').mockResolvedValue({
+      session: mockSession,
+      authUser: { id: 'usr_new_run', email: 'runner@campus.edu' },
+      needsConfirmation: false,
+    })
+    vi.spyOn(authService, 'applyRunner').mockRejectedValue(
+      new Error('Failed to submit runner application: Database error')
+    )
+
+    await expect(
+      useAuthStore.getState().signup('runner@campus.edu', 'secret123', {
+        name: 'Bob Runner',
+        phone: '9876543210',
+        role: 'runner',
+      })
+    ).rejects.toThrow('Failed to submit runner application: Database error')
+  })
+
+  it('submits runner application after login if email confirmation was required during signup', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const mockSession = { access_token: 'jwt_confirmed_token' }
+    const authUser = {
+      id: 'usr_confirmed_run',
+      email: 'runner@campus.edu',
+      user_metadata: { role: 'runner' },
+    }
+    const initialCustomerProfile = {
+      id: 'usr_confirmed_run',
+      email: 'runner@campus.edu',
+      name: 'Bob Runner',
+      roles: ['customer'],
+      runnerStatus: null,
+    }
+    const updatedApplicantProfile = {
+      ...initialCustomerProfile,
+      runnerStatus: 'applicant',
+    }
+
+    vi.spyOn(authService, 'login').mockResolvedValue({
+      session: mockSession,
+      authUser,
+    })
+    const meSpy = vi.spyOn(authService, 'me')
+      .mockResolvedValueOnce(initialCustomerProfile)
+      .mockResolvedValueOnce(updatedApplicantProfile)
+    const applySpy = vi.spyOn(authService, 'applyRunner').mockResolvedValue(updatedApplicantProfile)
+
+    const user = await useAuthStore.getState().login('runner@campus.edu', 'secret123')
+
+    expect(applySpy).toHaveBeenCalledTimes(1)
+    expect(user.runnerStatus).toBe('applicant')
+    expect(user.roles).toEqual(['customer'])
+    expect(useAuthStore.getState().hasRole('runner')).toBe(false)
   })
 
   it('rejects attempted admin signup and prevents privilege escalation', async () => {

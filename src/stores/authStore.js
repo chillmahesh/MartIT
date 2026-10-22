@@ -66,7 +66,14 @@ export const useAuthStore = create(
             if (!isRecoveryPath && !get().isPasswordRecovery) {
               // Authoritative profile & role hydration from backend
               try {
-                const profileUser = await authService.me()
+                let profileUser = await authService.me()
+                if (
+                  session?.user?.user_metadata?.role === 'runner' &&
+                  profileUser?.runnerStatus == null
+                ) {
+                  await authService.applyRunner()
+                  profileUser = await authService.me()
+                }
                 set({ user: profileUser })
               } catch (err) {
                 if (
@@ -114,7 +121,14 @@ export const useAuthStore = create(
                 set({ session: newSession, token: newSession.access_token })
                 if (event === 'SIGNED_IN' || !get().user) {
                   try {
-                    const profileUser = await authService.me()
+                    let profileUser = await authService.me()
+                    if (
+                      newSession?.user?.user_metadata?.role === 'runner' &&
+                      profileUser?.runnerStatus == null
+                    ) {
+                      await authService.applyRunner()
+                      profileUser = await authService.me()
+                    }
                     set({ user: profileUser })
                   } catch {
                     // Handled by 401 interceptor
@@ -162,7 +176,18 @@ export const useAuthStore = create(
 
         // Stage 2: Authoritative profile & role hydration from backend
         try {
-          const profileUser = await authService.me()
+          let profileUser = await authService.me()
+          if (
+            authResult?.authUser?.user_metadata?.role === 'runner' &&
+            profileUser?.runnerStatus == null
+          ) {
+            try {
+              await authService.applyRunner()
+              profileUser = await authService.me()
+            } catch {
+              // ignore
+            }
+          }
           set({ user: profileUser })
           return profileUser
         } catch (hydrationErr) {
@@ -213,11 +238,23 @@ export const useAuthStore = create(
         const result = await authService.signup(email, password, metadata)
         if (result.session) {
           set({ session: result.session, token: result.session.access_token })
+          if (metadata?.role === 'runner') {
+            await authService.applyRunner()
+          }
           const profileUser = await authService.me()
           set({ user: profileUser })
           return { user: profileUser, needsConfirmation: false }
         }
         return { user: result.authUser, needsConfirmation: result.needsConfirmation }
+      },
+
+      /**
+       * Submits runner application for current user and updates local user state.
+       */
+      async applyForRunner() {
+        const updated = await authService.applyRunner()
+        set({ user: updated })
+        return updated
       },
 
       /**
