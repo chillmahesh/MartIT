@@ -483,3 +483,92 @@ describe('Auth Store & Session Lifecycle', () => {
     expect(useAuthStore.getState().hasRole('customer')).toBe(true)
   })
 })
+
+describe('Signup & Role Selection Enforcement in Auth Store', () => {
+  beforeEach(() => {
+    resetAuthSubscriptionForTesting()
+    useAuthStore.setState({
+      token: null,
+      session: null,
+      user: null,
+      isInitialized: true,
+      configError: null,
+    })
+    vi.restoreAllMocks()
+  })
+
+  it('signs up customer and hydrates customer profile', async () => {
+    const mockUser = {
+      id: 'usr_new_cust',
+      email: 'customer@campus.edu',
+      name: 'Alice Customer',
+      roles: ['customer'],
+      runnerStatus: null,
+    }
+    const mockSession = { access_token: 'jwt_cust_token' }
+
+    vi.spyOn(authService, 'signup').mockResolvedValue({
+      session: mockSession,
+      authUser: { id: 'usr_new_cust', email: 'customer@campus.edu' },
+      needsConfirmation: false,
+    })
+    vi.spyOn(authService, 'me').mockResolvedValue(mockUser)
+
+    const result = await useAuthStore.getState().signup('customer@campus.edu', 'secret123', {
+      name: 'Alice Customer',
+      phone: '9876543210',
+      role: 'customer',
+    })
+
+    expect(result.needsConfirmation).toBe(false)
+    expect(result.user).toEqual(mockUser)
+    expect(useAuthStore.getState().token).toBe('jwt_cust_token')
+    expect(useAuthStore.getState().user).toEqual(mockUser)
+    expect(useAuthStore.getState().hasRole('customer')).toBe(true)
+    expect(useAuthStore.getState().hasRole('runner')).toBe(false)
+  })
+
+  it('signs up runner and hydrates runner applicant profile', async () => {
+    const mockRunner = {
+      id: 'usr_new_run',
+      email: 'runner@campus.edu',
+      name: 'Bob Runner',
+      roles: ['customer', 'runner'],
+      runnerStatus: 'applicant',
+    }
+    const mockSession = { access_token: 'jwt_runner_token' }
+
+    vi.spyOn(authService, 'signup').mockResolvedValue({
+      session: mockSession,
+      authUser: { id: 'usr_new_run', email: 'runner@campus.edu' },
+      needsConfirmation: false,
+    })
+    vi.spyOn(authService, 'me').mockResolvedValue(mockRunner)
+
+    const result = await useAuthStore.getState().signup('runner@campus.edu', 'secret123', {
+      name: 'Bob Runner',
+      phone: '9876543210',
+      role: 'runner',
+    })
+
+    expect(result.user).toEqual(mockRunner)
+    expect(useAuthStore.getState().user.runnerStatus).toBe('applicant')
+    expect(useAuthStore.getState().hasRole('runner')).toBe(true)
+  })
+
+  it('rejects attempted admin signup and prevents privilege escalation', async () => {
+    vi.spyOn(authService, 'signup').mockRejectedValue(
+      new Error('Public registration cannot assign administrative roles.')
+    )
+
+    await expect(
+      useAuthStore.getState().signup('hacker@campus.edu', 'secret123', {
+        name: 'Hacker',
+        role: 'admin',
+      })
+    ).rejects.toThrow('Public registration cannot assign administrative roles.')
+
+    expect(useAuthStore.getState().user).toBeNull()
+    expect(useAuthStore.getState().token).toBeNull()
+  })
+})

@@ -113,6 +113,58 @@ export function createMockServer({ routingProvider = null } = {}) {
       db.sessions.set(token, user.id)
       return { token, user: publicUser(user) }
     },
+    'auth.signup': ({ email, password, name, phone, role = 'customer' }) => {
+      if (!name || typeof name !== 'string' || name.trim().length < 2) {
+        throw new ApiError('INVALID_NAME', 'Please enter your full name (minimum 2 characters).', 400)
+      }
+      if (!email || typeof email !== 'string' || !email.includes('@')) {
+        throw new ApiError('INVALID_EMAIL', 'Please enter a valid campus or personal email address.', 400)
+      }
+      if (!password || typeof password !== 'string' || password.length < 8) {
+        throw new ApiError('INVALID_PASSWORD', 'Password must be at least 8 characters long.', 400)
+      }
+
+      if (!role || typeof role !== 'string') {
+        throw new ApiError('INVALID_ROLE', 'Valid role selection (customer or runner) is required.', 400)
+      }
+
+      const cleanRole = role.toLowerCase().trim()
+      if (cleanRole === ROLES.ADMIN || cleanRole === ROLES.SUPER_ADMIN || cleanRole.includes('admin')) {
+        throw new ApiError('PRIVILEGE_ESCALATION_FORBIDDEN', 'Public registration cannot assign administrative roles.', 403)
+      }
+
+      if (cleanRole !== ROLES.CUSTOMER && cleanRole !== ROLES.RUNNER) {
+        throw new ApiError('INVALID_ROLE', 'Valid role selection (customer or runner) is required.', 400)
+      }
+
+      const existing = db.users.find((u) => u.email.toLowerCase() === email.trim().toLowerCase())
+      if (existing) {
+        throw new ApiError('DUPLICATE_EMAIL', 'An account with this email already exists. Please log in instead.', 409)
+      }
+
+      const id = newId('usr')
+      const isRunner = cleanRole === ROLES.RUNNER
+      const runnerStatus = isRunner ? 'applicant' : null
+      const newUser = {
+        id,
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        phone: phone && typeof phone === 'string' ? phone.trim() : null,
+        roles: isRunner ? [ROLES.CUSTOMER, ROLES.RUNNER] : [ROLES.CUSTOMER],
+        runnerStatus,
+        defaultLocationId: null,
+      }
+      db.users.push(newUser)
+
+      const token = newId('tok')
+      db.sessions.set(token, newUser.id)
+      return {
+        token,
+        session: { access_token: token, user: { id: newUser.id, email: newUser.email } },
+        user: publicUser(newUser),
+        needsConfirmation: false,
+      }
+    },
     'auth.logout': (_payload, { token }) => {
       db.sessions.delete(token)
       return { ok: true }

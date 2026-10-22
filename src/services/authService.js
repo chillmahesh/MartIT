@@ -59,18 +59,29 @@ export const authService = {
 
   /**
    * Email/password sign-up.
-   * In remote mode: registers with Supabase Auth with metadata (name, phone).
-   * Handled safely: client metadata is never trusted for roles or permissions.
+   * Supports customer and runner role selection.
+   * Strictly enforces that administrative roles cannot be requested via public signup.
    */
-  async signup(email, password, { name, phone = '' } = {}) {
+  async signup(email, password, { name, phone = '', role = 'customer' } = {}) {
+    if (!role || typeof role !== 'string') {
+      throw new ApiError('INVALID_ROLE', 'Valid role selection (customer or runner) is required.', 400)
+    }
+
+    const cleanRole = role.toLowerCase().trim()
+    if (cleanRole === 'admin' || cleanRole === 'super_admin' || cleanRole.includes('admin')) {
+      throw new ApiError(
+        'PRIVILEGE_ESCALATION_FORBIDDEN',
+        'Public registration cannot assign administrative roles.',
+        403
+      )
+    }
+
+    if (cleanRole !== 'customer' && cleanRole !== 'runner') {
+      throw new ApiError('INVALID_ROLE', 'Valid role selection (customer or runner) is required.', 400)
+    }
+
     if (isMockBackend) {
-      return request('auth.signup', { email, password, name, phone }).catch(() => {
-        return {
-          user: { id: 'usr_new', name, email, roles: ['customer'] },
-          session: null,
-          needsConfirmation: false,
-        }
-      })
+      return request('auth.signup', { email, password, name, phone, role: cleanRole })
     }
 
     const supabase = getSupabaseClient()
@@ -81,6 +92,7 @@ export const authService = {
         data: {
           name: name?.trim() || '',
           ...(phone ? { phone: phone.trim() } : {}),
+          role: cleanRole,
         },
       },
     })

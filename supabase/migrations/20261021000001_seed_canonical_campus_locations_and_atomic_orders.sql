@@ -13,13 +13,7 @@ INSERT INTO public.locations (id, name, group_name, latitude, longitude, is_acti
   ('loc_faculty', 'Faculty Quarters', 'Residential', 12.995000, 77.590000, true),
   ('loc_far_gate', 'North Gate PG', 'Off-campus', 13.007000, 77.590000, true),
   ('loc_outside', 'City PG (outside area)', 'Off-campus', 13.020000, 77.590000, true)
-ON CONFLICT (id) DO UPDATE SET
-  name = EXCLUDED.name,
-  group_name = EXCLUDED.group_name,
-  latitude = EXCLUDED.latitude,
-  longitude = EXCLUDED.longitude,
-  is_active = EXCLUDED.is_active,
-  updated_at = NOW();
+ON CONFLICT (id) DO NOTHING;
 
 -- ============================================================================
 -- 2. ATOMIC ORDER CREATION RPC
@@ -139,11 +133,11 @@ BEGIN
   -- Uses FOR UPDATE SKIP LOCKED to prevent concurrent orders from acquiring the same slot.
   -- The slot reservation UPDATE is deferred until after parent order insertion to strictly
   -- satisfy the immediate foreign-key constraint on platform_fee_reservations.active_order_id.
-  SELECT fee_paise INTO v_fee_paise
-  FROM public.platform_fee_reservations
-  WHERE (active_order_id IS NULL OR v_now >= cooldown_expires_at)
-    AND is_paid = FALSE
-  ORDER BY fee_paise ASC
+  SELECT pfr.fee_paise INTO v_fee_paise
+  FROM public.platform_fee_reservations pfr
+  WHERE (pfr.active_order_id IS NULL OR v_now >= pfr.cooldown_expires_at)
+    AND pfr.is_paid = FALSE
+  ORDER BY pfr.fee_paise ASC
   LIMIT 1
   FOR UPDATE SKIP LOCKED;
 
@@ -155,11 +149,47 @@ BEGIN
   v_platform_fee := round((v_fee_paise::numeric / 100.0), 2);
 
   -- 6. Lock and Validate Products, Decrement Stock
-  FOR v_item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, quantity INTEGER)
+  -- Pre-validate items: reject missing product IDs and non-positive/fractional/overflow quantities
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, "productId" VARCHAR, quantity NUMERIC)
+    WHERE COALESCE(x.product_id, x."productId") IS NULL
+       OR trim(COALESCE(x.product_id, x."productId")) = ''
+  ) THEN
+    RAISE EXCEPTION 'INVALID_LINE_ITEM' USING HINT = 'Valid product ID is required.';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, "productId" VARCHAR, quantity NUMERIC)
+    WHERE x.quantity IS NULL
+       OR x.quantity <= 0
+       OR x.quantity <> trunc(x.quantity)
+       OR x.quantity > 2147483647
+  ) THEN
+    RAISE EXCEPTION 'INVALID_QUANTITY' USING HINT = 'Quantity must be a positive integer within schema limits.';
+  END IF;
+
+  -- Validate aggregate quantities across duplicate lines before cast
+  IF EXISTS (
+    SELECT 1
+    FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, "productId" VARCHAR, quantity NUMERIC)
+    GROUP BY COALESCE(x.product_id, x."productId")
+    HAVING SUM(x.quantity) > 2147483647
+  ) THEN
+    RAISE EXCEPTION 'INVALID_QUANTITY' USING HINT = 'Aggregate product quantity exceeds maximum allowable limit.';
+  END IF;
+
+  -- Lock products deterministically by product_id ASC to eliminate cyclic deadlock risk (SQLSTATE 40P01)
+  -- Consolidate duplicate product lines via SUM(quantity)
+  FOR v_item IN
+    SELECT
+      COALESCE(x.product_id, x."productId") AS product_id,
+      SUM(x.quantity)::INTEGER AS quantity
+    FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, "productId" VARCHAR, quantity NUMERIC)
+    GROUP BY COALESCE(x.product_id, x."productId")
+    ORDER BY COALESCE(x.product_id, x."productId") ASC
   LOOP
-    IF v_item.quantity IS NULL OR v_item.quantity <= 0 THEN
-      RAISE EXCEPTION 'INVALID_QUANTITY' USING HINT = 'Quantity must be positive.';
-    END IF;
 
     SELECT id, name, pack, price, stock, is_available
     INTO v_prod
@@ -175,6 +205,12 @@ BEGIN
     IF v_prod.stock < v_item.quantity THEN
       RAISE EXCEPTION 'OUT_OF_STOCK'
         USING HINT = 'Insufficient stock for product ' || v_prod.name;
+    END IF;
+
+    -- Protect financial subtotal against NUMERIC(10, 2) overflow (max 99999999.99)
+    IF (v_subtotal + round((v_prod.price * v_item.quantity), 2)) > 99999999.99 THEN
+      RAISE EXCEPTION 'ORDER_TOTAL_EXCEEDED'
+        USING HINT = 'Order subtotal exceeds allowable maximum.';
     END IF;
 
     -- Decrement product stock
@@ -253,7 +289,14 @@ BEGIN
 
   -- 10. Insert Order Items & Record Inventory Reservations
   -- Now that the parent order exists, inventory_reservations and order_items can safely reference it.
-  FOR v_item IN SELECT * FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, quantity INTEGER)
+  -- Uses the exact same deterministic consolidation and ordering as Step 6.
+  FOR v_item IN
+    SELECT
+      COALESCE(x.product_id, x."productId") AS product_id,
+      SUM(x.quantity)::INTEGER AS quantity
+    FROM jsonb_to_recordset(p_items) AS x(product_id VARCHAR, "productId" VARCHAR, quantity NUMERIC)
+    GROUP BY COALESCE(x.product_id, x."productId")
+    ORDER BY COALESCE(x.product_id, x."productId") ASC
   LOOP
     SELECT id, name, pack, price INTO v_prod
     FROM public.products
@@ -299,3 +342,116 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION create_order_atomic(VARCHAR, UUID, VARCHAR, VARCHAR, JSONB, JSONB, NUMERIC, VARCHAR, NUMERIC, VARCHAR, INTEGER, INTEGER, INTEGER) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION create_order_atomic(VARCHAR, UUID, VARCHAR, VARCHAR, JSONB, JSONB, NUMERIC, VARCHAR, NUMERIC, VARCHAR, INTEGER, INTEGER, INTEGER) TO service_role;
+
+-- ============================================================================
+-- 3. HARDENED INVENTORY RELEASE FUNCTION
+-- Concurrency-safe: eliminates lock-ordering cycles with create_order_atomic()
+-- by acquiring product locks in strict deterministic ascending order (product_id ASC).
+-- Prevents double-restoration via row-level locking on HELD reservations.
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION release_order_inventory(p_order_id VARCHAR(64))
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  res RECORD;
+  v_stock INTEGER;
+  v_payment_status payment_status_enum;
+  v_now TIMESTAMPTZ := NOW();
+BEGIN
+  -- 1. Exclusively lock the parent order row as the shared serialization point.
+  -- This coordinates with mark_platform_fee_paid() and expire_order_payment(),
+  -- which both acquire FOR UPDATE on public.orders(id = p_order_id) first.
+  SELECT payment_status INTO v_payment_status
+  FROM public.orders
+  WHERE id = p_order_id
+  FOR UPDATE;
+
+  IF v_payment_status IS NULL THEN
+    RAISE EXCEPTION 'ORDER_NOT_FOUND'
+      USING HINT = 'No order found with the specified identifier.';
+  END IF;
+
+  -- Guard: A paid or confirmed order can NEVER have its inventory released
+  IF v_payment_status = 'PAID' THEN
+    RAISE EXCEPTION 'CANNOT_RELEASE_PAID_ORDER'
+      USING HINT = 'Cannot release inventory for an order that is already paid.';
+  END IF;
+
+  -- 2. Exclusively lock all HELD reservation rows for this order.
+  -- Serializes concurrent calls to release_order_inventory or expire_order_payment.
+  -- If reservations were already COMMITTED or RELEASED, this locks 0 rows.
+  PERFORM 1
+  FROM public.inventory_reservations
+  WHERE order_id = p_order_id AND status = 'HELD'
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    -- Idempotent exit: no active holds to release (already released or committed to paid order)
+    RETURN TRUE;
+  END IF;
+
+  -- 3. Aggregate duplicate reservation lines per product and iterate in strict ascending order.
+  -- Deterministic product locking eliminates cyclic deadlock risk (SQLSTATE 40P01) with checkout.
+  FOR res IN
+    SELECT
+      product_id,
+      store_id,
+      SUM(quantity)::BIGINT AS total_quantity
+    FROM public.inventory_reservations
+    WHERE order_id = p_order_id AND status = 'HELD'
+    GROUP BY product_id, store_id
+    ORDER BY product_id ASC
+  LOOP
+    IF res.total_quantity > 2147483647 THEN
+      RAISE EXCEPTION 'INVALID_QUANTITY'
+        USING HINT = 'Aggregate reservation quantity exceeds maximum allowable limit.';
+    END IF;
+
+    -- Explicitly lock product row in deterministic ascending order before updating stock
+    SELECT stock INTO v_stock
+    FROM public.products
+    WHERE id = res.product_id AND store_id = res.store_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'PRODUCT_NOT_FOUND'
+        USING HINT = 'Product ' || res.product_id || ' in store ' || res.store_id || ' not found during inventory release.';
+    END IF;
+
+    -- Overflow guard for stock restoration
+    IF (v_stock::BIGINT + res.total_quantity) > 2147483647 THEN
+      RAISE EXCEPTION 'STOCK_OVERFLOW'
+        USING HINT = 'Restoring stock for product ' || res.product_id || ' exceeds integer limit.';
+    END IF;
+
+    -- Restore product stock atomically
+    UPDATE public.products
+    SET stock = stock + res.total_quantity::INTEGER, updated_at = v_now
+    WHERE id = res.product_id AND store_id = res.store_id;
+
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'STOCK_RESTORE_FAILED'
+        USING HINT = 'Failed to update stock for product ' || res.product_id || ' in store ' || res.store_id || '.';
+    END IF;
+  END LOOP;
+
+  -- 4. Transition all HELD reservations for this order to RELEASED
+  UPDATE public.inventory_reservations
+  SET status = 'RELEASED', released_at = v_now
+  WHERE order_id = p_order_id AND status = 'HELD';
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'RESERVATION_UPDATE_FAILED'
+      USING HINT = 'Failed to update inventory reservation status to RELEASED.';
+  END IF;
+
+  RETURN TRUE;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION release_order_inventory(VARCHAR) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION release_order_inventory(VARCHAR) TO service_role;

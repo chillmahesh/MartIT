@@ -563,4 +563,31 @@ BEGIN
 END;
 $$;
 
+-- ------------------------------------------------------------------------------
+-- TEST 12: Dynamic Platform Fee Allocation Execution
+-- allocate_platform_fee must execute cleanly without ambiguous column reference errors
+-- ------------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_rec RECORD;
+BEGIN
+  -- Perform allocate_platform_fee as service_role/superuser
+  SELECT * INTO v_rec
+  FROM public.allocate_platform_fee('ord_alloc_test_1', 'att_alloc_test_1', 120, 300);
+
+  IF v_rec.allocated_fee_paise IS NULL OR v_rec.allocated_fee_paise < 1 OR v_rec.allocated_fee_paise > 99 THEN
+    RAISE EXCEPTION 'FEE ALLOC FAIL: allocate_platform_fee returned invalid paise: %', v_rec.allocated_fee_paise;
+  END IF;
+
+  IF v_rec.cooldown_expires_at IS NULL THEN
+    RAISE EXCEPTION 'FEE ALLOC FAIL: allocate_platform_fee returned null cooldown_expires_at';
+  END IF;
+
+  -- Clean up by releasing the slot
+  PERFORM public.release_platform_fee('ord_alloc_test_1');
+
+  RAISE NOTICE '✓ TEST 12 PASSED: allocate_platform_fee executed without column ambiguity.';
+END;
+$$;
+
 ROLLBACK;

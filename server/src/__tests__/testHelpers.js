@@ -15,6 +15,7 @@ export function createMockSupabaseClient({
   orders = [],
   platform_fee_reservations = [],
   payment_records = [],
+  inventory_reservations = [],
 } = {}) {
   const state = {
     users: structuredClone(users),
@@ -27,6 +28,7 @@ export function createMockSupabaseClient({
     orders: structuredClone(orders),
     platform_fee_reservations: structuredClone(platform_fee_reservations),
     payment_records: structuredClone(payment_records),
+    inventory_reservations: structuredClone(inventory_reservations),
   }
 
   const client = {
@@ -245,6 +247,188 @@ export function createMockSupabaseClient({
         return { data: null, error: typeof errVal === 'string' ? { message: errVal } : errVal }
       }
 
+      if (fn === 'create_order_atomic') {
+        if (state.rpcErrors?.create_order_atomic || state.rpcErrors?.allocate_platform_fee || state.rpcErrors?.reserve_order_inventory) {
+          const errVal = state.rpcErrors.create_order_atomic || state.rpcErrors.allocate_platform_fee || state.rpcErrors.reserve_order_inventory
+          return { data: null, error: typeof errVal === 'string' ? { message: errVal } : errVal }
+        }
+        if (state.tableErrors?.orders || state.tableErrors?.order_fulfillment_groups || state.tableErrors?.order_items) {
+          return { data: null, error: { message: 'synthetic table error' } }
+        }
+
+        const orderId = args?.p_order_id
+        const customerId = args?.p_customer_id
+        const idempotencyKey = args?.p_idempotency_key
+        const now = Date.now()
+        const nowIso = new Date(now).toISOString()
+        const windowExp = new Date(now + 120000).toISOString()
+        const cooldownExp = new Date(now + 420000).toISOString()
+        const deliveryFee = Number(args?.p_delivery_fee ?? 10)
+
+        // Idempotency Check
+        const existingOrder = (state.orders || []).find(
+          (o) => (idempotencyKey && o.idempotency_key === idempotencyKey) || o.id === orderId
+        )
+        if (existingOrder) {
+          if (existingOrder.customer_id && existingOrder.customer_id !== customerId) {
+            return { data: null, error: { message: 'IDEMPOTENCY_CONFLICT' } }
+          }
+          return {
+            data: {
+              orderId: existingOrder.id,
+              id: existingOrder.id,
+              customerId: existingOrder.customer_id,
+              status: existingOrder.status,
+              paymentStatus: existingOrder.payment_status,
+              feePaise: existingOrder.fee_paise,
+              itemSubtotal: Number(existingOrder.item_subtotal),
+              deliveryFee: Number(existingOrder.combined_delivery_fee),
+              baseAmount: Number(existingOrder.base_amount),
+              platformFee: Number(existingOrder.platform_fee),
+              totalPayable: Number(existingOrder.total_payable),
+              isIdempotentHit: true,
+            },
+            error: null,
+          }
+        }
+
+        // Validate products, aggregate duplicate items, and deduct stock deterministically
+        let subtotal = 0
+        const items = args?.p_items || []
+
+        // Pre-validate individual items
+        for (const item of items) {
+          const pid = item.product_id || item.productId
+          const qty = item.quantity
+          if (!pid || typeof pid !== 'string' || !pid.trim()) {
+            return { data: null, error: { message: 'INVALID_LINE_ITEM' } }
+          }
+          if (typeof qty !== 'number' || !Number.isInteger(qty) || qty <= 0 || qty > 2147483647) {
+            return { data: null, error: { message: 'INVALID_QUANTITY' } }
+          }
+        }
+
+        // Aggregate duplicates and sort deterministically by product ID
+        const aggregatedMap = new Map()
+        for (const item of items) {
+          const pid = item.product_id || item.productId
+          const current = aggregatedMap.get(pid) || 0
+          const next = current + item.quantity
+          if (next > 2147483647) {
+            return { data: null, error: { message: 'INVALID_QUANTITY' } }
+          }
+          aggregatedMap.set(pid, next)
+        }
+
+        const sortedProductIds = Array.from(aggregatedMap.keys()).sort((a, b) => a.localeCompare(b))
+        for (const pid of sortedProductIds) {
+          const qty = aggregatedMap.get(pid)
+          const prod = (state.products || []).find((p) => p.id === pid)
+          if (!prod || !prod.is_available) {
+            return { data: null, error: { message: 'PRODUCT_UNAVAILABLE' } }
+          }
+          if (prod.stock < qty) {
+            return { data: null, error: { message: 'OUT_OF_STOCK' } }
+          }
+          const lineCost = Math.round(Number(prod.price) * qty * 100) / 100
+          if (lineCost > 99999999.99 || (subtotal + lineCost) > 99999999.99) {
+            return { data: null, error: { message: 'ORDER_TOTAL_EXCEEDED' } }
+          }
+          prod.stock -= qty
+          subtotal += lineCost
+        }
+        subtotal = Math.round(subtotal * 100) / 100
+        const baseAmount = Math.round(subtotal + deliveryFee)
+
+        // Find available platform fee slot
+        let slot = (state.platform_fee_reservations || []).find(
+          (r) => !r.is_paid && (!r.active_order_id || (r.cooldown_expires_at && now >= new Date(r.cooldown_expires_at).getTime()))
+        )
+        if (!slot) {
+          if (!state.platform_fee_reservations || state.platform_fee_reservations.length === 0) {
+            slot = { fee_paise: 12, is_paid: false }
+            state.platform_fee_reservations = [slot]
+          } else {
+            return { data: null, error: { message: 'ALL_PLATFORM_FEE_SLOTS_BUSY' } }
+          }
+        }
+        const feePaise = slot.fee_paise
+        const attemptId = `att_${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`
+        slot.active_order_id = orderId
+        slot.attempt_id = attemptId
+        slot.allocated_at = nowIso
+        slot.window_expires_at = windowExp
+        slot.cooldown_expires_at = cooldownExp
+        slot.is_paid = false
+        slot.paid_at = null
+
+        const platformFee = Math.round(feePaise) / 100
+        const totalPayable = baseAmount + platformFee
+
+        // Insert order record into mock state.orders
+        const orderRecord = {
+          id: orderId,
+          customer_id: customerId,
+          delivery_location_id: args?.p_location_id,
+          delivery_location_snapshot: args?.p_customer_details,
+          status: 'AWAITING_PAYMENT',
+          payment_status: 'PENDING',
+          item_subtotal: subtotal.toFixed(2),
+          combined_delivery_fee: deliveryFee.toFixed(2),
+          base_amount: baseAmount.toFixed(2),
+          platform_fee: platformFee.toFixed(2),
+          total_payable: totalPayable.toFixed(2),
+          route_distance_km: args?.p_route_distance_km,
+          fee_policy_version: args?.p_fee_policy_version,
+          payment_attempt_id: attemptId,
+          fee_paise: feePaise,
+          payment_allocated_at: nowIso,
+          payment_window_expires_at: windowExp,
+          payment_cooldown_expires_at: cooldownExp,
+          paid_at: null,
+          runner_id: null,
+          idempotency_key: idempotencyKey,
+          created_at: nowIso,
+          updated_at: nowIso,
+        }
+        if (!state.orders) state.orders = []
+        state.orders.push(orderRecord)
+
+        if (!state.inventory_reservations) state.inventory_reservations = []
+        for (const pid of sortedProductIds) {
+          const qty = aggregatedMap.get(pid)
+          state.inventory_reservations.push({
+            id: `res_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+            order_id: orderId,
+            store_id: args?.p_store_id,
+            product_id: pid,
+            quantity: qty,
+            status: 'HELD',
+            expires_at: windowExp,
+            created_at: nowIso,
+          })
+        }
+
+        return {
+          data: {
+            orderId,
+            id: orderId,
+            feePaise,
+            attemptId,
+            allocatedAt: nowIso,
+            windowExpiresAt: windowExp,
+            cooldownExpiresAt: cooldownExp,
+            itemSubtotal: subtotal,
+            deliveryFee,
+            baseAmount,
+            platformFee,
+            totalPayable,
+            isIdempotentHit: false,
+          },
+          error: null,
+        }
+      }
+
       if (fn === 'allocate_platform_fee') {
         const orderId = args?.p_order_id
         const attemptId = args?.p_attempt_id
@@ -303,6 +487,39 @@ export function createMockSupabaseClient({
       }
 
       if (fn === 'release_order_inventory') {
+        const orderId = args?.p_order_id
+        const order = (state.orders || []).find((o) => o.id === orderId)
+        if (!order) {
+          return { data: null, error: { message: 'ORDER_NOT_FOUND' } }
+        }
+        if (order.payment_status === 'PAID') {
+          return { data: null, error: { message: 'CANNOT_RELEASE_PAID_ORDER' } }
+        }
+        const reservations = (state.inventory_reservations || []).filter(
+          (ir) => ir.order_id === orderId && ir.status === 'HELD',
+        )
+        if (reservations.length === 0) {
+          return { data: true, error: null }
+        }
+        const aggregated = new Map()
+        for (const res of reservations) {
+          aggregated.set(res.product_id, (aggregated.get(res.product_id) || 0) + res.quantity)
+        }
+        const sortedPids = Array.from(aggregated.keys()).sort((a, b) => a.localeCompare(b))
+        for (const pid of sortedPids) {
+          const prod = (state.products || []).find((p) => p.id === pid)
+          if (!prod) {
+            return { data: null, error: { message: 'PRODUCT_NOT_FOUND' } }
+          }
+          if (prod.stock + aggregated.get(pid) > 2147483647) {
+            return { data: null, error: { message: 'STOCK_OVERFLOW' } }
+          }
+          prod.stock += aggregated.get(pid)
+        }
+        reservations.forEach((ir) => {
+          ir.status = 'RELEASED'
+          ir.released_at = new Date().toISOString()
+        })
         return { data: true, error: null }
       }
 
@@ -331,12 +548,26 @@ export function createMockSupabaseClient({
           )
           if (fee) fee.active_order_id = null
           if (state.inventory_reservations) {
-            state.inventory_reservations
-              .filter((ir) => ir.order_id === orderId && ir.status === 'HELD')
-              .forEach((ir) => {
-                ir.status = 'RELEASED'
-                ir.released_at = new Date().toISOString()
-              })
+            const held = state.inventory_reservations.filter((ir) => ir.order_id === orderId && ir.status === 'HELD')
+            const aggregated = new Map()
+            for (const res of held) {
+              aggregated.set(res.product_id, (aggregated.get(res.product_id) || 0) + res.quantity)
+            }
+            const sortedPids = Array.from(aggregated.keys()).sort((a, b) => a.localeCompare(b))
+            for (const pid of sortedPids) {
+              const prod = (state.products || []).find((p) => p.id === pid)
+              if (!prod) {
+                return { data: null, error: { message: 'PRODUCT_NOT_FOUND' } }
+              }
+              if (prod.stock + aggregated.get(pid) > 2147483647) {
+                return { data: null, error: { message: 'STOCK_OVERFLOW' } }
+              }
+              prod.stock += aggregated.get(pid)
+            }
+            held.forEach((ir) => {
+              ir.status = 'RELEASED'
+              ir.released_at = new Date().toISOString()
+            })
           }
           return { data: [{ expired: true, previous_status: prevStatus }], error: null }
         }
@@ -361,7 +592,10 @@ export function createMockSupabaseClient({
           return { data: null, error: { message: 'PAYMENT_WINDOW_EXPIRED' } }
         }
         const hasVerifiedRecord = (state.payment_records || []).some(
-          (pr) => pr.order_id === orderId && Number(pr.amount) === Number(order.total_payable),
+          (pr) =>
+            pr.order_id === orderId &&
+            Number(pr.amount) === Number(order.total_payable) &&
+            (pr.status === 'PAID' || (pr.evidence !== null && pr.evidence !== undefined)),
         )
         if (!hasVerifiedRecord) {
           return { data: null, error: { message: 'UNVERIFIED_PAYMENT_SHORTCUT_PROHIBITED' } }
