@@ -51,7 +51,7 @@ This register contains confirmed observations from the initial remote review. It
 - **Render root directory:** metadata reports `src/`, but the deployed service is live. Do not change this configuration based on metadata alone; verify build logs and actual working directory first.
 - **Open pull requests:** GitHub search returned no open PRs at the time of this check.
 - **Diverged branches reviewed:** `bhosaleshivendra-patch-1` contains one unique commit changing README.md (392 additions / 76 deletions); `feat/flat-10-delivery-fee` contains two unique commits, with the reported net diff touching README.md by one line. Neither is safe to delete without reviewing the unique commit messages and contents. They remain preserved.
-- **Audit branch diff:** eight commits ahead of `main`, zero behind; the current diff contains only this register, the proposed RLS grant migration, and the database regression test.
+- **Audit branch diff:** nine commits ahead of `main`, zero behind; the current diff contains only this register, the proposed RLS grant migration, and the database regression test.
 - **RLS regression test:** assertion added to `supabase/tests/database_integrity_test.sql` for both `anon` and `authenticated` execution privileges on `public.rls_auto_enable()`. Not run against PostgreSQL yet.
 - **Production safety:** the proposed migration remains unapplied. Live SQL inspection calls were blocked by the tool safety layer; do not infer that the production grant was fixed.
 - **Known limitations:** repository clone/build could not run in this environment due DNS/network failure to GitHub. No dead-code deletion is claimed; safe dead-code analysis needs a complete repository-wide reference scan and build/test validation.
