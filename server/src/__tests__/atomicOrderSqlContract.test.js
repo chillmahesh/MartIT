@@ -262,6 +262,6 @@ describe('Authoritative payment verification trust contract', () => {
     const markerWrite = webhookRouteCode.indexOf("verification_source: 'AUTHORITATIVE_GATEWAY'", verifiedBranch)
     expect(verifiedBranch).toBeGreaterThan(-1)
     expect(markerWrite).toBeGreaterThan(verifiedBranch)
-    expect(webhookRouteCode).toContain('if (!gatewayVerification.verified)')
+    expect(webhookRouteCode).toContain('if (gatewayVerification?.verified !== true)')
   })
 })
