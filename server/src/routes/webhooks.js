@@ -388,7 +388,7 @@ export async function handleMakePaymentWebhook(req, res, next) {
       reason: gatewayVerification.reason || null,
     })
 
-    if (!gatewayVerification.verified) {
+    if (gatewayVerification?.verified !== true) {
       // FAIL CLOSED: No authoritative gateway confirmed bank settlement.
       // Do NOT call executeAtomicPaymentVerification(). Order remains PENDING.
       logWebhook('info', 'INGESTION_FAILED_CLOSED', {
