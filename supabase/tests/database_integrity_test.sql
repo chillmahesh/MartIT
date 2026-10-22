@@ -80,6 +80,14 @@ BEGIN
     RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on auth_is_admin';
   END IF;
 
+  -- DDL event-trigger function must not be callable by client API roles.
+  IF has_function_privilege('anon', 'public.rls_auto_enable()', 'EXECUTE') THEN
+    RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on rls_auto_enable';
+  END IF;
+  IF has_function_privilege('authenticated', 'public.rls_auto_enable()', 'EXECUTE') THEN
+    RAISE EXCEPTION 'SECURITY FAIL: authenticated has EXECUTE on rls_auto_enable';
+  END IF;
+
   RAISE NOTICE '✓ TEST 1 PASSED: Client roles cannot execute privileged functions.';
 END;
 $$;
