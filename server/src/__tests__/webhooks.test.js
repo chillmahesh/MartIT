@@ -174,6 +174,26 @@ describe('Make.com Payment Verification Webhook Integration', () => {
       expect(mockState.payment_records.length).toBe(0)
     })
 
+    it('rejects with 500 WEBHOOK_UNCONFIGURED when server MAKE_WEBHOOK_SECRET is empty or unconfigured', async () => {
+      const origSecret = env.MAKE_WEBHOOK_SECRET
+      try {
+        env.MAKE_WEBHOOK_SECRET = ''
+        const res = await request(app)
+          .post('/api/v1/webhooks/make-payment')
+          .set('x-make-secret', 'any-secret-value')
+          .send({
+            orderId: 'ord_webhook_active',
+            amount: 115.15,
+            evidence: 'Payment received',
+          })
+
+        expect(res.status).toBe(500)
+        expect(res.body.code).toBe('WEBHOOK_UNCONFIGURED')
+      } finally {
+        env.MAKE_WEBHOOK_SECRET = origSecret
+      }
+    })
+
     it('accepts valid secret via x-make-secret header and fails closed to unverified evidence', async () => {
       const res = await request(app)
         .post('/api/v1/webhooks/make-payment')

@@ -48,38 +48,56 @@ export function AppHeader({ variant = 'customer' }) {
             <Link
               to="/runner"
               id="header-mode-switch-runner"
-              className="inline-flex items-center gap-1.5 rounded-full border border-brand/40 bg-brand-soft/60 px-3 py-1.5 text-xs font-semibold text-fresh-ink transition-colors hover:bg-brand-soft"
+              onClick={() => useAuthStore.getState().setActiveMode('runner')}
+              className="inline-flex items-center gap-1.5 rounded-full border border-brand/40 bg-brand-soft/80 px-2.5 py-1 text-[11px] sm:px-3 sm:py-1.5 sm:text-xs font-semibold text-fresh-ink transition-colors hover:bg-brand-soft shrink-0"
               aria-label="Switch to Runner mode"
             >
-              <Bike className="size-3.5" aria-hidden="true" />
+              <Bike className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="inline sm:hidden">Runner</span>
               <span className="hidden sm:inline">Runner Mode</span>
             </Link>
           ) : (
             <Link
               to="/app"
               id="header-mode-switch-customer"
-              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface-2 px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-surface-3"
+              onClick={() => useAuthStore.getState().setActiveMode('customer')}
+              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface-2 px-2.5 py-1 text-[11px] sm:px-3 sm:py-1.5 sm:text-xs font-semibold text-ink transition-colors hover:bg-surface-3 shrink-0"
               aria-label="Switch to Customer mode"
             >
-              <ShoppingBag className="size-3.5" aria-hidden="true" />
+              <ShoppingBag className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="inline sm:hidden">Customer</span>
               <span className="hidden sm:inline">Customer Mode</span>
             </Link>
           )
         ) : (user?.runnerStatus === 'applicant' || user?.runnerStatus === 'pending') ? (
           <div
             id="header-runner-pending-badge"
-            className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning-ink"
+            className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] sm:px-2.5 sm:py-1 sm:text-xs font-medium text-warning-ink shrink-0"
+            title="Runner application pending review"
           >
-            <Bike className="size-3 text-warning" aria-hidden="true" />
-            <span>Runner application pending</span>
+            <Bike className="size-3 text-warning shrink-0" aria-hidden="true" />
+            <span className="inline sm:hidden">App pending</span>
+            <span className="hidden sm:inline">Runner application pending</span>
           </div>
         ) : user?.runnerStatus === 'suspended' ? (
           <div
             id="header-runner-suspended-badge"
-            className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-danger/30 bg-danger/10 px-2.5 py-1 text-xs font-medium text-danger"
+            className="inline-flex items-center gap-1 rounded-full border border-danger/30 bg-danger/10 px-2 py-0.5 text-[11px] sm:px-2.5 sm:py-1 sm:text-xs font-medium text-danger shrink-0"
+            title="Runner privileges suspended"
           >
-            <Bike className="size-3 text-danger" aria-hidden="true" />
-            <span>Runner suspended</span>
+            <Bike className="size-3 text-danger shrink-0" aria-hidden="true" />
+            <span className="inline sm:hidden">Suspended</span>
+            <span className="hidden sm:inline">Runner suspended</span>
+          </div>
+        ) : user?.roles?.includes(ROLES.RUNNER) && user?.runnerStatus !== 'approved' ? (
+          <div
+            id="header-runner-unapproved-badge"
+            className="inline-flex items-center gap-1 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] sm:px-2.5 sm:py-1 sm:text-xs font-medium text-warning-ink shrink-0"
+            title="Runner role assigned but profile runner_status is not approved"
+          >
+            <Bike className="size-3 text-warning shrink-0" aria-hidden="true" />
+            <span className="inline sm:hidden">Unapproved</span>
+            <span className="hidden sm:inline">Runner unapproved</span>
           </div>
         ) : null}
 
@@ -179,6 +197,15 @@ function AccountMenu({ user, variant }) {
             >
               <Bike className="size-3.5 shrink-0 text-danger" aria-hidden="true" />
               <span>Runner privileges suspended</span>
+            </div>
+          )}
+          {user?.roles?.includes(ROLES.RUNNER) && !isApprovedRunner && !isApplicant && !isSuspended && (
+            <div
+              id="menu-runner-unapproved-status"
+              className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-warning-ink bg-warning/10 rounded-tile mx-1 mb-1"
+            >
+              <Bike className="size-3.5 shrink-0 text-warning" aria-hidden="true" />
+              <span>Runner unapproved (status missing)</span>
             </div>
           )}
 

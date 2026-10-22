@@ -631,4 +631,79 @@ describe('Signup & Role Selection Enforcement in Auth Store', () => {
     expect(useAuthStore.getState().user).toBeNull()
     expect(useAuthStore.getState().token).toBeNull()
   })
+
+  it('manages activeMode for dual-role users and clears on logout', async () => {
+    useAuthStore.setState({ activeMode: null })
+    useAuthStore.getState().setActiveMode('runner')
+    expect(useAuthStore.getState().activeMode).toBe('runner')
+
+    useAuthStore.getState().setActiveMode('customer')
+    expect(useAuthStore.getState().activeMode).toBe('customer')
+
+    await useAuthStore.getState().logout()
+    expect(useAuthStore.getState().activeMode).toBeNull()
+  })
+
+  it('re-syncs stale persisted auth state with authoritative backend profile via refreshProfile', async () => {
+    // Simulated stale state from localStorage prior to external SQL promotion
+    useAuthStore.setState({
+      token: 'tok_active',
+      user: {
+        id: 'usr_promoted',
+        email: 'promoted@campus.edu',
+        name: 'Promoted Runner',
+        roles: ['customer'],
+        runnerStatus: null,
+      },
+    })
+
+    // Authoritative backend response reflecting manual SQL promotion
+    const authoritativeProfile = {
+      id: 'usr_promoted',
+      email: 'promoted@campus.edu',
+      name: 'Promoted Runner',
+      roles: ['customer', 'runner'],
+      runnerStatus: 'approved',
+    }
+    vi.spyOn(authService, 'me').mockResolvedValue(authoritativeProfile)
+
+    const refreshed = await useAuthStore.getState().refreshProfile()
+
+    expect(refreshed.roles).toEqual(['customer', 'runner'])
+    expect(refreshed.runnerStatus).toBe('approved')
+    expect(useAuthStore.getState().user.roles).toContain('runner')
+    expect(useAuthStore.getState().user.runnerStatus).toBe('approved')
+  })
+
+  it('does not auto-apply runner if user already has runner role assigned in SQL without approval', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const mockSession = { access_token: 'jwt_sql_promoted' }
+    const authUser = {
+      id: 'usr_sql_promoted',
+      email: 'sqlrunner@campus.edu',
+      user_metadata: { role: 'runner' },
+    }
+    // Profile where user_roles has runner, but runner_status in profiles is null
+    const sqlPromotedUnapproved = {
+      id: 'usr_sql_promoted',
+      email: 'sqlrunner@campus.edu',
+      name: 'SQL Runner',
+      roles: ['customer', 'runner'],
+      runnerStatus: null,
+    }
+
+    vi.spyOn(authService, 'login').mockResolvedValue({
+      session: mockSession,
+      authUser,
+    })
+    vi.spyOn(authService, 'me').mockResolvedValue(sqlPromotedUnapproved)
+    const applySpy = vi.spyOn(authService, 'applyRunner')
+
+    const user = await useAuthStore.getState().login('sqlrunner@campus.edu', 'secret123')
+
+    // applyRunner should NOT be triggered because roles already includes runner
+    expect(applySpy).not.toHaveBeenCalled()
+    expect(user.roles).toContain('runner')
+    expect(user.runnerStatus).toBeNull()
+  })
 })

@@ -99,6 +99,65 @@ describe('Order History & Detail Endpoints', () => {
     expect(res.body.fulfillmentGroups.length).toBe(1)
   })
 
+  it('returns canonical order shape conforming to frontend contract including lines, storeId, locationId, and pricing', async () => {
+    const res = await request(app)
+      .get('/api/v1/orders/ord_123')
+      .set('Authorization', 'Bearer tok_alice')
+
+    expect(res.status).toBe(200)
+    expect(res.body.id).toBe('ord_123')
+    expect(res.body.storeId).toBe('store_campus_mart')
+    expect(res.body.locationId).toBe('loc_hostel_a')
+    expect(res.body.deliveryLocationId).toBe('loc_hostel_a')
+    expect(Array.isArray(res.body.lines)).toBe(true)
+    expect(res.body.lines.length).toBe(1)
+    expect(res.body.lines[0]).toEqual({
+      productId: 'p_milk',
+      name: 'Toned Milk',
+      pack: '500 ml',
+      unitPrice: 28,
+      quantity: 2,
+      lineSubtotal: 56,
+    })
+    expect(res.body.pricing).toEqual({
+      itemSubtotal: 120,
+      deliveryFee: 15,
+      baseAmount: 135,
+      platformFee: 0.12,
+      total: 135.12,
+      distanceKm: 0.9,
+      distanceMethod: 'straight_line',
+      pricingVersion: '2026-10-09.1',
+    })
+    expect(res.body.payment.status).toBe('PAID')
+    expect(res.body.payment.feePaise).toBe(12)
+    expect(res.body.isWindowExpired).toBe(false)
+  })
+
+  it('preserves customerDetails from delivery_location_snapshot without inventing values', async () => {
+    const orderWithCustomer = mockState.orders.find((o) => o.id === 'ord_123')
+    orderWithCustomer.delivery_location_snapshot = {
+      id: 'loc_hostel_a',
+      name: 'Hostel A',
+      customerDetails: {
+        fullName: 'Alice Walker',
+        phoneNumber: '9876543210',
+        detailedAddress: 'Room 204, Wing B',
+      },
+    }
+
+    const res = await request(app)
+      .get('/api/v1/orders/ord_123')
+      .set('Authorization', 'Bearer tok_alice')
+
+    expect(res.status).toBe(200)
+    expect(res.body.customerDetails).toEqual({
+      fullName: 'Alice Walker',
+      phoneNumber: '9876543210',
+      detailedAddress: 'Room 204, Wing B',
+    })
+  })
+
   it('also supports RPC-style POST /orders/get for frontend api.js compatibility', async () => {
     const res = await request(app)
       .post('/orders/get')
