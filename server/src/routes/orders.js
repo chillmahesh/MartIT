@@ -34,7 +34,16 @@ export function setMakeVerifier(fn) {
  */
 export async function queryMakePaymentVerification({ orderId, amount }) {
   if (typeof customMakeVerifier === 'function') {
-    return customMakeVerifier({ orderId, amount })
+    try {
+      return await customMakeVerifier({ orderId, amount })
+    } catch (err) {
+      return {
+        success: false,
+        status: 'inconclusive',
+        reason: 'MAKE_WEBHOOK_NETWORK_ERROR',
+        message: err.message,
+      }
+    }
   }
 
   const webhookUrl = env.MAKE_VERIFICATION_WEBHOOK_URL || process.env.MAKE_VERIFICATION_WEBHOOK_URL
