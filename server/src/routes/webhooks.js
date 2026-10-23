@@ -266,32 +266,7 @@ export async function handleMakePaymentWebhook(req, res, next) {
       })
     }
 
-    // 7. Terminal State Guard: CANCELLED or terminal payment states cannot transition
-    if (order.status === 'CANCELLED' || ['EXPIRED', 'FAILED', 'REFUNDED'].includes(order.payment_status)) {
-      logWebhook('warn', 'TERMINAL_STATE_REJECTED', {
-        orderId: order.id,
-        orderStatus: order.status,
-        paymentStatus: order.payment_status,
-      })
-      throw ApiError.conflict(
-        'Order is cancelled or in a terminal payment state and cannot be marked paid.',
-        'TERMINAL_STATE',
-      )
-    }
-
-    // 8. Payment Window Expiry Guard: Webhooks arriving after the 2-minute payment window cannot mark paid
-    const now = Date.now()
-    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
-    if (Number.isFinite(windowExpiry) && now >= windowExpiry) {
-      logWebhook('warn', 'WINDOW_EXPIRED_REJECTED', {
-        orderId: order.id,
-        windowExpiresAt: order.payment_window_expires_at,
-        expiredByMs: now - windowExpiry,
-      })
-      throw ApiError.badRequest('Payment verification window has expired.', 'PAYMENT_WINDOW_EXPIRED')
-    }
-
-    // 9. Dynamic Platform Fee Anti-Tampering Check: Exact amount match required
+    // 7. Dynamic Platform Fee Anti-Tampering Check: Exact amount match required
     const expectedTotal = Number(order.total_payable)
     const amountDiff = Math.abs(parsedAmount - expectedTotal)
 
@@ -307,6 +282,96 @@ export async function handleMakePaymentWebhook(req, res, next) {
         'PAYMENT_AMOUNT_MISMATCH',
         { expectedAmount: expectedTotal, receivedAmount: parsedAmount },
       )
+    }
+
+    // 8. Terminal State & Payment Window Expiry Guards:
+    // If order is cancelled/terminal or window expired, capture late telemetry as unverified evidence,
+    // and reject payment verification without mutating order status or inventory.
+    const isTerminal = order.status === 'CANCELLED' || ['EXPIRED', 'FAILED', 'REFUNDED'].includes(order.payment_status)
+    const now = Date.now()
+    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
+    const isWindowExpired = Number.isFinite(windowExpiry) && now >= windowExpiry
+
+    if (isTerminal || isWindowExpired) {
+      const utr = body.utr || body.rrn || body.transactionId || body.txnId || null
+      const dedupeKey = utr || body.attemptId || body.eventId || order.payment_attempt_id || `att_${order.id}`
+
+      const { data: existingRecord } = await supabase
+        .from('payment_records')
+        .select('*')
+        .eq('order_id', order.id)
+        .eq('attempt_id', dedupeKey)
+        .maybeSingle()
+
+      let recordId = existingRecord?.id || `pay_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`
+
+      if (!existingRecord) {
+        const { error: insertErr } = await supabase.from('payment_records').insert({
+          id: recordId,
+          order_id: order.id,
+          attempt_id: dedupeKey,
+          amount: expectedTotal,
+          status: 'EXPIRED',
+          provider: body.provider || 'UPI',
+          verification_source: 'MAKE_WEBHOOK_LATE_INGESTION',
+          evidence: null,
+          raw_payload: {
+            utr: utr || null,
+            sender: body.sender || body.payer || null,
+            timestamp: body.timestamp || new Date().toISOString(),
+            receivedAmount: parsedAmount,
+            notificationText: evidenceText || null,
+            lateArrival: true,
+            lateReason: isTerminal ? 'TERMINAL_STATE' : 'PAYMENT_WINDOW_EXPIRED',
+            orderStatusAtArrival: order.status,
+            orderPaymentStatusAtArrival: order.payment_status,
+            verifiedSettlement: false,
+            ingestionSource: 'make_webhook',
+          },
+          created_at: new Date().toISOString(),
+        })
+
+        if (insertErr) {
+          logWebhook('error', 'LATE_PAYMENT_INSERT_FAILED', {
+            orderId: order.id,
+            error: insertErr.message,
+          })
+          throw ApiError.internal(`Failed to persist late payment telemetry: ${insertErr.message || 'Database error'}`)
+        }
+      }
+
+      logWebhook('warn', isTerminal ? 'TERMINAL_STATE_LATE_INGESTION' : 'WINDOW_EXPIRED_LATE_INGESTION', {
+        orderId: order.id,
+        recordId,
+        attemptId: dedupeKey,
+        isDuplicate: Boolean(existingRecord),
+        orderStatus: order.status,
+        paymentStatus: order.payment_status,
+      })
+
+      if (isTerminal) {
+        throw ApiError.conflict(
+          'Order is cancelled or in a terminal payment state and cannot be marked paid.',
+          'TERMINAL_STATE',
+          {
+            orderId: order.id,
+            persistedAsUnverified: true,
+            recordId,
+            isDuplicate: Boolean(existingRecord),
+          },
+        )
+      } else {
+        throw ApiError.badRequest(
+          'Payment verification window has expired.',
+          'PAYMENT_WINDOW_EXPIRED',
+          {
+            orderId: order.id,
+            persistedAsUnverified: true,
+            recordId,
+            isDuplicate: Boolean(existingRecord),
+          },
+        )
+      }
     }
 
     // 10. Deduplicate event and persist payment evidence

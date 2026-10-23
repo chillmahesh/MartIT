@@ -134,6 +134,10 @@ describe('Make.com Payment Verification Webhook Integration', () => {
         { fee_paise: 15, active_order_id: 'ord_webhook_active', is_paid: false },
         { fee_paise: 15, active_order_id: 'ord_webhook_win_expired', is_paid: false },
       ],
+      inventory_reservations: [
+        { id: 'res_win_exp_1', order_id: 'ord_webhook_win_expired', product_id: 'prod_1', quantity: 1, status: 'RELEASED' },
+        { id: 'res_canc_1', order_id: 'ord_webhook_cancelled', product_id: 'prod_1', quantity: 1, status: 'RELEASED' },
+      ],
       payment_records: [],
     })
     mockState = mock.state
@@ -782,6 +786,225 @@ describe('Make.com Payment Verification Webhook Integration', () => {
       expect(res.body.success).toBe(true)
       expect(res.body.isDuplicate).toBe(true)
       expect(res.body.paymentStatus).toBe('PAID')
+    })
+  })
+
+  describe('Late-Payment Telemetry Persistence (Milestone 1)', () => {
+    it('persists late notification for window-expired order as unverified in payment_records', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_win_expired',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_WIN_EXP_999',
+          sender: 'Late Payer / late@upi',
+        })
+
+      expect(res.status).toBe(400)
+      expect(res.body.code).toBe('PAYMENT_WINDOW_EXPIRED')
+      expect(res.body.details?.persistedAsUnverified).toBe(true)
+      expect(res.body.details?.isDuplicate).toBe(false)
+
+      expect(mockState.payment_records.length).toBe(1)
+      const record = mockState.payment_records[0]
+      expect(record.order_id).toBe('ord_webhook_win_expired')
+      expect(record.amount).toBe(115.15)
+      expect(record.status).toBe('EXPIRED')
+      expect(record.evidence).toBeNull()
+      expect(record.verification_source).toBe('MAKE_WEBHOOK_LATE_INGESTION')
+      expect(record.attempt_id).toBe('UTR_WIN_EXP_999')
+      expect(record.raw_payload).toMatchObject({
+        utr: 'UTR_WIN_EXP_999',
+        sender: 'Late Payer / late@upi',
+        receivedAmount: 115.15,
+        lateArrival: true,
+        lateReason: 'PAYMENT_WINDOW_EXPIRED',
+        verifiedSettlement: false,
+        ingestionSource: 'make_webhook',
+      })
+
+      // Order must not be marked PAID or confirmed
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_win_expired')
+      expect(order.payment_status).toBe('PENDING')
+      expect(order.status).toBe('AWAITING_PAYMENT')
+      expect(order.paid_at).toBeUndefined()
+    })
+
+    it('persists late notification for cancelled order as unverified in payment_records', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_cancelled',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_CANC_888',
+        })
+
+      expect(res.status).toBe(409)
+      expect(res.body.code).toBe('TERMINAL_STATE')
+      expect(res.body.details?.persistedAsUnverified).toBe(true)
+
+      expect(mockState.payment_records.length).toBe(1)
+      const record = mockState.payment_records[0]
+      expect(record.order_id).toBe('ord_webhook_cancelled')
+      expect(record.status).toBe('EXPIRED')
+      expect(record.evidence).toBeNull()
+      expect(record.verification_source).toBe('MAKE_WEBHOOK_LATE_INGESTION')
+      expect(record.raw_payload).toMatchObject({
+        utr: 'UTR_CANC_888',
+        lateArrival: true,
+        lateReason: 'TERMINAL_STATE',
+        orderStatusAtArrival: 'CANCELLED',
+        verifiedSettlement: false,
+      })
+
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_cancelled')
+      expect(order.status).toBe('CANCELLED')
+      expect(order.payment_status).not.toBe('PAID')
+    })
+
+    it('persists late notification for terminal EXPIRED order as unverified in payment_records', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_terminal_expired',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_TERM_777',
+        })
+
+      expect(res.status).toBe(409)
+      expect(res.body.code).toBe('TERMINAL_STATE')
+      expect(res.body.details?.persistedAsUnverified).toBe(true)
+
+      expect(mockState.payment_records.length).toBe(1)
+      const record = mockState.payment_records[0]
+      expect(record.order_id).toBe('ord_webhook_terminal_expired')
+      expect(record.status).toBe('EXPIRED')
+      expect(record.evidence).toBeNull()
+      expect(record.verification_source).toBe('MAKE_WEBHOOK_LATE_INGESTION')
+
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_terminal_expired')
+      expect(order.payment_status).toBe('EXPIRED')
+      expect(order.status).toBe('CANCELLED')
+    })
+
+    it('idempotently ignores duplicate late notifications without creating duplicate records', async () => {
+      const payload = {
+        orderId: 'ord_webhook_win_expired',
+        amount: 115.15,
+        evidence: 'Payment received',
+        utr: 'UTR_DEDUP_111',
+      }
+
+      // First late delivery
+      const res1 = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send(payload)
+
+      expect(res1.status).toBe(400)
+      expect(res1.body.details?.isDuplicate).toBe(false)
+      expect(mockState.payment_records.length).toBe(1)
+      const firstRecordId = mockState.payment_records[0].id
+
+      // Duplicate delivery with identical UTR
+      const res2 = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send(payload)
+
+      expect(res2.status).toBe(400)
+      expect(res2.body.details?.isDuplicate).toBe(true)
+      expect(res2.body.details?.recordId).toBe(firstRecordId)
+      // Must NOT insert second record
+      expect(mockState.payment_records.length).toBe(1)
+    })
+
+    it('enforces amount validation on late notifications and does not persist mismatched payments', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_win_expired',
+          amount: 50.00, // Mismatched (expected 115.15)
+          evidence: 'Payment received',
+          utr: 'UTR_MISMATCH_999',
+        })
+
+      expect(res.status).toBe(400)
+      expect(res.body.code).toBe('PAYMENT_AMOUNT_MISMATCH')
+      expect(mockState.payment_records.length).toBe(0)
+    })
+
+    it('strictly guarantees that a late notification cannot transition order to PAID or CONFIRMED', async () => {
+      setGatewayVerifier(async () => ({ verified: true }))
+
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_win_expired',
+          amount: 115.15,
+          status: 'SUCCESS',
+          evidence: 'Payment received',
+          utr: 'UTR_CLAIM_PAID',
+        })
+
+      expect(res.status).toBe(400)
+      expect(res.body.code).toBe('PAYMENT_WINDOW_EXPIRED')
+
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_win_expired')
+      expect(order.payment_status).toBe('PENDING')
+      expect(order.status).toBe('AWAITING_PAYMENT')
+    })
+
+    it('guarantees inventory reservations and platform fee reservations remain unchanged on late notification', async () => {
+      const initialFeeState = structuredClone(mockState.platform_fee_reservations)
+      const initialInvState = structuredClone(mockState.inventory_reservations)
+
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_win_expired',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_INV_CHECK',
+        })
+
+      expect(res.status).toBe(400)
+
+      // Inventory reservations remain unchanged
+      expect(mockState.inventory_reservations).toEqual(initialInvState)
+      expect(mockState.inventory_reservations[0].status).toBe('RELEASED')
+
+      // Platform fee reservations remain unchanged
+      expect(mockState.platform_fee_reservations).toEqual(initialFeeState)
+      const fee = mockState.platform_fee_reservations.find(
+        (f) => f.active_order_id === 'ord_webhook_win_expired',
+      )
+      expect(fee.is_paid).toBe(false)
+    })
+
+    it('fails unauthenticated webhook requests without inserting late payment records', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', 'invalid-secret-key-12345')
+        .send({
+          orderId: 'ord_webhook_win_expired',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_UNAUTH',
+        })
+
+      expect(res.status).toBe(401)
+      expect(res.body.code).toBe('UNAUTHENTICATED')
+      expect(mockState.payment_records.length).toBe(0)
     })
   })
 })
