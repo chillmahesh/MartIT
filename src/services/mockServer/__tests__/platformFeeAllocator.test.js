@@ -161,6 +161,33 @@ describe('Dynamic Platform Fee Allocator Unit Tests', () => {
     expect(released).toBe(false)
     expect(allocator.getStatus(1, startTime)).toBe(RESERVATION_STATUS.PAID)
   })
+
+  it('implements approved suffix release timing: successful confirmation + 2 minutes releases slot for reuse', () => {
+    const allocatorWithPaidRelease = createPlatformFeeAllocator({
+      releasePaidAfterMs: 2 * 60 * 1000, // 2 minutes post-confirmation
+    })
+    const startTime = 1000000
+    allocatorWithPaidRelease.allocate({ orderId: 'ord_paid_1', now: startTime })
+
+    // Mark paid at start + 30s
+    const confirmTime = startTime + 30 * 1000
+    allocatorWithPaidRelease.markPaid({ orderId: 'ord_paid_1', now: confirmTime })
+
+    // 1 minute after confirmation: still protected (PAID)
+    const oneMinAfter = confirmTime + 60 * 1000
+    expect(allocatorWithPaidRelease.getStatus(1, oneMinAfter)).toBe(RESERVATION_STATUS.PAID)
+    expect(allocatorWithPaidRelease.isAvailable(1, oneMinAfter)).toBe(false)
+
+    // 2 minutes after confirmation: released back to AVAILABLE
+    const twoMinAfter = confirmTime + 2 * 60 * 1000
+    expect(allocatorWithPaidRelease.getStatus(1, twoMinAfter)).toBe(RESERVATION_STATUS.AVAILABLE)
+    expect(allocatorWithPaidRelease.isAvailable(1, twoMinAfter)).toBe(true)
+
+    // Re-allocating slot 1 for new order succeeds cleanly
+    const reallocated = allocatorWithPaidRelease.allocate({ orderId: 'ord_new_after_release', now: twoMinAfter })
+    expect(reallocated.feePaise).toBe(1)
+    expect(reallocated.reservation.orderId).toBe('ord_new_after_release')
+  })
 })
 
 describe('Server Authoritative Orders Integration with Platform Fee', () => {

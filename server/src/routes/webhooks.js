@@ -345,7 +345,7 @@ export async function handleMakePaymentWebhook(req, res, next) {
     const expectedTotal = Number(order.total_payable)
     const amountDiff = Math.abs(parsedAmount - expectedTotal)
 
-    if (amountDiff > 0.005) {
+    if (Math.round(parsedAmount * 100) !== Math.round(expectedTotal * 100)) {
       logWebhook('warn', 'AMOUNT_MISMATCH_REJECTED', {
         orderId: order.id,
         expectedTotal,

@@ -468,7 +468,8 @@ async function handleCheckPayment(req, res, next) {
       .eq('verification_source', 'AUTHORITATIVE_GATEWAY')
       .maybeSingle()
 
-    if (verifiedPayment && Number(verifiedPayment.amount) === Number(order.total_payable)) {
+    const toPaise = (amt) => Math.round(Number(amt) * 100)
+    if (verifiedPayment && toPaise(verifiedPayment.amount) === toPaise(order.total_payable)) {
       await executeAtomicPaymentVerification(supabase, order.id)
 
       return res.status(200).json({

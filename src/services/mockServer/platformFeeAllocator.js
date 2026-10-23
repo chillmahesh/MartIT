@@ -36,6 +36,7 @@ export function createPlatformFeeAllocator({
   maxPaise = PLATFORM_FEE_MAX_PAISE,
   windowMs = PLATFORM_FEE_WINDOW_MS,
   cooldownMs = PLATFORM_FEE_COOLDOWN_MS,
+  releasePaidAfterMs = null,
 } = {}) {
   // Map of feePaise (integer) -> Reservation
   const reservations = new Map()
@@ -45,7 +46,12 @@ export function createPlatformFeeAllocator({
   function getStatus(feePaise, now = Date.now()) {
     const res = reservations.get(feePaise)
     if (!res) return RESERVATION_STATUS.AVAILABLE
-    if (res.paid) return RESERVATION_STATUS.PAID
+    if (res.paid) {
+      if (releasePaidAfterMs != null && res.paidAt != null && now >= res.paidAt + releasePaidAfterMs) {
+        return RESERVATION_STATUS.AVAILABLE
+      }
+      return RESERVATION_STATUS.PAID
+    }
     if (now < res.windowExpiresAt) return RESERVATION_STATUS.ACTIVE
     if (now < res.cooldownExpiresAt) return RESERVATION_STATUS.COOLDOWN
     return RESERVATION_STATUS.AVAILABLE
