@@ -65,6 +65,64 @@ async function handleSetRunnerStatus(req, res, next) {
 
     const supabase = getSupabaseAdmin()
 
+    // 1. Try atomic stored procedure first if available in database
+    if (typeof supabase.rpc === 'function') {
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('admin_set_runner_status', {
+        p_user_id: userId,
+        p_status: status,
+      })
+
+      if (!rpcErr && rpcData) {
+        // Query full updated profile with user_roles to return standard formatted user
+        const { data: updatedProfile } = await supabase
+          .from('profiles')
+          .select(`
+            id,
+            email,
+            name,
+            runner_status,
+            default_location_id,
+            user_roles (
+              role
+            )
+          `)
+          .eq('id', userId)
+          .maybeSingle()
+
+        const formatted = updatedProfile
+          ? {
+              id: updatedProfile.id,
+              userId: updatedProfile.id,
+              email: updatedProfile.email,
+              name: updatedProfile.name,
+              roles: (updatedProfile.user_roles || []).map((r) => r.role),
+              runnerStatus: updatedProfile.runner_status,
+              defaultLocationId: updatedProfile.default_location_id,
+            }
+          : { id: userId, userId, runnerStatus: status }
+
+        return res.status(200).json({
+          ...formatted,
+          message: `Runner status updated to ${status}.`,
+        })
+      }
+
+      if (rpcErr) {
+        const errMsg = rpcErr.message || ''
+        if (errMsg.includes('NOT_AN_APPLICANT')) {
+          throw ApiError.conflict('This user has not applied to be a runner.', 'NOT_AN_APPLICANT')
+        }
+        if (errMsg.includes('USER_NOT_FOUND')) {
+          throw ApiError.notFound('User not found.', 'USER_NOT_FOUND')
+        }
+        if (errMsg.includes('PERMISSION_DENIED')) {
+          throw ApiError.forbidden('Only administrators can update runner application status.', 'FORBIDDEN')
+        }
+        // If RPC does not exist (e.g. In-memory mock or pre-migration), fall through to direct tables
+      }
+    }
+
+    // 2. Direct table operations (fallback or mock environment)
     // Query target profile
     const { data: target, error: targetErr } = await supabase
       .from('profiles')
@@ -87,20 +145,27 @@ async function handleSetRunnerStatus(req, res, next) {
       .eq('id', userId)
 
     if (updateErr) {
+      console.error('[admin.setStatus] Profile update error:', updateErr)
       throw ApiError.internal('Failed to update runner status.')
     }
 
     // If approved, ensure runner role exists in user_roles; if suspended, revoke runner role
     if (status === 'approved') {
-      await supabase
+      const { error: roleErr } = await supabase
         .from('user_roles')
         .upsert({ user_id: userId, role: ROLES.RUNNER }, { onConflict: 'user_id, role' })
+      if (roleErr) {
+        console.error('[admin.setStatus] Role upsert error:', roleErr)
+      }
     } else if (status === 'suspended') {
-      await supabase
+      const { error: roleErr } = await supabase
         .from('user_roles')
         .delete()
         .eq('user_id', userId)
         .eq('role', ROLES.RUNNER)
+      if (roleErr) {
+        console.error('[admin.setStatus] Role delete error:', roleErr)
+      }
     }
 
     // Query full updated profile with user_roles

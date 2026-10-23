@@ -21,8 +21,8 @@ This is the durable execution ledger. Update it throughout implementation. Never
 
 | ID | Milestone | Status | Evidence / commit | Remaining work |
 |---|---|---|---|---|
-| M0 | Baseline, routes, and root-cause evidence | VERIFIED | Traced routes, baseline tests (613 passed), root causes for Goals A-D established | Proceed to M1 runner approval fix |
-| M1 | Secure runner approval fix | NOT_STARTED | — | Trace UI/API/RPC/RLS; add regression tests |
+| M0 | Baseline, routes, and root-cause evidence | VERIFIED | Commit 8b13b9f; baseline tests (613 passed), root causes established | Complete |
+| M1 | Secure runner approval fix | VERIFIED | Migration 20261024000001, admin.js RPC support, 35 auth tests passed | Complete; proceed to M2 |
 | M2 | Customer order-tracking UI | NOT_STARTED | — | Ensure labels derive from authoritative order state |
 | M3 | Runner dashboard and availability | NOT_STARTED | — | Confirm route, access guard, eligible orders, atomic acceptance |
 | M4 | Demo runner procedure | NOT_STARTED | — | Identify safe test account or provide secure manual steps |
@@ -35,6 +35,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 ### M0 — Baseline & Root Cause Evidence
 - **Date / Session:** 2026-10-24
 - **Branch / Base Commit:** `audit/deep-clean-issue-register` @ `1fd09c553f5bb0f306a0a654c2a771540720c43e`
+- **Baseline Commit:** `8b13b9f` (`docs(repair): establish verified baseline and root-cause evidence (Milestone 0)`)
 - **Baseline Test Evidence:**
   - `npm test`: 30 files passed, 613 passed, 1 skipped, exit code 0.
   - `node scripts/validate-migrations.mjs`: 11 migration files validated, exit code 0.
@@ -49,3 +50,19 @@ This is the durable execution ledger. Update it throughout implementation. Never
 - **Root Cause Analysis (Goal C - Runner Dashboard):**
   - **Route Location:** `/runner`, mounted in `src/app/routes.jsx` with `<RequireRole role="runner" />`.
   - **Access Gate:** `RouteGuards.jsx` checks `hasPermission(user, PERMISSIONS.RUNNER_DELIVER)`. In `utils/permissions.js`, `RUNNER_DELIVER` requires both role `'runner'` and `user.runnerStatus === 'approved'`. Because Goal A failed to update runner status to `approved`, applicants were rejected by the route guard with `ForbiddenPage`.
+
+### M1 — Secure Runner Approval Fix
+- **Date / Session:** 2026-10-24
+- **Files Modified:**
+  - `supabase/migrations/20261024000001_fix_admin_runner_approval_privilege.sql`: Created forward migration updating `public.auth_is_admin()`, `public.auth_is_super_admin()`, and `public.prevent_profile_privilege_escalation()` to recognize `service_role` and `postgres`, while preserving strict client protection against unauthorized self-elevation. Created atomic stored procedure `public.admin_set_runner_status(UUID, VARCHAR)`.
+  - `server/src/routes/admin.js`: Hardened `handleSetRunnerStatus` to use `admin_set_runner_status` RPC with clean error diagnostics and resilient direct table fallback.
+  - `server/src/__tests__/testHelpers.js`: Added `admin_set_runner_status` simulation to mock Supabase client.
+  - `server/src/__tests__/authAndPermissions.test.js`: Added regression tests for repeated approval idempotency, 404 for missing applicant, and 422 for invalid status.
+- **Verification Commands & Evidence:**
+  - `node scripts/validate-migrations.mjs`: 12 migration files validated cleanly, exit code 0.
+  - `npm test -- server/src/__tests__/authAndPermissions.test.js`: 35 tests passed (35/35), exit code 0.
+  - Full suite `npm test`: 30 files passed, 616 passed, 1 skipped (617 total), exit code 0.
+- **Security & Authorization Review:**
+  - Confirmed non-admins remain strictly forbidden from altering `runner_status` to `'approved'` or `'suspended'`.
+  - Confirmed only callers with `PERMISSIONS.RUNNERS_APPROVE` (verified via admin JWT) can execute `POST /admin/runners/setStatus`.
+  - Confirmed zero service-role keys or credentials exposed.

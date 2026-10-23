@@ -1029,6 +1029,47 @@ export function createMockSupabaseClient({
         }
       }
 
+      if (fn === 'admin_set_runner_status') {
+        const { p_user_id, p_status } = args || {}
+        if (!['approved', 'suspended'].includes(p_status)) {
+          return { data: null, error: { message: 'INVALID_STATUS: Runner status must be either approved or suspended.' } }
+        }
+        const profile = state.profiles.find((p) => p.id === p_user_id)
+        if (!profile) {
+          return { data: null, error: { message: 'USER_NOT_FOUND: Target user profile does not exist.' } }
+        }
+        if (profile.runner_status == null) {
+          return { data: null, error: { message: 'NOT_AN_APPLICANT: This user has not applied to be a runner.' } }
+        }
+
+        profile.runner_status = p_status
+        const roles = state.user_roles || state.userRoles || []
+        if (p_status === 'approved') {
+          if (!roles.some((r) => r.user_id === p_user_id && r.role === ROLES.RUNNER)) {
+            roles.push({ user_id: p_user_id, role: ROLES.RUNNER })
+          }
+        } else if (p_status === 'suspended') {
+          if (state.user_roles) {
+            state.user_roles = state.user_roles.filter((r) => !(r.user_id === p_user_id && r.role === ROLES.RUNNER))
+          }
+          if (state.userRoles) {
+            state.userRoles = state.userRoles.filter((r) => !(r.user_id === p_user_id && r.role === ROLES.RUNNER))
+          }
+        }
+
+        return {
+          data: {
+            success: true,
+            userId: p_user_id,
+            runnerStatus: p_status,
+            name: profile.name,
+            email: profile.email,
+            message: `Runner status updated to ${p_status}.`,
+          },
+          error: null,
+        }
+      }
+
       return { data: null, error: null }
     },
   }
