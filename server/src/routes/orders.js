@@ -683,9 +683,9 @@ export async function executeAtomicPaymentVerification(supabase, orderId) {
 
 /**
  * GET /api/v1/runner/orders - Authenticated runner's assigned orders.
- * Strictly limited to approved runners viewing only their assigned orders.
+ * Strictly limited to approved runners viewing their assigned orders and, when online, available confirmed orders.
  */
-async function handleRunnerAssignedOrders(req, res, next) {
+export async function handleRunnerAssignedOrders(req, res, next) {
   try {
     if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
       throw ApiError.forbidden('You must be a runner to access this queue.')
@@ -694,8 +694,11 @@ async function handleRunnerAssignedOrders(req, res, next) {
       throw ApiError.forbidden('Runner application is pending approval or suspended.')
     }
 
+    const isOnline = req.body?.isOnline !== false && req.body?.isOnline !== 'false' && req.query?.isOnline !== 'false'
     const supabase = getSupabaseAdmin()
-    const { data: orders, error } = await supabase
+
+    // 1. Orders assigned to this runner
+    const { data: assignedOrders, error: assignedErr } = await supabase
       .from('orders')
       .select(`
         id,
@@ -724,11 +727,63 @@ async function handleRunnerAssignedOrders(req, res, next) {
       .eq('runner_id', req.user.id)
       .order('created_at', { ascending: false })
 
-    if (error) {
+    if (assignedErr) {
       throw ApiError.internal('Failed to retrieve runner orders.')
     }
 
-    const sanitized = (orders || []).map((o) => {
+    let availableOrders = []
+    // 2. Unassigned CONFIRMED orders available to online runners
+    if (isOnline) {
+      const { data: unassigned, error: availErr } = await supabase
+        .from('orders')
+        .select(`
+          id,
+          customer_id,
+          runner_id,
+          delivery_location_id,
+          delivery_location_snapshot,
+          status,
+          payment_status,
+          item_subtotal,
+          combined_delivery_fee,
+          base_amount,
+          platform_fee,
+          total_payable,
+          route_distance_km,
+          routing_provider,
+          created_at,
+          order_fulfillment_groups (
+            id,
+            store_id,
+            status,
+            pickup_sequence_index,
+            picked_up_at
+          )
+        `)
+        .is('runner_id', null)
+        .eq('status', 'CONFIRMED')
+        .order('created_at', { ascending: false })
+
+      if (availErr) {
+        throw ApiError.internal('Failed to retrieve available orders.')
+      }
+      availableOrders = unassigned || []
+    }
+
+    const orderMap = new Map()
+    for (const o of (assignedOrders || [])) {
+      orderMap.set(o.id, o)
+    }
+    for (const o of availableOrders) {
+      if (!orderMap.has(o.id)) {
+        orderMap.set(o.id, o)
+      }
+    }
+
+    const combined = Array.from(orderMap.values())
+    combined.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+
+    const sanitized = combined.map((o) => {
       const copy = { ...o }
       delete copy.handover_otp_hash
       delete copy.handoverOtpHash
@@ -738,6 +793,140 @@ async function handleRunnerAssignedOrders(req, res, next) {
     })
 
     res.status(200).json(sanitized)
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
+ * Runner Order Acceptance endpoint (Milestone 3).
+ * Atomically claims an available CONFIRMED order for the calling runner.
+ * Enforces:
+ * - Approved runner authentication
+ * - Online availability check
+ * - Atomic exclusive claiming via conditional SQL update (runner_id IS NULL AND status = 'CONFIRMED')
+ * - Transitions order status to PREPARING
+ * - Concurrency conflict rejection with HTTP 409 ORDER_ALREADY_ASSIGNED
+ */
+export async function handleRunnerAcceptOrder(req, res, next) {
+  try {
+    if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You must be a runner to accept delivery requests.')
+    }
+    if (req.user.runnerStatus !== 'approved' && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('Runner application is pending approval or suspended.')
+    }
+
+    const orderId = req.params?.id || req.body?.orderId
+    const isOnline = req.body?.isOnline !== false && req.body?.isOnline !== 'false' && req.query?.isOnline !== 'false'
+
+    if (!orderId) {
+      throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
+    }
+    if (!isOnline) {
+      throw ApiError.badRequest('Runner must be online to accept delivery requests.', 'RUNNER_OFFLINE')
+    }
+
+    const supabase = getSupabaseAdmin()
+
+    // Atomic claim: only succeeds if runner_id IS NULL and status = 'CONFIRMED'
+    const { data: updatedRows, error: updateErr } = await supabase
+      .from('orders')
+      .update({
+        runner_id: req.user.id,
+        status: 'PREPARING',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', orderId)
+      .is('runner_id', null)
+      .eq('status', 'CONFIRMED')
+      .select(`
+        id,
+        customer_id,
+        runner_id,
+        delivery_location_id,
+        delivery_location_snapshot,
+        status,
+        payment_status,
+        item_subtotal,
+        combined_delivery_fee,
+        base_amount,
+        platform_fee,
+        total_payable,
+        route_distance_km,
+        routing_provider,
+        created_at,
+        order_fulfillment_groups (
+          id,
+          store_id,
+          status,
+          pickup_sequence_index,
+          picked_up_at
+        )
+      `)
+
+    if (updateErr) {
+      throw ApiError.internal('Failed to accept order.')
+    }
+
+    if (Array.isArray(updatedRows) && updatedRows.length > 0) {
+      const order = updatedRows[0]
+      const sanitized = { ...order }
+      delete sanitized.handover_otp_hash
+      delete sanitized.handoverOtpHash
+      delete sanitized._mockOtp
+      delete sanitized.otp
+      return res.status(200).json(sanitized)
+    }
+
+    // If update returned 0 rows, evaluate existing order state to return specific error code
+    const { data: existingOrder, error: fetchErr } = await supabase
+      .from('orders')
+      .select('id, runner_id, status')
+      .eq('id', orderId)
+      .maybeSingle()
+
+    if (fetchErr) {
+      throw ApiError.internal('Failed to retrieve order state.')
+    }
+
+    if (!existingOrder) {
+      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+    }
+
+    if (existingOrder.runner_id === req.user.id) {
+      throw new ApiError(
+        'ORDER_ALREADY_ACCEPTED',
+        'You have already accepted this delivery request.',
+        400,
+        { orderId }
+      )
+    }
+
+    if (existingOrder.runner_id && existingOrder.runner_id !== req.user.id) {
+      throw new ApiError(
+        'ORDER_ALREADY_ASSIGNED',
+        'This delivery request has already been assigned to another runner.',
+        409,
+        { orderId, assignedRunnerId: existingOrder.runner_id }
+      )
+    }
+
+    if (existingOrder.status !== 'CONFIRMED') {
+      throw new ApiError(
+        'UNAVAILABLE_REQUEST',
+        `Order is in ${existingOrder.status} status and is no longer available for acceptance.`,
+        409,
+        { orderId, status: existingOrder.status }
+      )
+    }
+
+    throw new ApiError(
+      'ORDER_ALREADY_ASSIGNED',
+      'This delivery request has already been assigned to another runner.',
+      409,
+      { orderId }
+    )
   } catch (err) {
     next(err)
   }
@@ -1635,6 +1824,10 @@ ordersRouter.post('/orders/expire', authenticate, handleExpirePayment)
 // Runner assigned orders
 ordersRouter.get('/api/v1/runner/orders', authenticate, handleRunnerAssignedOrders)
 ordersRouter.post('/runner/orders/assigned', authenticate, handleRunnerAssignedOrders)
+
+// Runner order acceptance (Milestone 3)
+ordersRouter.post('/api/v1/runner/orders/:id/accept', authenticate, handleRunnerAcceptOrder)
+ordersRouter.post('/runner/order/accept', authenticate, handleRunnerAcceptOrder)
 
 // Runner order lifecycle transition
 ordersRouter.post('/api/v1/runner/orders/:id/transition', authenticate, handleRunnerTransitionOrder)

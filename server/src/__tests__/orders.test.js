@@ -1715,3 +1715,249 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
     expect(order.payment_status).toBe('PENDING')
   })
 })
+
+describe('Milestone 3 — Runner Order Availability & Exclusive Acceptance', () => {
+  let app
+  let mockState
+
+  const assignedOrder = {
+    id: 'ord_assigned_1',
+    customer_id: 'usr_alice',
+    runner_id: 'usr_runner',
+    delivery_location_id: 'loc_hostel_a',
+    delivery_location_snapshot: { name: 'Hostel A' },
+    status: 'PREPARING',
+    payment_status: 'PAID',
+    item_subtotal: '120.00',
+    combined_delivery_fee: '15.00',
+    base_amount: '135.00',
+    platform_fee: '0.12',
+    total_payable: '135.12',
+    handover_otp_hash: 'secret_hash_value',
+    _mockOtp: '123456',
+    created_at: new Date(Date.now() - 60000).toISOString(),
+    order_fulfillment_groups: [],
+  }
+
+  const availableConfirmedOrder = {
+    id: 'ord_available_confirmed',
+    customer_id: 'usr_alice',
+    runner_id: null,
+    delivery_location_id: 'loc_hostel_a',
+    delivery_location_snapshot: { name: 'Hostel A' },
+    status: 'CONFIRMED',
+    payment_status: 'PAID',
+    item_subtotal: '200.00',
+    combined_delivery_fee: '15.00',
+    base_amount: '215.00',
+    platform_fee: '0.25',
+    total_payable: '215.25',
+    created_at: new Date().toISOString(),
+    order_fulfillment_groups: [],
+  }
+
+  const awaitingPaymentOrder = {
+    id: 'ord_awaiting_payment',
+    customer_id: 'usr_alice',
+    runner_id: null,
+    delivery_location_id: 'loc_hostel_a',
+    delivery_location_snapshot: { name: 'Hostel A' },
+    status: 'AWAITING_PAYMENT',
+    payment_status: 'PENDING',
+    item_subtotal: '100.00',
+    combined_delivery_fee: '15.00',
+    base_amount: '115.00',
+    platform_fee: '0.10',
+    total_payable: '115.10',
+    created_at: new Date().toISOString(),
+    order_fulfillment_groups: [],
+  }
+
+  beforeEach(() => {
+    const mock = createMockSupabaseClient({
+      users: [
+        { id: 'usr_alice', token: 'tok_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
+        { id: 'usr_runner', token: 'tok_runner', email: 'runner@campus.edu', name: 'Runner Rob' },
+        { id: 'usr_runner2', token: 'tok_runner2', email: 'runner2@campus.edu', name: 'Runner Rita' },
+        { id: 'usr_applicant', token: 'tok_applicant', email: 'applicant@campus.edu', name: 'Applicant Alex' },
+      ],
+      profiles: [
+        { id: 'usr_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
+        { id: 'usr_runner', email: 'runner@campus.edu', name: 'Runner Rob', runner_status: 'approved' },
+        { id: 'usr_runner2', email: 'runner2@campus.edu', name: 'Runner Rita', runner_status: 'approved' },
+        { id: 'usr_applicant', email: 'applicant@campus.edu', name: 'Applicant Alex', runner_status: 'applicant' },
+      ],
+      userRoles: [
+        { user_id: 'usr_alice', role: ROLES.CUSTOMER },
+        { user_id: 'usr_runner', role: ROLES.RUNNER },
+        { user_id: 'usr_runner2', role: ROLES.RUNNER },
+        { user_id: 'usr_applicant', role: ROLES.CUSTOMER },
+      ],
+      orders: [
+        structuredClone(assignedOrder),
+        structuredClone(availableConfirmedOrder),
+        structuredClone(awaitingPaymentOrder),
+      ],
+    })
+    mockState = mock.state
+    app = createApp()
+  })
+
+  it('exposes unassigned CONFIRMED orders to approved online runners in GET /api/v1/runner/orders', async () => {
+    const res = await request(app)
+      .get('/api/v1/runner/orders')
+      .set('Authorization', 'Bearer tok_runner')
+
+    expect(res.status).toBe(200)
+    expect(Array.isArray(res.body)).toBe(true)
+    expect(res.body.length).toBe(2)
+
+    const ids = res.body.map((o) => o.id)
+    expect(ids).toContain('ord_assigned_1')
+    expect(ids).toContain('ord_available_confirmed')
+    expect(ids).not.toContain('ord_awaiting_payment')
+
+    // Sanitization check: no OTP leak
+    for (const order of res.body) {
+      expect(order.handover_otp_hash).toBeUndefined()
+      expect(order._mockOtp).toBeUndefined()
+    }
+  })
+
+  it('excludes unassigned available orders when runner is offline', async () => {
+    // Via GET with query param ?isOnline=false
+    const resQuery = await request(app)
+      .get('/api/v1/runner/orders?isOnline=false')
+      .set('Authorization', 'Bearer tok_runner')
+
+    expect(resQuery.status).toBe(200)
+    expect(resQuery.body.length).toBe(1)
+    expect(resQuery.body[0].id).toBe('ord_assigned_1')
+
+    // Via POST with body { isOnline: false }
+    const resBody = await request(app)
+      .post('/runner/orders/assigned')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: false })
+
+    expect(resBody.status).toBe(200)
+    expect(resBody.body.length).toBe(1)
+    expect(resBody.body[0].id).toBe('ord_assigned_1')
+  })
+
+  it('allows approved online runner to accept available order via POST /api/v1/runner/orders/:id/accept', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(200)
+    expect(res.body.id).toBe('ord_available_confirmed')
+    expect(res.body.status).toBe('PREPARING')
+    expect(res.body.runner_id).toBe('usr_runner')
+
+    // Verify persisted state in mock database
+    const orderInDb = mockState.orders.find((o) => o.id === 'ord_available_confirmed')
+    expect(orderInDb.runner_id).toBe('usr_runner')
+    expect(orderInDb.status).toBe('PREPARING')
+  })
+
+  it('allows approved online runner to accept available order via RPC endpoint POST /runner/order/accept', async () => {
+    const res = await request(app)
+      .post('/runner/order/accept')
+      .set('Authorization', 'Bearer tok_runner2')
+      .send({ orderId: 'ord_available_confirmed', isOnline: true })
+
+    expect(res.status).toBe(200)
+    expect(res.body.id).toBe('ord_available_confirmed')
+    expect(res.body.status).toBe('PREPARING')
+    expect(res.body.runner_id).toBe('usr_runner2')
+  })
+
+  it('rejects offline runner from accepting orders with 400 RUNNER_OFFLINE', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: false })
+
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('RUNNER_OFFLINE')
+  })
+
+  it('atomically enforces exclusive assignment and rejects concurrent runner with 409 ORDER_ALREADY_ASSIGNED', async () => {
+    // Runner 1 claims the order first
+    const firstClaim = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: true })
+
+    expect(firstClaim.status).toBe(200)
+    expect(firstClaim.body.runner_id).toBe('usr_runner')
+
+    // Runner 2 tries to claim the same order concurrently
+    const secondClaim = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_runner2')
+      .send({ isOnline: true })
+
+    expect(secondClaim.status).toBe(409)
+    expect(secondClaim.body.code).toBe('ORDER_ALREADY_ASSIGNED')
+    expect(secondClaim.body.details?.assignedRunnerId).toBe('usr_runner')
+
+    // Confirm DB still has Runner 1 exclusively
+    const orderInDb = mockState.orders.find((o) => o.id === 'ord_available_confirmed')
+    expect(orderInDb.runner_id).toBe('usr_runner')
+  })
+
+  it('rejects duplicate acceptance by same runner with 400 ORDER_ALREADY_ACCEPTED', async () => {
+    // Already assigned order for Runner 1
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_assigned_1/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('ORDER_ALREADY_ACCEPTED')
+  })
+
+  it('rejects accepting an unpaid order with 409 UNAVAILABLE_REQUEST', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_awaiting_payment/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('UNAVAILABLE_REQUEST')
+  })
+
+  it('blocks customers from accepting orders with 403 FORBIDDEN', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('blocks unapproved runner applicants with 403 FORBIDDEN', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_applicant')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('returns 404 ORDER_NOT_FOUND when accepting a non-existent order', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_non_existent/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(404)
+    expect(res.body.code).toBe('ORDER_NOT_FOUND')
+  })
+})
+

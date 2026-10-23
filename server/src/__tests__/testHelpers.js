@@ -1,6 +1,13 @@
 import { setSupabaseAdmin } from '../config/supabase.js'
 import { ROLES } from '../utils/permissions.js'
 
+function matchesFilter(rowVal, filterVal) {
+  if (filterVal === null) {
+    return rowVal === null || rowVal === undefined
+  }
+  return rowVal === filterVal
+}
+
 /**
  * Creates an in-memory mock Supabase client for testing Express routes.
  */
@@ -131,7 +138,7 @@ export function createMockSupabaseClient({
         },
         async maybeSingle() {
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value) &&
+            filters.every((f) => matchesFilter(row[f.column], f.value)) &&
             inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
           let row = results[0] || null
@@ -142,7 +149,7 @@ export function createMockSupabaseClient({
         },
         async single() {
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value) &&
+            filters.every((f) => matchesFilter(row[f.column], f.value)) &&
             inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
           if (results.length === 0) {
@@ -213,7 +220,7 @@ export function createMockSupabaseClient({
             }
             const updatedRows = []
             for (let i = 0; i < currentTableData.length; i++) {
-              if (filters.every((f) => currentTableData[i][f.column] === f.value)) {
+              if (filters.every((f) => matchesFilter(currentTableData[i][f.column], f.value))) {
                 currentTableData[i] = { ...currentTableData[i], ...pendingUpdate }
                 updatedRows.push(currentTableData[i])
               }
@@ -223,7 +230,7 @@ export function createMockSupabaseClient({
 
           if (isDelete) {
             const kept = currentTableData.filter(
-              (row) => !filters.every((f) => row[f.column] === f.value),
+              (row) => !filters.every((f) => matchesFilter(row[f.column], f.value)),
             )
             currentTableData.length = 0
             currentTableData.push(...kept)
@@ -232,7 +239,7 @@ export function createMockSupabaseClient({
           }
 
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value) &&
+            filters.every((f) => matchesFilter(row[f.column], f.value)) &&
             inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
           // Handle relationships in mock if queried
