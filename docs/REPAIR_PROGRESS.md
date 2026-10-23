@@ -23,7 +23,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 |---|---|---|---|---|
 | M0 | Baseline, routes, and root-cause evidence | VERIFIED | Commit 8b13b9f; baseline tests (613 passed), root causes established | Complete |
 | M1 | Secure runner approval fix | VERIFIED | Migration 20261024000001, admin.js RPC support, 35 auth tests passed | Complete; proceed to M2 |
-| M2 | Customer order-tracking UI | NOT_STARTED | — | Ensure labels derive from authoritative order state |
+| M2 | Customer order-tracking UI | VERIFIED | Dynamic state mapping, 6-stage lifecycle tracker, zero contradiction, 78 customer tests passed | Complete; proceed to M3 |
 | M3 | Runner dashboard and availability | NOT_STARTED | — | Confirm route, access guard, eligible orders, atomic acceptance |
 | M4 | Demo runner procedure | NOT_STARTED | — | Identify safe test account or provide secure manual steps |
 | M5 | Payment latency and duplicate prevention | NOT_STARTED | — | Measure path; preserve necessary Gmail matching wait |
@@ -53,6 +53,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 
 ### M1 — Secure Runner Approval Fix
 - **Date / Session:** 2026-10-24
+- **Commit:** `e38c0a3` (`feat(admin): fix runner status update privilege escalation and add atomic RPC (Milestone 1)`)
 - **Files Modified:**
   - `supabase/migrations/20261024000001_fix_admin_runner_approval_privilege.sql`: Created forward migration updating `public.auth_is_admin()`, `public.auth_is_super_admin()`, and `public.prevent_profile_privilege_escalation()` to recognize `service_role` and `postgres`, while preserving strict client protection against unauthorized self-elevation. Created atomic stored procedure `public.admin_set_runner_status(UUID, VARCHAR)`.
   - `server/src/routes/admin.js`: Hardened `handleSetRunnerStatus` to use `admin_set_runner_status` RPC with clean error diagnostics and resilient direct table fallback.
@@ -66,3 +67,26 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - Confirmed non-admins remain strictly forbidden from altering `runner_status` to `'approved'` or `'suspended'`.
   - Confirmed only callers with `PERMISSIONS.RUNNERS_APPROVE` (verified via admin JWT) can execute `POST /admin/runners/setStatus`.
   - Confirmed zero service-role keys or credentials exposed.
+
+### M2 — Customer Order-Tracking UI
+- **Date / Session:** 2026-10-24
+- **Files Modified:**
+  - `src/components/cart/OrderConfirmationView.jsx`:
+    - Eliminated hardcoded contradictory "Awaiting Payment" / "Payment: Pending" badges when payment is confirmed.
+    - Derived header title, subtitle, and badges dynamically from authoritative order state (`order.paymentStatus` and `order.status`).
+    - Implemented 6-stage lifecycle progress tracker (`Payment Confirmed` -> `Waiting for Runner` -> `Runner Assigned` -> `Preparing / Pickup` -> `Out for Delivery` -> `Delivered`).
+    - Safely rendered assigned campus runner card when runner is assigned.
+    - Preserved in-app delivery OTP challenge embedding (`CustomerDeliveryOtpCard`) when `order.status === 'ON_THE_WAY'`.
+    - Added explicit, non-blaming customer support banners for `CANCELLED` and `EXPIRED` orders.
+  - `src/pages/customer/OrderConfirmationPage.jsx`:
+    - Added safe live polling every 4 seconds for active non-terminal orders, stopping cleanly upon unmount or when reaching terminal states (`DELIVERED`, `CANCELLED`, `EXPIRED`).
+  - `server/src/routes/orders.js`:
+    - Included `runnerId: order.runner_id || order.runnerId || null` in `formatCanonicalOrder` so the client can reliably detect runner assignment.
+  - `src/pages/customer/__tests__/orderTrackingUI.test.jsx`:
+    - Added comprehensive unit test suite covering contradiction elimination, pending state, preparing/pickup runner card, out-for-delivery OTP card, delivered completion, and cancelled/expired banners.
+- **Verification Commands & Evidence:**
+  - `npm test -- src/pages/customer/`: 5 test files passed, 78 tests passed, exit code 0.
+  - Full suite `npm test`: 31 files passed, 623 passed, 1 skipped (624 total), exit code 0.
+  - `node scripts/validate-migrations.mjs`: 12 migration files validated, exit code 0.
+  - `npm run build`: Client bundle (695 kB main) and SSR bundle (93.5 kB entry) compiled cleanly, exit code 0.
+  - `git diff --check`: 0 whitespace issues.

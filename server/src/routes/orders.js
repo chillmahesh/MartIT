@@ -269,6 +269,7 @@ export function formatCanonicalOrder(order) {
   return {
     id: order.id,
     customerId: order.customer_id || order.customerId,
+    runnerId: order.runner_id || order.runnerId || null,
     storeId,
     locationId,
     deliveryLocationId: locationId,
