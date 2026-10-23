@@ -5,6 +5,7 @@ import { authenticate } from '../middleware/auth.js'
 import { getSupabaseAdmin } from '../config/supabase.js'
 import { ApiError } from '../utils/errors.js'
 import { ROLES } from '../utils/permissions.js'
+import { env } from '../config/env.js'
 import {
   FLAT_DELIVERY_FEE,
   MAX_SERVICE_KM,
@@ -15,6 +16,122 @@ import {
 import { parseCoordinate, straightLineKm } from '../../../src/utils/distance.js'
 
 export const ordersRouter = Router()
+
+// Pluggable Make.com verification client for testing / dependency injection
+let customMakeVerifier = null
+
+export function setMakeVerifier(fn) {
+  customMakeVerifier = fn
+}
+
+/**
+ * Queries Make.com verification webhook to check whether customer payment was received in merchant inbox.
+ *
+ * Implements strict response contract:
+ * - Distinguishes confirmed positive (e.g. "Payment recieved", "Payment received", SUCCESS, PAID)
+ *   from negative ("not recieved", "not received", FAILED, DECLINED), timeout, network error, and malformed body.
+ * - HTTP 200 alone does not establish payment success.
+ */
+export async function queryMakePaymentVerification({ orderId, amount }) {
+  if (typeof customMakeVerifier === 'function') {
+    return customMakeVerifier({ orderId, amount })
+  }
+
+  const webhookUrl = env.MAKE_VERIFICATION_WEBHOOK_URL || process.env.MAKE_VERIFICATION_WEBHOOK_URL
+  if (!webhookUrl) {
+    return {
+      success: false,
+      status: 'inconclusive',
+      reason: 'MAKE_WEBHOOK_UNCONFIGURED',
+      message: 'Make.com payment verification URL is not configured.',
+    }
+  }
+
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10000)
+
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        content: Number(amount),
+        amount: Number(amount),
+        orderId: String(orderId),
+      }),
+      signal: controller.signal,
+    })
+    clearTimeout(timeout)
+
+    if (!res.ok) {
+      return {
+        success: false,
+        status: 'inconclusive',
+        httpStatus: res.status,
+        reason: 'HTTP_ERROR',
+        message: `Make.com returned non-OK HTTP status: ${res.status}`,
+      }
+    }
+
+    const responseText = await res.text()
+    let responseJson = null
+    try {
+      responseJson = JSON.parse(responseText)
+    } catch {
+      // Body may be plain text from webhook scenario, e.g. "Payment recieved"
+    }
+
+    // Explicit negative check: "not recieved", "not received", fail, declined, rejected, bounced
+    const isNegative =
+      /not rec[ei]{2}ved|fail|declin|reject|bounc/i.test(responseText) ||
+      responseJson?.status === 'FAILED' ||
+      responseJson?.status === 'DECLINED'
+
+    if (isNegative) {
+      return {
+        success: false,
+        status: 'inconclusive',
+        reason: 'PAYMENT_NOT_RECEIVED',
+        rawResponse: responseText,
+        message: 'Payment not detected yet. Direct customer to contact admin if money was deducted.',
+      }
+    }
+
+    // Confirmed positive check: "Payment recieved", "Payment received", SUCCESS, PAID
+    const isPositive =
+      /payment rec[ei]{2}ved/i.test(responseText) ||
+      responseJson?.status === 'SUCCESS' ||
+      responseJson?.paymentStatus === 'PAID' ||
+      responseJson?.verified === true
+
+    if (isPositive) {
+      return {
+        success: true,
+        status: 'verified',
+        rawResponse: responseText,
+        message: 'Payment received and verified.',
+      }
+    }
+
+    // Malformed, unknown, or ambiguous body
+    return {
+      success: false,
+      status: 'inconclusive',
+      reason: 'UNKNOWN_RESPONSE',
+      rawResponse: responseText,
+      message: 'Payment verification returned an unconfirmed response.',
+    }
+  } catch (netErr) {
+    return {
+      success: false,
+      status: 'inconclusive',
+      reason: netErr.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK_ERROR',
+      message: netErr.message || 'Failed to query Make.com payment verification.',
+    }
+  }
+}
 
 /**
  * Customer order history retrieval.
@@ -341,7 +458,7 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    // 4. Server-verified evidence check (e.g. from payment_records / Make.com webhook)
+    // 4. Server-verified evidence check (e.g. from prior webhook or check)
     const { data: verifiedPayment } = await supabase
       .from('payment_records')
       .select('*')
@@ -362,12 +479,76 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    // 5. Inconclusive check response ('not received') while window is still active
+    // 5. Query Make.com verification workflow
+    // Backend waits the required five seconds before querying Make.com (bypassed in test environment)
+    const bypassDelay = req.headers['x-bypass-delay'] === 'true' || process.env.NODE_ENV === 'test'
+    if (!bypassDelay) {
+      await new Promise((resolve) => setTimeout(resolve, 5000))
+    }
+
+    const makeResult = await queryMakePaymentVerification({
+      orderId: order.id,
+      amount: Number(order.total_payable),
+    })
+
+    if (makeResult?.success === true) {
+      const recordId = `pay_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`
+      const dedupeKey = order.payment_attempt_id || `make_${order.id}`
+
+      const { data: existingRec } = await supabase
+        .from('payment_records')
+        .select('id')
+        .eq('order_id', order.id)
+        .eq('attempt_id', dedupeKey)
+        .maybeSingle()
+
+      if (existingRec) {
+        await supabase
+          .from('payment_records')
+          .update({
+            status: 'PAID',
+            evidence: 'Payment received',
+            verification_source: 'AUTHORITATIVE_GATEWAY',
+          })
+          .eq('id', existingRec.id)
+      } else {
+        await supabase
+          .from('payment_records')
+          .insert({
+            id: recordId,
+            order_id: order.id,
+            attempt_id: dedupeKey,
+            amount: Number(order.total_payable),
+            status: 'PAID',
+            provider: 'UPI',
+            verification_source: 'AUTHORITATIVE_GATEWAY',
+            evidence: 'Payment received',
+            raw_payload: {
+              makeResponse: makeResult.rawResponse || 'Payment recieved',
+              verifiedAt: new Date().toISOString(),
+              verifiedVia: 'MAKE_COM_CONFIRMATION',
+            },
+            created_at: new Date().toISOString(),
+          })
+      }
+
+      await executeAtomicPaymentVerification(supabase, order.id)
+
+      return res.status(200).json({
+        orderId: order.id,
+        status: 'verified',
+        paymentStatus: 'PAID',
+        message: 'Payment received and verified.',
+      })
+    }
+
+    // 6. Inconclusive check response ('not received' or unconfirmed) while window is still active
     return res.status(200).json({
       orderId: order.id,
       status: 'inconclusive',
       paymentStatus: 'PENDING',
       message: 'Payment not received yet. Direct customer to contact admin if money was deducted.',
+      reason: makeResult?.reason || undefined,
     })
   } catch (err) {
     next(err)

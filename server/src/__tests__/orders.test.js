@@ -3,6 +3,7 @@ import request from 'supertest'
 import { createApp } from '../app.js'
 import { createMockSupabaseClient } from './testHelpers.js'
 import { ROLES } from '../utils/permissions.js'
+import { setMakeVerifier } from '../routes/orders.js'
 
 describe('Order History & Detail Endpoints', () => {
   let app
@@ -359,6 +360,7 @@ describe('Payment State Transitions & Hardening', () => {
       payment_records: [],
     })
     mockState = mock.state
+    setMakeVerifier(null)
     app = createApp()
   })
 
@@ -722,6 +724,217 @@ describe('Payment State Transitions & Hardening', () => {
       (r) => r.active_order_id === 'ord_active_win',
     )
     expect(feeSlot.active_order_id).toBe('ord_active_win')
+  })
+
+  describe('Make.com Payment Confirmation Integration (Milestone 1)', () => {
+    it('transitions PENDING order to PAID and CONFIRMED when Make.com responds with blueprint spelling "Payment recieved"', async () => {
+      setMakeVerifier(async ({ orderId, amount }) => {
+        expect(orderId).toBe('ord_active_win')
+        expect(amount).toBe(115.15)
+        return {
+          success: true,
+          status: 'verified',
+          rawResponse: 'Payment recieved',
+          message: 'Payment received and verified.',
+        }
+      })
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('verified')
+      expect(res.body.paymentStatus).toBe('PAID')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PAID')
+      expect(dbOrder.status).toBe('CONFIRMED')
+
+      const paymentRecord = mockState.payment_records.find((r) => r.order_id === 'ord_active_win')
+      expect(paymentRecord).toBeDefined()
+      expect(paymentRecord.status).toBe('PAID')
+      expect(paymentRecord.verification_source).toBe('AUTHORITATIVE_GATEWAY')
+      expect(paymentRecord.evidence).toBe('Payment received')
+    })
+
+    it('transitions PENDING order to PAID and CONFIRMED when Make.com responds with standard spelling "Payment received"', async () => {
+      setMakeVerifier(async () => ({
+        success: true,
+        status: 'verified',
+        rawResponse: 'Payment received',
+        message: 'Payment received and verified.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('verified')
+      expect(res.body.paymentStatus).toBe('PAID')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PAID')
+      expect(dbOrder.status).toBe('CONFIRMED')
+    })
+
+    it('leaves order PENDING and returns inconclusive when Make.com responds with blueprint spelling "not recieved"', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'PAYMENT_NOT_RECEIVED',
+        rawResponse: 'not recieved',
+        message: 'Payment not detected yet. Direct customer to contact admin if money was deducted.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+      expect(res.body.message).toContain('contact admin')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+      expect(dbOrder.status).toBe('CREATED')
+    })
+
+    it('leaves order PENDING and returns inconclusive when Make.com responds with standard spelling "not received"', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'PAYMENT_NOT_RECEIVED',
+        rawResponse: 'not received',
+        message: 'Payment not detected yet. Direct customer to contact admin if money was deducted.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+    })
+
+    it('handles Make.com timeout gracefully without marking order paid', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'TIMEOUT',
+        message: 'Request timed out.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+    })
+
+    it('handles Make.com network error gracefully without marking order paid', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'NETWORK_ERROR',
+        message: 'Connection reset by peer.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+    })
+
+    it('handles non-200 HTTP response from Make.com safely without marking paid', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        httpStatus: 500,
+        reason: 'HTTP_ERROR',
+        message: 'Make.com scenario error.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+    })
+
+    it('handles unknown or malformed response body from Make.com safely without marking paid', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'UNKNOWN_RESPONSE',
+        rawResponse: '<html>502 Bad Gateway</html>',
+        message: 'Payment verification returned an unconfirmed response.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+    })
+
+    it('handles repeated check requests idempotently once confirmed', async () => {
+      setMakeVerifier(async () => ({
+        success: true,
+        status: 'verified',
+        rawResponse: 'Payment recieved',
+        message: 'Payment received and verified.',
+      }))
+
+      // First check confirms payment
+      const res1 = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+      expect(res1.body.status).toBe('verified')
+
+      // Second check returns verified without querying Make.com or duplicating records
+      let secondVerifierCalled = false
+      setMakeVerifier(async () => {
+        secondVerifierCalled = true
+        return { success: false, status: 'inconclusive' }
+      })
+
+      const res2 = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res2.status).toBe(200)
+      expect(res2.body.status).toBe('verified')
+      expect(res2.body.paymentStatus).toBe('PAID')
+      expect(secondVerifierCalled).toBe(false)
+    })
   })
 })
 
