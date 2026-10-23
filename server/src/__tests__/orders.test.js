@@ -402,7 +402,9 @@ describe('Payment State Transitions & Hardening', () => {
     // Add verified payment record matching exact order total (115.15)
     mockState.payment_records.push({
       order_id: 'ord_active_win',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 
@@ -429,7 +431,9 @@ describe('Payment State Transitions & Hardening', () => {
     // Underpaid evidence (e.g. ₹10.00 instead of ₹115.15)
     mockState.payment_records.push({
       order_id: 'ord_active_win',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 10.00,
     })
 
@@ -446,11 +450,35 @@ describe('Payment State Transitions & Hardening', () => {
     expect(dbOrder.payment_status).toBe('PENDING')
   })
 
+  it('rejects check-payment transition when payment record lacks authoritative verification source', async () => {
+    // Unverified evidence from raw ingestion without gateway verification
+    mockState.payment_records.push({
+      order_id: 'ord_active_win',
+      status: 'PROCESSING',
+      evidence: null,
+      verification_source: 'MAKE_WEBHOOK_INGESTION',
+      amount: 115.15,
+    })
+
+    const res = await request(app)
+      .post('/api/v1/orders/ord_active_win/check-payment')
+      .set('Authorization', 'Bearer tok_alice')
+
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('inconclusive')
+    expect(res.body.paymentStatus).toBe('PENDING')
+
+    const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+    expect(dbOrder.payment_status).toBe('PENDING')
+  })
+
   it('Late payment verification cannot overwrite terminal state (EXPIRED)', async () => {
     // Evidence arrives late after order is already in terminal EXPIRED state
     mockState.payment_records.push({
       order_id: 'ord_terminal_expired',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 
@@ -470,7 +498,9 @@ describe('Payment State Transitions & Hardening', () => {
   it('handles duplicate verification calls idempotently without state corruption', async () => {
     mockState.payment_records.push({
       order_id: 'ord_active_win',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 
@@ -590,7 +620,9 @@ describe('Payment State Transitions & Hardening', () => {
 
     mockState.payment_records.push({
       order_id: 'ord_cancelled_test',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 
@@ -622,7 +654,9 @@ describe('Payment State Transitions & Hardening', () => {
 
     mockState.payment_records.push({
       order_id: 'ord_cancelled_pending_test',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 
@@ -641,7 +675,9 @@ describe('Payment State Transitions & Hardening', () => {
   it('fails safely with 500 and does NOT mutate database state or fall back to REST updates when RPC fails during check-payment', async () => {
     mockState.payment_records.push({
       order_id: 'ord_active_win',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 

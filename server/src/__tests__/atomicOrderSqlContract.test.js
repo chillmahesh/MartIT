@@ -269,7 +269,7 @@ describe('Authoritative payment verification trust contract', () => {
 
 describe('Payment transition RPC execute privileges', () => {
   it('revokes SECURITY DEFINER payment transition from public client roles and grants service role only', () => {
-    const sql = readFileSync(
+    const sql = fs.readFileSync(
       path.resolve(process.cwd(), 'supabase/migrations/20261022160000_restrict_payment_transition_rpc.sql'),
       'utf8',
     )
