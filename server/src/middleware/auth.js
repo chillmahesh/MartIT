@@ -1,6 +1,6 @@
 import { getSupabaseAdmin } from '../config/supabase.js'
 import { ApiError } from '../utils/errors.js'
-import { ROLES, hasPermission } from '../utils/permissions.js'
+import { hasPermission } from '../utils/permissions.js'
 
 /**
  * Extracts Bearer token from Authorization header.

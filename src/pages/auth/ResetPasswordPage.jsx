@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { AlertCircle, CheckCircle2, KeyRound, Lock, Mail, RefreshCw } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Mail } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'

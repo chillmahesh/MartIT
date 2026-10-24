@@ -11,8 +11,6 @@ import {
   Clock,
   MapPin,
   ArrowRight,
-  CheckCircle2,
-  PackageCheck,
   CreditCard,
   RefreshCw,
   Search,

@@ -27,7 +27,6 @@ import {
   OTHER_LOCATION_VALUE,
 } from '@/utils/checkoutValidation'
 import { Button } from '@/components/ui/Button'
-import { Badge } from '@/components/ui/Badge'
 import { Price } from '@/components/ui/Price'
 import { formatINR } from '@/utils/currency'
 import { formatDistanceKm } from '@/utils/distance'
@@ -37,7 +36,6 @@ import {
   FLAT_DELIVERY_FEE_LABEL,
   PRICING_VERSION,
 } from '@/config/fees'
-import { cn } from '@/utils/cn'
 
 export default function CartPage() {
   const navigate = useNavigate()

@@ -5,14 +5,12 @@ import { DeliveryDetailsForm } from '@/components/cart/DeliveryDetailsForm'
 import { OrderConfirmationView } from '@/components/cart/OrderConfirmationView'
 import { CustomerPaymentView } from '@/components/payment/CustomerPaymentView'
 import { useCartStore } from '@/stores/cartStore'
-import { useAuthStore } from '@/stores/authStore'
 import { createMockServer } from '@/services/mockServer/handlers'
 import {
   PRESET_CAMPUS_LOCATIONS,
   OTHER_LOCATION_VALUE,
   validateCheckoutDetails,
   mapCampusLocationToDestinationId,
-  CAMPUS_LOCATION_DESTINATION_MAP,
 } from '@/utils/checkoutValidation'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router'
