@@ -29,7 +29,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M5 | Payment latency and duplicate prevention | VERIFIED | Commit 20bb63c; inFlightPaymentChecks concurrency lock, disabled click state, HTTP 409 guard, 86 order tests passed | Complete; proceed to M6 |
 | M6 | Supabase findings review | VERIFIED | Commit 4f3a4ed; Migration 20261024000002, advisor review audit trail, 628 passed tests | Complete; proceed to M7 |
 | M7 | Regression suite and final audit | VERIFIED | Commit d2f92eb; 13 migrations valid, 31 test files (628 passed, 1 skipped), clean build, diff verified | Complete; proceed to M8 |
-| M8 | Staging readiness & live acceptance checklist | VERIFIED | Adaptive environment notices, mock-vs-live auth boundaries, staged live acceptance checklist, 628 passed tests, build verified | Staging deployment & live payment testing by operator |
+| M8 | Staging readiness & live acceptance checklist | VERIFIED | Commit 7f2b82f; adaptive environment notices, mock-vs-live auth boundaries, staged live acceptance checklist, 628 passed tests, build verified | Staging deployment & live payment testing by operator |
 
 ## Milestone Evidence & Audit Trails
 
