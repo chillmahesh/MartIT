@@ -178,4 +178,21 @@ describe('admin endpoints', () => {
     expect(updated.isOpen).toBe(false)
     expect(updated.description).toBe('Temporarily closed for inventory')
   })
+
+  it('admin can update product stock and availability via catalogue.products.update', async () => {
+    const custToken = await login('customer')
+    await expect(
+      server.handle('catalogue.products.update', { productId: 'p_milk_500', stock: 100 }, { token: custToken })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 })
+
+    const adminToken = await login('super_admin')
+    const updated = await server.handle(
+      'catalogue.products.update',
+      { productId: 'p_maggi', stock: 50, isAvailable: true },
+      { token: adminToken }
+    )
+    expect(updated.id).toBe('p_maggi')
+    expect(updated.stock).toBe(50)
+    expect(updated.isAvailable).toBe(true)
+  })
 })

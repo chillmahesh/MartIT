@@ -302,6 +302,36 @@ export function createMockServer({ routingProvider = null } = {}) {
       }
       return db.products
     },
+    'catalogue.products.update': ({ productId, stock, isAvailable }, { token }) => {
+      const user = requireUser(token)
+      if (!productId) {
+        throw new ApiError('INVALID_PRODUCT_ID', 'Product ID is required.', 400)
+      }
+      const product = db.products.find((p) => p.id === productId)
+      if (!product) {
+        throw new ApiError('PRODUCT_NOT_FOUND', 'Product not found.', 404)
+      }
+
+      const store = db.stores.find((s) => s.id === product.storeId)
+      const isOwner = store && store.ownerId === user.id
+      const hasStaffAccess =
+        user.roles.includes(ROLES.ADMIN) || user.roles.includes(ROLES.SUPER_ADMIN)
+
+      if (!isOwner && !hasStaffAccess) {
+        throw new ApiError('FORBIDDEN', "You don't have permission to update this product.", 403)
+      }
+
+      if (typeof stock === 'number') {
+        if (stock < 0 || !Number.isInteger(stock)) {
+          throw new ApiError('INVALID_STOCK', 'Stock must be a non-negative integer.', 422)
+        }
+        product.stock = stock
+      }
+      if (typeof isAvailable === 'boolean') {
+        product.isAvailable = isAvailable
+      }
+      return product
+    },
     'catalogue.categories': () => SAMPLE_CATEGORIES,
 
     // ---- delivery quote -----------------------------------------------------

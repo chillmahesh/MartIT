@@ -7,4 +7,5 @@ export const adminService = {
   setRole: (userId, role, granted) => request('admin.roles.set', { userId, role, granted }),
   listOrders: (filters = {}) => request('admin.orders.list', filters),
   updateStore: (storeId, updates) => request('stores.update', { storeId, ...updates }),
+  updateProduct: (productId, updates) => request('catalogue.products.update', { productId, ...updates }),
 }
