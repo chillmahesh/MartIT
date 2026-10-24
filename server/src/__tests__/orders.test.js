@@ -1959,5 +1959,35 @@ describe('Milestone 3 — Runner Order Availability & Exclusive Acceptance', () 
     expect(res.status).toBe(404)
     expect(res.body.code).toBe('ORDER_NOT_FOUND')
   })
+
+  it('allows assigned runner to confirm store pickup via POST /api/v1/runner/orders/:id/pickup-store', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_assigned_1/pickup-store')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ storeId: 'store_campus_mart' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.success).toBe(true)
+    expect(res.body.orderId).toBe('ord_assigned_1')
+    expect(res.body.storeId).toBe('store_campus_mart')
+  })
+
+  it('forbids unassigned runner from confirming store pickup', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_assigned_1/pickup-store')
+      .set('Authorization', 'Bearer tok_runner2')
+      .send({ storeId: 'store_campus_mart' })
+
+    expect(res.status).toBe(403)
+  })
+
+  it('rejects store pickup confirmation for order not in PREPARING status', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/pickup-store')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ storeId: 'store_campus_mart' })
+
+    expect(res.status).toBe(403)
+  })
 })
 

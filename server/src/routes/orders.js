@@ -943,6 +943,99 @@ export async function handleRunnerAcceptOrder(req, res, next) {
 }
 
 /**
+ * Runner Store Pickup Confirmation endpoint.
+ * Confirms collection of items from a participating store within an order.
+ * When all fulfillment groups are collected, transitions order status to PICKED_UP.
+ */
+export async function handleRunnerPickupStore(req, res, next) {
+  try {
+    if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You must be a runner to confirm store pickup.')
+    }
+    if (req.user.runnerStatus !== 'approved' && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('Runner application is pending approval or suspended.')
+    }
+
+    const orderId = req.params?.id || req.body?.orderId
+    const storeId = req.body?.storeId
+
+    if (!orderId) {
+      throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
+    }
+    if (!storeId) {
+      throw ApiError.badRequest('Store identifier is required.', 'INVALID_STORE_ID')
+    }
+
+    const supabase = getSupabaseAdmin()
+
+    // 1. Fetch order and verify runner assignment
+    const { data: order, error: orderErr } = await supabase
+      .from('orders')
+      .select('id, runner_id, status')
+      .eq('id', orderId)
+      .maybeSingle()
+
+    if (orderErr || !order) {
+      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+    }
+    if (order.runner_id !== req.user.id && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You are not assigned to this delivery.', 'FORBIDDEN')
+    }
+    if (order.status !== 'PREPARING') {
+      throw ApiError.badRequest(
+        `Store pickups can only be confirmed while order is preparing (current status: ${order.status}).`,
+        'INVALID_ORDER_STATE'
+      )
+    }
+
+    // 2. Update fulfillment group for this store
+    await supabase
+      .from('order_fulfillment_groups')
+      .update({
+        status: 'PICKED_UP',
+        picked_up_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+      .eq('store_id', storeId)
+
+    // 3. Check if all fulfillment groups for this order are picked up
+    const { data: groups } = await supabase
+      .from('order_fulfillment_groups')
+      .select('id, status')
+      .eq('order_id', orderId)
+
+    const allGroups = groups || []
+    const allPickedUp = allGroups.length > 0 && allGroups.every((g) => g.status === 'PICKED_UP')
+
+    let finalStatus = order.status
+    if (allPickedUp) {
+      finalStatus = 'PICKED_UP'
+      await supabase
+        .from('orders')
+        .update({
+          status: 'PICKED_UP',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', orderId)
+    }
+
+    res.status(200).json({
+      success: true,
+      orderId,
+      storeId,
+      status: finalStatus,
+      allStoresPickedUp: allPickedUp,
+      message: allPickedUp
+        ? 'All items collected from store. Order is ready for transit!'
+        : 'Store pickup confirmed.',
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
  * Ephemeral in-memory store for active delivery OTP challenges.
  * Plaintext OTPs are kept strictly in server process memory (RAM).
  * Plaintext OTPs are NEVER persisted to database tables, logs, analytics, or browser storage.
@@ -1842,6 +1935,10 @@ ordersRouter.post('/runner/order/accept', authenticate, handleRunnerAcceptOrder)
 // Runner order lifecycle transition
 ordersRouter.post('/api/v1/runner/orders/:id/transition', authenticate, handleRunnerTransitionOrder)
 ordersRouter.post('/runner/order/transition', authenticate, handleRunnerTransitionOrder)
+
+// Runner store pickup confirmation
+ordersRouter.post('/api/v1/runner/orders/:id/pickup-store', authenticate, handleRunnerPickupStore)
+ordersRouter.post('/runner/order/pickupStore', authenticate, handleRunnerPickupStore)
 
 // Customer delivery OTP challenge retrieval
 ordersRouter.get('/api/v1/orders/:id/delivery-otp', authenticate, handleGetDeliveryOtp)

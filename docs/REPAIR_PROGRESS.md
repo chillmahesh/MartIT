@@ -23,8 +23,8 @@ This is the durable execution ledger. Update it throughout implementation. Never
 |---|---|---|---|---|
 | M0 | Baseline, routes, and root-cause evidence | VERIFIED | Commit 8b13b9f; baseline tests (613 passed), root causes established | Complete |
 | M1 | Secure runner approval fix | VERIFIED | Migration 20261024000001, admin.js RPC support, 35 auth tests passed | Complete; proceed to M2 |
-| M2 | Customer order-tracking UI | VERIFIED | Dynamic state mapping, 6-stage lifecycle tracker, zero contradiction, 78 customer tests passed | Complete; proceed to M3 |
-| M3 | Runner dashboard and availability | NOT_STARTED | — | Confirm route, access guard, eligible orders, atomic acceptance |
+| M2 | Customer order-tracking UI | VERIFIED | Commit 32cb379; dynamic state mapping, 6-stage lifecycle tracker, zero contradiction, 78 customer tests passed | Complete; proceed to M3 |
+| M3 | Runner dashboard and availability | VERIFIED | Route /runner verified, online guard, atomic acceptance, pickup-store endpoint & 55 runner tests + 84 orders tests | Complete; proceed to M4 |
 | M4 | Demo runner procedure | NOT_STARTED | — | Identify safe test account or provide secure manual steps |
 | M5 | Payment latency and duplicate prevention | NOT_STARTED | — | Measure path; preserve necessary Gmail matching wait |
 | M6 | Supabase findings review | NOT_STARTED | — | Correlate advisor findings with code; only justified fixes |
@@ -70,6 +70,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 
 ### M2 — Customer Order-Tracking UI
 - **Date / Session:** 2026-10-24
+- **Commit:** `32cb379` (`feat(customer): eliminate contradictory tracking badges and implement 6-stage lifecycle progress tracker (Milestone 2)`)
 - **Files Modified:**
   - `src/components/cart/OrderConfirmationView.jsx`:
     - Eliminated hardcoded contradictory "Awaiting Payment" / "Payment: Pending" badges when payment is confirmed.
@@ -89,4 +90,20 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - Full suite `npm test`: 31 files passed, 623 passed, 1 skipped (624 total), exit code 0.
   - `node scripts/validate-migrations.mjs`: 12 migration files validated, exit code 0.
   - `npm run build`: Client bundle (695 kB main) and SSR bundle (93.5 kB entry) compiled cleanly, exit code 0.
+  - `git diff --check`: 0 whitespace issues.
+
+### M3 — Runner Dashboard and Availability
+- **Date / Session:** 2026-10-24
+- **Files Modified / Verified:**
+  - `src/pages/runner/RunnerDashboardPage.jsx`: Verified `/runner` route implementation with online/offline availability switch, live activity counts, delivery request acceptance, multi-store pickup confirmation, and OTP-verified delivery completion.
+  - `server/src/routes/orders.js`:
+    - Implemented `handleRunnerPickupStore` (`POST /api/v1/runner/orders/:id/pickup-store` and `POST /runner/order/pickupStore`) to support store-by-store collection confirmation in PostgreSQL and auto-advance to `PICKED_UP` when all fulfillment groups are complete.
+    - Verified strict role authorization (`ROLES.RUNNER` + `runnerStatus === 'approved'`), atomic exclusive acceptance (`runner_id IS NULL AND status = 'CONFIRMED'`), and OTP-guarded state transitions.
+  - `server/src/__tests__/orders.test.js`: Added unit tests verifying runner pickup store confirmation, unassigned runner rejection, and invalid status rejection.
+- **Verification Commands & Evidence:**
+  - `npm test -- src/pages/runner/`: 3 test files passed, 55 tests passed (55/55), exit code 0.
+  - `npm test -- server/src/__tests__/orders.test.js`: 84 tests passed (84/84), exit code 0.
+  - Full suite `npm test`: 31 files passed, 626 passed, 1 skipped (627 total), exit code 0.
+  - `node scripts/validate-migrations.mjs`: 12 migration files validated, exit code 0.
+  - `npm run build`: Clean build passed without errors, exit code 0.
   - `git diff --check`: 0 whitespace issues.
