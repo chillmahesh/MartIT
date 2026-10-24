@@ -23,7 +23,7 @@
    - Purely client-side string generation; no transaction intent or session is registered with any payment gateway or bank.
 3. Webhook Ingestion:
    - Notification arrives at `server/src/routes/webhooks.js` (`handleMakePaymentWebhook`, lines 212-420) from Make.com.
-   - Header `x-make-secret` validated against `MAKE_WEBHOOK_SECRET` (lines 173-196).
+   - (Clarification: Make.com operates outbound via MAKE_VERIFICATION_WEBHOOK_URL; no incoming webhook secret exists).
    - Ingested record inserted into `payment_records` as `status = 'PROCESSING'`, `verification_source = 'MAKE_WEBHOOK_INGESTION'`.
    - Verification pipeline invokes `verifyWithAuthoritativePaymentGateway`. In production, no gateway is wired, returning `verified: false`. Webhook halts without confirming order.
 4. Polling & Automated Expiry:

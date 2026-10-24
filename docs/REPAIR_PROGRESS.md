@@ -250,7 +250,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - *Target Environment:* Staging Supabase project `uuuqaeptpripmvavihza`.
   - *Status:* Both migrations are locally committed, syntactically and structurally validated by `scripts/validate-migrations.mjs`, and covered by `supabase/tests/database_integrity_test.sql`. Neither migration has been applied to live staging or production.
 - **Authorized External Integrations Audit:**
-  - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `MAKE_VERIFICATION_WEBHOOK_URL`, `MAKE_WEBHOOK_SECRET` are not set in the local agent shell.
+  - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `MAKE_VERIFICATION_WEBHOOK_URL` are not set in the local agent shell.
   - Staging deployment and database execution must be performed by the authorized operator using the staging checklist below.
 
 #### Staged Live Acceptance Checklist
@@ -309,7 +309,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - *Blocked Live Requirements (User Action Required):*
     1. Apply unapplied forward migrations (`20261024000001` and `20261024000002`) to Supabase project `uuuqaeptpripmvavihza`.
     2. Enable Leaked Passwords Protection in Supabase Auth settings.
-    3. Configure `MAKE_WEBHOOK_SECRET` and `MAKE_VERIFICATION_WEBHOOK_URL` in Render service environment.
+    3. Configure `MAKE_VERIFICATION_WEBHOOK_URL` in Render service environment.
     4. Configure `VITE_UPI_PAYEE_VPA` in Vercel project environment.
     5. Provision 3 staging accounts in GoTrue Auth (admin, runner applicant, customer) and execute the 10-stage live acceptance test.
 
@@ -335,6 +335,6 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - *Blocked Live Requirements (User Action Required):*
     1. Apply unapplied forward migrations (`20261024000001` and `20261024000002`) to Supabase project `uuuqaeptpripmvavihza` via SQL Editor.
     2. Enable Leaked Passwords Protection in Supabase Auth settings (`Authentication -> Attack Protection`).
-    3. Configure `MAKE_WEBHOOK_SECRET` and `MAKE_VERIFICATION_WEBHOOK_URL` in Render service environment.
+    3. Configure `MAKE_VERIFICATION_WEBHOOK_URL` in Render service environment.
     4. Configure `VITE_UPI_PAYEE_VPA` in Vercel project environment.
     5. Provision 3 staging accounts in GoTrue Auth (admin, runner applicant, customer) and execute the 10-stage live acceptance walkthrough.

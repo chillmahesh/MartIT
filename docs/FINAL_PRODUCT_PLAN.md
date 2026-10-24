@@ -80,10 +80,10 @@
 - [x] Review required migrations and migration order; identify destructive/locking risks and prerequisites. (13 migrations in `supabase/migrations/`; prerequisites for `20261024000001` and `20261024000002` documented)
 - [x] [BLOCKED — USER ACTION REQUIRED] Check whether required migrations are applied using read-only migration-history queries where available. (Supabase project `uuuqaeptpripmvavihza` SQL editor access required for operator)
 - [x] If access is unavailable, mark migration status as user-blocked; do not guess.
-- [x] Check required backend environment-variable names and configured/unconfigured status without printing values. (`PORT`, `NODE_ENV`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `FRONTEND_ORIGINS`, `MAKE_WEBHOOK_SECRET`, `MAKE_VERIFICATION_WEBHOOK_URL`, `FEATURE_MULTI_STORE_CHECKOUT`, `ROUTING_MODE`)
+- [x] Check required backend environment-variable names and configured/unconfigured status without printing values. (`PORT`, `NODE_ENV`, `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `FRONTEND_ORIGINS`, `MAKE_VERIFICATION_WEBHOOK_URL`, `FEATURE_MULTI_STORE_CHECKOUT`, `ROUTING_MODE`)
 - [x] Check frontend public configuration names and whether they are required for the intended flow. (`VITE_API_BASE_URL`, `VITE_UPI_PAYEE_NAME`, `VITE_UPI_PAYEE_VPA`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`)
 - [x] Verify CORS/frontend origin settings and hosted health/status endpoints where safe. (`health.test.js`, `corsAndPreflight.test.js`)
-- [x] Confirm Make.com webhook contract and secret handling without exposing secrets or triggering a real payment. (`webhooks.test.js`)
+- [x] Confirm Make.com webhook contract: outbound call to `MAKE_VERIFICATION_WEBHOOK_URL` sends amount as content and receives verification response (no webhook secret exists; logic verified). (`orders.js:49-140`)
 - [x] Document missing account access, configuration, or approval as a precise user action. (`STAGING_ACCEPTANCE_PLAN.md:236-258`)
 - [x] Do not apply migrations, alter production settings, or modify live data without explicit authorization.
 

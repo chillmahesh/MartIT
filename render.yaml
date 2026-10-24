@@ -29,6 +29,4 @@ services:
       - key: FEATURE_MULTI_STORE_CHECKOUT
         value: "false"
       - key: MAKE_VERIFICATION_WEBHOOK_URL
-        sync: false # Set in Render Dashboard: optional Make.com reconciliation webhook
-      - key: MAKE_WEBHOOK_SECRET
-        sync: false # Set in Render Dashboard: secret token for authenticating Make.com payment webhooks (SECRET)
+        sync: false # Set in Render Dashboard: Make.com payment verification webhook URL

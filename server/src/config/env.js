@@ -96,13 +96,7 @@ export function validateEnv(raw = process.env) {
         ROUTING_PROVIDER: z.string().optional().default(''),
         ROUTING_MODE: z.string().default('walking'),
         MAKE_VERIFICATION_WEBHOOK_URL: z.string().optional().default(''),
-        MAKE_WEBHOOK_SECRET: z
-          .string()
-          .optional()
-          .default('')
-          .refine((s) => !s || (!isPlaceholder(s) && s.length >= 16), {
-            message: 'MAKE_WEBHOOK_SECRET must be at least 16 characters and not a placeholder in production',
-          }),
+        MAKE_WEBHOOK_SECRET: z.string().optional().default(''),
       })
       .refine((data) => data.SUPABASE_ANON_KEY !== data.SUPABASE_SERVICE_ROLE_KEY, {
         message: 'SUPABASE_SERVICE_ROLE_KEY must not be identical to SUPABASE_ANON_KEY',

@@ -15,7 +15,7 @@
 
 1. **Preserve Make.com + Gmail Architecture:** Payment verification relies on Make.com telemetry ingesting Paytm Business UPI alerts. No additional payment gateways (e.g. Razorpay, Cashfree) or SMS OTP providers (e.g. Twilio, MSG91) may be introduced.
 2. **Fail-Closed Security:** HTTP 200 from external webhooks does not equate to payment confirmation. Inconclusive, timed-out, malformed, or unverified claims remain in `PROCESSING` / `PENDING` status.
-3. **Secrets Non-Disclosure:** Never print, commit, or leak `SUPABASE_SERVICE_ROLE_KEY`, `MAKE_WEBHOOK_SECRET`, `JWT_SECRET`, or database passwords.
+3. **Secrets Non-Disclosure:** Never print, commit, or leak `SUPABASE_SERVICE_ROLE_KEY`, `JWT_SECRET`, or database passwords.
 4. **Order State Semantics:** Adhere strictly to canonical lifecycle: `PENDING` -> `PAID` / `CONFIRMED` -> `PREPARING` -> `PICKED_UP` -> `ON_THE_WAY` -> `DELIVERED` (or `CANCELLED` / `EXPIRED`).
 5. **Pricing & Fee Invariants:** Flat delivery fee (₹10 single-store, ₹15 multi-store), night surcharge, and dynamic platform fee allocation/release (₹0.05–₹0.20 with 2-minute cooldown) are immutable.
 6. **Delivery Handover OTP:** Plaintext 6-digit OTP is disclosed strictly in-app to the authenticated customer; PostgreSQL holds the SHA-256 hash. Three invalid attempts lock verification for 5 minutes.
@@ -29,7 +29,7 @@
 | **ST-01** | Forward Migrations & History Audit | Local git commits | Low | **VERIFIED LOCALLY** (Execution Pending Staging) | Agent / Operator | Migration scripts validated with 0 errors; syntax and idempotency verified. |
 | **ST-02** | Admin Runner Approval RPC & Authorization | ST-01 | Medium | **VERIFIED LOCALLY** | Agent | Stored procedure `admin_set_runner_status` updates `profiles` and `user_roles` atomically; non-admins rejected. |
 | **ST-03** | Staging Account Provisioning Matrix | Live Supabase instance | Low | **BLOCKED — USER ACTION REQUIRED** | Operator | 3 distinct accounts created in Supabase Auth (Admin, Runner, Customer). |
-| **ST-04** | Make.com Webhook Contract & Config Audit | Render dashboard | High | **BLOCKED — USER ACTION REQUIRED** | Operator | `MAKE_WEBHOOK_SECRET` and `MAKE_VERIFICATION_WEBHOOK_URL` set in Render without leaking values. |
+| **ST-04** | Make.com Webhook Contract & Config Audit | Render dashboard | Medium | **BLOCKED — USER ACTION REQUIRED** | Operator | `MAKE_VERIFICATION_WEBHOOK_URL` set in Render without leaking values. Outbound logic sends amount as content; no webhook secret exists. |
 | **ST-05** | Delivery OTP Resilience & Restart Recovery | Backend Express server | Medium | **VERIFIED LOCALLY** | Agent | Backend restart recovery tested: customer reissues OTP via RPC; runner verifies against Postgres hash. |
 | **ST-06** | Pre-Staging Security & Data-Integrity Audit | ST-01..ST-05 | Medium | **VERIFIED LOCALLY** | Agent | All 13 tables protected by RLS; foreign key indexes present; concurrency lock active. |
 | **ST-07** | Staging Environment Deployment Promotion | ST-01..ST-06 | High | **BLOCKED — USER ACTION REQUIRED** | Operator | Render and Vercel updated with audited branch commit. |
@@ -116,8 +116,7 @@ The production schema in `server/src/config/env.js` enforces the following envir
 - `SUPABASE_ANON_KEY`: (String, min 20 chars) Public anon key. Must not be a placeholder.
 - `SUPABASE_SERVICE_ROLE_KEY`: (String, min 20 chars) Backend service role key. Must differ from `SUPABASE_ANON_KEY`.
 - `FRONTEND_ORIGINS`: (Comma-separated HTTPS URLs) Allowed CORS origins (e.g. `https://martit.vercel.app` or staging URL). No wildcards or localhost allowed in production.
-- `MAKE_WEBHOOK_SECRET`: (String, min 16 chars) High-entropy shared secret for incoming webhook authentication.
-- `MAKE_VERIFICATION_WEBHOOK_URL`: (HTTPS URL) Make.com scenario webhook endpoint for outgoing payment verification queries.
+- `MAKE_VERIFICATION_WEBHOOK_URL`: (HTTPS URL) Make.com scenario webhook endpoint for outgoing payment verification queries. MartIT sends `{ content: amount, amount, orderId }` and receives response (no webhook secret exists).
 - `FEATURE_MULTI_STORE_CHECKOUT`: (Boolean) Default `false`.
 - `ROUTING_MODE`: (String) Default `'walking'`.
 
@@ -176,7 +175,7 @@ The production schema in `server/src/config/env.js` enforces the following envir
 | **Delivery OTP Handover & Verification** | Automated End-to-End Test | VERIFIED | `ordersOtp.test.js` (34 tests) | SHA-256 hash matching, rate limits, lockouts, and server restart recovery verified. |
 | **Database Migrations on Staging DB** | External Manual SQL | UNVERIFIED | Not yet applied to `uuuqaeptpripmvavihza` | Requires operator execution in Supabase Dashboard SQL Editor. |
 | **Hosted Backend Deployment on Render** | Remote Service Probe | PARTIALLY VERIFIED | Render live at `0ac83ac` (bound port 10000) | Audit branch commits not yet promoted to Render. |
-| **Live External Make.com Telemetry** | External Integration | UNVERIFIED | Prior live probe returned `WEBHOOK_UNCONFIGURED` | Requires `MAKE_WEBHOOK_SECRET` configuration on Render and active Gmail trigger. |
+| **Live External Make.com Telemetry** | External Integration | UNVERIFIED | Pending live query test | Requires `MAKE_VERIFICATION_WEBHOOK_URL` configuration on Render and active Gmail trigger. |
 | **Real Staging Customer/Runner Accounts** | GoTrue Auth API | UNVERIFIED | Sample accounts in `users.js` are mock-only | Real accounts must be provisioned in Supabase GoTrue Auth for staging. |
 | **Live UPI Bank Settlement** | External Banking Network | UNVERIFIED | None | Requires live payment of ₹10–₹15 by operator during staged acceptance test. |
 
@@ -237,7 +236,6 @@ Because of environment permissions and credential boundaries, the following acti
   - Enable **Leaked Passwords Protection**.
 - [ ] **Action 3: Configure Render Environment Variables**
   - In Render Dashboard, ensure backend service environment variables include:
-    - `MAKE_WEBHOOK_SECRET` (high-entropy secret)
     - `MAKE_VERIFICATION_WEBHOOK_URL` (Make.com scenario URL)
 - [ ] **Action 4: Configure Vercel Frontend Variable**
   - In Vercel Project Settings -> Environment Variables, ensure `VITE_UPI_PAYEE_VPA` matches the live merchant VPA.
