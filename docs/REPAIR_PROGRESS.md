@@ -26,7 +26,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M2 | Customer order-tracking UI | VERIFIED | Commit 32cb379; dynamic state mapping, 6-stage lifecycle tracker, zero contradiction, 78 customer tests passed | Complete; proceed to M3 |
 | M3 | Runner dashboard and availability | VERIFIED | Commit dcb845d; route /runner verified, online guard, atomic acceptance, pickup-store endpoint & 55 runner tests + 84 orders tests | Complete; proceed to M4 |
 | M4 | Demo runner procedure | VERIFIED | Safe UI approval steps documented, persisted status verified, access gate confirmed | Complete; proceed to M5 |
-| M5 | Payment latency and duplicate prevention | VERIFIED | inFlightPaymentChecks concurrency lock, disabled click state, HTTP 409 guard, 86 order tests passed | Complete; proceed to M6 |
+| M5 | Payment latency and duplicate prevention | VERIFIED | Commit 20bb63c; inFlightPaymentChecks concurrency lock, disabled click state, HTTP 409 guard, 86 order tests passed | Complete; proceed to M6 |
 | M6 | Supabase findings review | NOT_STARTED | — | Correlate advisor findings with code; only justified fixes |
 | M7 | Regression suite and final audit | NOT_STARTED | — | Tests/build/lint/migrations; diff review; live-vs-mocked report |
 
@@ -134,6 +134,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 
 ### M5 — Payment Latency & Duplicate Prevention (Goal E)
 - **Date / Session:** 2026-10-24
+- **Commit:** `20bb63c` (`feat(payment): lock in-flight checks and prevent duplicate verification races (Milestone 5)`)
 - **Files Modified:**
   - `server/src/routes/orders.js`:
     - Implemented concurrency lock `export const inFlightPaymentChecks = new Set()`.
