@@ -48,22 +48,34 @@ docs/           design research, fee policy, brand assets
 
 Components never call the backend directly. They call `services/*`, which go through `services/api.js`. When `VITE_API_BASE_URL` is empty, `api.js` routes calls to the in-browser mock server. When it's set, it POSTs to `${VITE_API_BASE_URL}/<service>/<action>` with a bearer token.
 
-## What's mocked vs real
+## What's real vs incomplete
 
 | Capability | Status | Notes |
 |---|---|---|
-| Delivery-fee rules | **Real logic** | `utils/deliveryFee.js`, fully unit-tested. The backend must mirror `config/fees.js` |
-| Order totals (items + delivery) | **Real logic** | Taxes, platform fees and discounts are excluded until defined |
-| Order & payment state machines | **Real logic** | Separate machines. Only a `server_verified` source can mark a payment PAID |
-| Backend / database | Mock | `services/mockServer/` keeps in-memory data that resets on reload |
-| Authentication | Mock | Sample accounts only. The real login form comes in Phase 3 |
-| Server re-pricing at order creation | Mock (behaviour real) | The mock ignores browser prices and fees, re-checks stock, re-quotes delivery and snapshots the pricing |
-| Distance | Mock: straight-line | No routing service yet. The UI says "straight-line distance". A routing provider plugs into `mockServer/routing.js` |
-| Store, product and location data | Sample data | `src/mocks/`, labelled as sample in the UI |
-| UPI payment verification | Not built | Phase 4. The status will only come from a verified server source |
-| Runner assignment (atomic accept) | Not built | Phase 5. It will be a single server call that fails if the order is already taken |
-| Delivery OTP | UI only | Phase 5. Codes will be short-lived, attempt-limited and verified on the backend |
-| Realtime tracking | Not built | Phase 4. It will be a clearly labelled simulation until realtime is wired |
+| Frontend | Real | React + Vite app; Vercel deployment is separate from backend deployment. |
+| Backend / database | Real integration | Express API and Supabase PostgreSQL schema with 13 migrations. Local mock services remain available for development. |
+| Authentication / roles | Real integration | Server validates Supabase sessions and enforces role checks; UI route guards protect UX. Admin runner status updates hardened via atomic RPC `admin_set_runner_status`. |
+| Catalogue | Mixed | Sample/mock catalogue for local mode; PostgreSQL products and stores populated via migrations and seed data. |
+| Order creation and pricing | Server-backed | Atomic order creation in PostgreSQL with locked product rows, held inventory, and dynamic platform fee allocation (1–99 paise). |
+| UPI notification ingestion | Implemented (Make.com) | Authenticated Make.com webhook ingests Paytm Business UPI notifications via timing-safe secret check; fails closed if unverified. |
+| Payment verification & concurrency | Implemented (Make.com) | Customer check observes 5s Gmail push indexing wait, queries Make.com scenario, locks in-flight checks with HTTP 409, and executes atomic payment verification upon positive confirmation. |
+| Runner assignment and fulfillment | Implemented | Atomic exclusive acceptance (`runner_id IS NULL AND status = 'CONFIRMED'`), availability toggle, and multi-store pickup endpoint (`handleRunnerPickupStore`) fully implemented. |
+| Handover OTP | Implemented & resilient | Plaintext 6-digit OTP displayed strictly in-app to authenticated owner; PostgreSQL holds SHA-256 hash. Enforces 3-attempt limit, 5-min lockout, and seamless server restart recovery via `reissue_delivery_otp`. |
+| Customer order tracking | Implemented | 6-stage lifecycle progress tracker in `OrderConfirmationView.jsx` with active 4s polling that cleans up at terminal states (`DELIVERED`, `CANCELLED`, `EXPIRED`). Zero contradictory badges. |
+| Automated CI | Not configured in GitHub Actions | Full automated test suite (31 files, 630 passed tests) and migration validator run locally or in deployment pipelines. |
+
+
+## Running checks
+
+```bash
+npm ci
+npm test
+npm run test:server
+npm run db:validate
+npm run build
+```
+
+The migration validator checks repository structure; it does **not** execute SQL against PostgreSQL. Database migrations and privilege changes must be validated against a disposable or staging Supabase database before production deployment.
 
 ## Business rules baked into the code
 

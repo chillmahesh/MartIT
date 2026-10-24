@@ -134,6 +134,10 @@ describe('Make.com Payment Verification Webhook Integration', () => {
         { fee_paise: 15, active_order_id: 'ord_webhook_active', is_paid: false },
         { fee_paise: 15, active_order_id: 'ord_webhook_win_expired', is_paid: false },
       ],
+      inventory_reservations: [
+        { id: 'res_win_exp_1', order_id: 'ord_webhook_win_expired', product_id: 'prod_1', quantity: 1, status: 'RELEASED' },
+        { id: 'res_canc_1', order_id: 'ord_webhook_cancelled', product_id: 'prod_1', quantity: 1, status: 'RELEASED' },
+      ],
       payment_records: [],
     })
     mockState = mock.state
@@ -668,6 +672,7 @@ describe('Make.com Payment Verification Webhook Integration', () => {
       expect(Number(record.amount)).toBe(115.15)
       expect(record.status).toBe('PAID')
       expect(record.evidence).toBe('Payment received')
+      expect(record.verification_source).toBe('AUTHORITATIVE_GATEWAY')
 
       // Verify dynamic platform fee slot locked as is_paid = true
       const feeSlot = mockState.platform_fee_reservations.find((r) => r.fee_paise === 15)
@@ -682,6 +687,58 @@ describe('Make.com Payment Verification Webhook Integration', () => {
       expect(checkAfter.status).toBe(200)
       expect(checkAfter.body.status).toBe('verified')
       expect(checkAfter.body.paymentStatus).toBe('PAID')
+    })
+
+    it('does not confirm an order when persisting authoritative evidence fails', async () => {
+      setGatewayVerifier(async () => ({
+        verified: true,
+        provider: 'PAYTM_AUTHORITATIVE',
+        terminalStatus: 'TXN_SUCCESS',
+      }))
+      mockState.updateErrors = { payment_records: 'simulated evidence write failure' }
+
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          utr: 'verified_but_unpersisted_123',
+          evidence: 'Payment received',
+        })
+
+      expect(res.status).toBe(500)
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_active')
+      expect(order.payment_status).toBe('PENDING')
+      expect(order.status).toBe('AWAITING_PAYMENT')
+      expect(mockState.payment_records[0].status).toBe('PROCESSING')
+      expect(mockState.payment_records[0].evidence).toBeNull()
+    })
+
+    it('fails closed when a verifier returns a truthy non-boolean verification value', async () => {
+      setGatewayVerifier(async () => ({
+        verified: 'true',
+        provider: 'PAYTM_AUTHORITATIVE',
+        terminalStatus: 'TXN_SUCCESS',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          utr: 'string_verified_value_123',
+          evidence: 'Payment received',
+        })
+
+      expect(res.status).toBe(200)
+      expect(res.body.verified).toBe(false)
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_active')
+      expect(order.payment_status).toBe('PENDING')
+      expect(order.status).toBe('AWAITING_PAYMENT')
+      expect(mockState.payment_records[0].status).toBe('PROCESSING')
+      expect(mockState.payment_records[0].evidence).toBeNull()
     })
 
     it('fails closed and keeps order PENDING when authoritative gateway rejects the transaction', async () => {
@@ -729,6 +786,577 @@ describe('Make.com Payment Verification Webhook Integration', () => {
       expect(res.body.success).toBe(true)
       expect(res.body.isDuplicate).toBe(true)
       expect(res.body.paymentStatus).toBe('PAID')
+    })
+  })
+
+  describe('Late-Payment Telemetry Persistence (Milestone 1)', () => {
+    it('persists late notification for window-expired order as unverified in payment_records', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_win_expired',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_WIN_EXP_999',
+          sender: 'Late Payer / late@upi',
+        })
+
+      expect(res.status).toBe(400)
+      expect(res.body.code).toBe('PAYMENT_WINDOW_EXPIRED')
+      expect(res.body.details?.persistedAsUnverified).toBe(true)
+      expect(res.body.details?.isDuplicate).toBe(false)
+
+      expect(mockState.payment_records.length).toBe(1)
+      const record = mockState.payment_records[0]
+      expect(record.order_id).toBe('ord_webhook_win_expired')
+      expect(record.amount).toBe(115.15)
+      expect(record.status).toBe('EXPIRED')
+      expect(record.evidence).toBeNull()
+      expect(record.verification_source).toBe('MAKE_WEBHOOK_LATE_INGESTION')
+      expect(record.attempt_id).toBe('UTR_WIN_EXP_999')
+      expect(record.raw_payload).toMatchObject({
+        utr: 'UTR_WIN_EXP_999',
+        sender: 'Late Payer / late@upi',
+        receivedAmount: 115.15,
+        lateArrival: true,
+        lateReason: 'PAYMENT_WINDOW_EXPIRED',
+        verifiedSettlement: false,
+        ingestionSource: 'make_webhook',
+      })
+
+      // Order must not be marked PAID or confirmed
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_win_expired')
+      expect(order.payment_status).toBe('PENDING')
+      expect(order.status).toBe('AWAITING_PAYMENT')
+      expect(order.paid_at).toBeUndefined()
+    })
+
+    it('persists late notification for cancelled order as unverified in payment_records', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_cancelled',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_CANC_888',
+        })
+
+      expect(res.status).toBe(409)
+      expect(res.body.code).toBe('TERMINAL_STATE')
+      expect(res.body.details?.persistedAsUnverified).toBe(true)
+
+      expect(mockState.payment_records.length).toBe(1)
+      const record = mockState.payment_records[0]
+      expect(record.order_id).toBe('ord_webhook_cancelled')
+      expect(record.status).toBe('EXPIRED')
+      expect(record.evidence).toBeNull()
+      expect(record.verification_source).toBe('MAKE_WEBHOOK_LATE_INGESTION')
+      expect(record.raw_payload).toMatchObject({
+        utr: 'UTR_CANC_888',
+        lateArrival: true,
+        lateReason: 'TERMINAL_STATE',
+        orderStatusAtArrival: 'CANCELLED',
+        verifiedSettlement: false,
+      })
+
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_cancelled')
+      expect(order.status).toBe('CANCELLED')
+      expect(order.payment_status).not.toBe('PAID')
+    })
+
+    it('persists late notification for terminal EXPIRED order as unverified in payment_records', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_terminal_expired',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_TERM_777',
+        })
+
+      expect(res.status).toBe(409)
+      expect(res.body.code).toBe('TERMINAL_STATE')
+      expect(res.body.details?.persistedAsUnverified).toBe(true)
+
+      expect(mockState.payment_records.length).toBe(1)
+      const record = mockState.payment_records[0]
+      expect(record.order_id).toBe('ord_webhook_terminal_expired')
+      expect(record.status).toBe('EXPIRED')
+      expect(record.evidence).toBeNull()
+      expect(record.verification_source).toBe('MAKE_WEBHOOK_LATE_INGESTION')
+
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_terminal_expired')
+      expect(order.payment_status).toBe('EXPIRED')
+      expect(order.status).toBe('CANCELLED')
+    })
+
+    it('idempotently ignores duplicate late notifications without creating duplicate records', async () => {
+      const payload = {
+        orderId: 'ord_webhook_win_expired',
+        amount: 115.15,
+        evidence: 'Payment received',
+        utr: 'UTR_DEDUP_111',
+      }
+
+      // First late delivery
+      const res1 = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send(payload)
+
+      expect(res1.status).toBe(400)
+      expect(res1.body.details?.isDuplicate).toBe(false)
+      expect(mockState.payment_records.length).toBe(1)
+      const firstRecordId = mockState.payment_records[0].id
+
+      // Duplicate delivery with identical UTR
+      const res2 = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send(payload)
+
+      expect(res2.status).toBe(400)
+      expect(res2.body.details?.isDuplicate).toBe(true)
+      expect(res2.body.details?.recordId).toBe(firstRecordId)
+      // Must NOT insert second record
+      expect(mockState.payment_records.length).toBe(1)
+    })
+
+    it('enforces amount validation on late notifications and does not persist mismatched payments', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_win_expired',
+          amount: 50.00, // Mismatched (expected 115.15)
+          evidence: 'Payment received',
+          utr: 'UTR_MISMATCH_999',
+        })
+
+      expect(res.status).toBe(400)
+      expect(res.body.code).toBe('PAYMENT_AMOUNT_MISMATCH')
+      expect(mockState.payment_records.length).toBe(0)
+    })
+
+    it('strictly guarantees that a late notification cannot transition order to PAID or CONFIRMED', async () => {
+      setGatewayVerifier(async () => ({ verified: true }))
+
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_win_expired',
+          amount: 115.15,
+          status: 'SUCCESS',
+          evidence: 'Payment received',
+          utr: 'UTR_CLAIM_PAID',
+        })
+
+      expect(res.status).toBe(400)
+      expect(res.body.code).toBe('PAYMENT_WINDOW_EXPIRED')
+
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_win_expired')
+      expect(order.payment_status).toBe('PENDING')
+      expect(order.status).toBe('AWAITING_PAYMENT')
+    })
+
+    it('guarantees inventory reservations and platform fee reservations remain unchanged on late notification', async () => {
+      const initialFeeState = structuredClone(mockState.platform_fee_reservations)
+      const initialInvState = structuredClone(mockState.inventory_reservations)
+
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_win_expired',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_INV_CHECK',
+        })
+
+      expect(res.status).toBe(400)
+
+      // Inventory reservations remain unchanged
+      expect(mockState.inventory_reservations).toEqual(initialInvState)
+      expect(mockState.inventory_reservations[0].status).toBe('RELEASED')
+
+      // Platform fee reservations remain unchanged
+      expect(mockState.platform_fee_reservations).toEqual(initialFeeState)
+      const fee = mockState.platform_fee_reservations.find(
+        (f) => f.active_order_id === 'ord_webhook_win_expired',
+      )
+      expect(fee.is_paid).toBe(false)
+    })
+
+    it('fails unauthenticated webhook requests without inserting late payment records', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', 'invalid-secret-key-12345')
+        .send({
+          orderId: 'ord_webhook_win_expired',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_UNAUTH',
+        })
+
+      expect(res.status).toBe(401)
+      expect(res.body.code).toBe('UNAUTHENTICATED')
+      expect(mockState.payment_records.length).toBe(0)
+    })
+  })
+
+  describe('Hardened Make.com Payment Matching (Milestone 1 Complete Contract)', () => {
+    it('1. Exact expected amount match ingests as unverified evidence and keeps order PENDING', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_EXACT_MATCH_100',
+        })
+
+      expect(res.status).toBe(200)
+      expect(res.body.success).toBe(true)
+      expect(res.body.verified).toBe(false)
+      expect(res.body.paymentStatus).toBe('PENDING')
+      expect(res.body.isDuplicate).toBe(false)
+
+      expect(mockState.payment_records.length).toBe(1)
+      const record = mockState.payment_records[0]
+      expect(record.amount).toBe(115.15)
+      expect(record.status).toBe('PROCESSING')
+      expect(record.evidence).toBeNull()
+      expect(record.verification_source).toBe('MAKE_WEBHOOK_INGESTION')
+
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_active')
+      expect(order.payment_status).toBe('PENDING')
+      expect(order.status).toBe('AWAITING_PAYMENT')
+    })
+
+    it('2. Amount mismatch is rejected with 400 and does not insert payment record', async () => {
+      // 1 paise difference
+      const res1 = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.14,
+          evidence: 'Payment received',
+        })
+
+      expect(res1.status).toBe(400)
+      expect(res1.body.code).toBe('PAYMENT_AMOUNT_MISMATCH')
+      expect(mockState.payment_records.length).toBe(0)
+
+      // Substantial mismatch
+      const res2 = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 50.00,
+          evidence: 'Payment received',
+        })
+
+      expect(res2.status).toBe(400)
+      expect(res2.body.code).toBe('PAYMENT_AMOUNT_MISMATCH')
+      expect(mockState.payment_records.length).toBe(0)
+    })
+
+    it('3. Malformed, missing, sub-paise, or invalid currency amounts are rejected', async () => {
+      // Missing amount
+      const resMissing = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          evidence: 'Payment received',
+        })
+      expect(resMissing.status).toBe(400)
+      expect(resMissing.body.code).toBe('INVALID_AMOUNT')
+
+      // Non-numeric string
+      const resNonNumeric = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 'not-a-number',
+          evidence: 'Payment received',
+        })
+      expect(resNonNumeric.status).toBe(400)
+      expect(resNonNumeric.body.code).toBe('INVALID_AMOUNT')
+
+      // Negative amount
+      const resNegative = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: -115.15,
+          evidence: 'Payment received',
+        })
+      expect(resNegative.status).toBe(400)
+      expect(resNegative.body.code).toBe('INVALID_AMOUNT')
+
+      // Sub-paise precision (beyond 2 decimal places)
+      const resPrecision = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.155,
+          evidence: 'Payment received',
+        })
+      expect(resPrecision.status).toBe(400)
+      expect(resPrecision.body.code).toBe('INVALID_AMOUNT')
+
+      // Invalid currency
+      const resCurrency = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          currency: 'USD',
+          evidence: 'Payment received',
+        })
+      expect(resCurrency.status).toBe(400)
+      expect(resCurrency.body.code).toBe('INVALID_CURRENCY')
+
+      // Successfully handles string amount with "Rs. " prefix
+      const resPrefix = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 'Rs. 115.15',
+          evidence: 'Payment received',
+          utr: 'UTR_STR_PREFIX',
+        })
+      expect(resPrefix.status).toBe(200)
+
+      // Successfully handles Make.com blueprint "content" field
+      mockState.payment_records = []
+      const resContent = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          content: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_CONTENT_KEY',
+        })
+      expect(resContent.status).toBe(200)
+      expect(mockState.payment_records[0].amount).toBe(115.15)
+    })
+
+    it('4. Duplicate notification delivery is idempotent and does not create duplicate records', async () => {
+      const payload = {
+        orderId: 'ord_webhook_active',
+        amount: 115.15,
+        evidence: 'Payment received',
+        utr: 'UTR_DUPLICATE_CHECK_99',
+      }
+
+      const res1 = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send(payload)
+      expect(res1.status).toBe(200)
+      expect(res1.body.isDuplicate).toBe(false)
+      expect(mockState.payment_records.length).toBe(1)
+      const recordId = mockState.payment_records[0].id
+
+      const res2 = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send(payload)
+      expect(res2.status).toBe(200)
+      expect(res2.body.isDuplicate).toBe(true)
+      // Exactly 1 record remains
+      expect(mockState.payment_records.length).toBe(1)
+      expect(mockState.payment_records[0].id).toBe(recordId)
+    })
+
+    it('5. Rejects notifications associated with the wrong order or attempt', async () => {
+      // Non-existent order
+      const resNotFound = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_completely_non_existent',
+          amount: 115.15,
+          evidence: 'Payment received',
+        })
+      expect(resNotFound.status).toBe(404)
+      expect(resNotFound.body.code).toBe('ORDER_NOT_FOUND')
+
+      // Conflicting order references in payload
+      const resConflict = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          order_id: 'ord_webhook_cancelled',
+          amount: 115.15,
+          evidence: 'Payment received',
+        })
+      expect(resConflict.status).toBe(400)
+      expect(resConflict.body.code).toBe('INVALID_ORDER_ID')
+
+      // Wrong attempt ID (order expects 'att_active_1')
+      const resWrongAttempt = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          attemptId: 'att_different_order_999',
+          amount: 115.15,
+          evidence: 'Payment received',
+        })
+      expect(resWrongAttempt.status).toBe(400)
+      expect(resWrongAttempt.body.code).toBe('PAYMENT_ATTEMPT_MISMATCH')
+      expect(mockState.payment_records.length).toBe(0)
+    })
+
+    it('6. Rejects late notifications for expired/cancelled orders while safely capturing telemetry', async () => {
+      // Expired order
+      const resExpired = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_win_expired',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_LATE_EXP_1',
+        })
+      expect(resExpired.status).toBe(400)
+      expect(resExpired.body.code).toBe('PAYMENT_WINDOW_EXPIRED')
+      expect(resExpired.body.details?.persistedAsUnverified).toBe(true)
+
+      // Cancelled order
+      const resCancelled = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_cancelled',
+          amount: 115.15,
+          evidence: 'Payment received',
+          utr: 'UTR_LATE_CANC_1',
+        })
+      expect(resCancelled.status).toBe(409)
+      expect(resCancelled.body.code).toBe('TERMINAL_STATE')
+      expect(resCancelled.body.details?.persistedAsUnverified).toBe(true)
+
+      // Neither order is marked PAID
+      expect(mockState.orders.find((o) => o.id === 'ord_webhook_win_expired').payment_status).toBe('PENDING')
+      expect(mockState.orders.find((o) => o.id === 'ord_webhook_cancelled').status).toBe('CANCELLED')
+    })
+
+    it('7. Forged or unauthenticated requests are rejected with 401 without inserting records', async () => {
+      const resNoAuth = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          evidence: 'Payment received',
+        })
+      expect(resNoAuth.status).toBe(401)
+      expect(resNoAuth.body.code).toBe('UNAUTHENTICATED')
+
+      const resBadSecret = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', 'completely_forged_secret_1234')
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          evidence: 'Payment received',
+        })
+      expect(resBadSecret.status).toBe(401)
+      expect(resBadSecret.body.code).toBe('UNAUTHENTICATED')
+      expect(mockState.payment_records.length).toBe(0)
+    })
+
+    it('8. Confirmation that a Make.com amount match alone cannot set payment or order status to PAID', async () => {
+      const res = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          status: 'SUCCESS',
+          evidence: 'Payment received',
+          utr: 'UTR_MAKE_COM_MATCH_ONLY',
+        })
+
+      expect(res.status).toBe(200)
+      expect(res.body.verified).toBe(false)
+      expect(res.body.paymentStatus).toBe('PENDING')
+
+      // Database order row MUST REMAIN PENDING
+      const order = mockState.orders.find((o) => o.id === 'ord_webhook_active')
+      expect(order.payment_status).toBe('PENDING')
+      expect(order.status).toBe('AWAITING_PAYMENT')
+      expect(order.paid_at).toBeUndefined()
+
+      // Client checkPayment polling endpoint MUST return inconclusive
+      const checkRes = await request(app)
+        .post('/api/v1/orders/ord_webhook_active/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+        .send()
+
+      expect(checkRes.status).toBe(200)
+      expect(checkRes.body.status).toBe('inconclusive')
+      expect(checkRes.body.paymentStatus).toBe('PENDING')
+
+      // Platform fee reservation remains unpaid
+      const fee = mockState.platform_fee_reservations.find((f) => f.active_order_id === 'ord_webhook_active')
+      expect(fee.is_paid).toBe(false)
+    })
+
+    it('9. Supports Make.com blueprint evidence format and rejects negative evidence', async () => {
+      // Accepts Make.com blueprint spelling "Payment recieved"
+      const resTypo = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          evidence: 'Payment recieved',
+          utr: 'UTR_TYPO_PAYMENT_RECIEVED',
+        })
+      expect(resTypo.status).toBe(200)
+      expect(resTypo.body.verified).toBe(false)
+
+      // Rejects Make.com non-match string "not recieved"
+      const resNotRecieved = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          evidence: 'not recieved',
+        })
+      expect(resNotRecieved.status).toBe(400)
+      expect(resNotRecieved.body.code).toBe('PAYMENT_FAILED_NOTIFICATION')
+
+      // Rejects standard "not received"
+      const resNotReceived = await request(app)
+        .post('/api/v1/webhooks/make-payment')
+        .set('x-make-secret', validSecret)
+        .send({
+          orderId: 'ord_webhook_active',
+          amount: 115.15,
+          evidence: 'not received',
+        })
+      expect(resNotReceived.status).toBe(400)
+      expect(resNotReceived.body.code).toBe('PAYMENT_FAILED_NOTIFICATION')
     })
   })
 })

@@ -150,28 +150,48 @@ export async function verifyWithAuthoritativePaymentGateway({ orderId, amount, u
 export async function handleMakePaymentWebhook(req, res, next) {
   try {
     const body = req.body || {}
-    const orderId = body.orderId || body.order_id || body.tr || body.orderRef
-    const rawAmount = body.amount ?? body.am ?? body.paidAmount
-    const status = body.status ? String(body.status).toUpperCase() : null
-    const evidenceText = typeof body.evidence === 'string' ? body.evidence : ''
 
-    logWebhook('info', 'PAYLOAD_RECEIVED', {
-      orderId: orderId || null,
-      rawAmount: rawAmount !== undefined ? rawAmount : null,
-      status: status || null,
-      hasEvidenceText: Boolean(evidenceText),
-      hasUtr: Boolean(body.utr || body.rrn || body.transactionId || body.txnId),
-    })
+    // 1. Validate order reference and reject conflicting order keys in payload
+    const orderRefCandidates = [
+      { key: 'orderId', val: body.orderId },
+      { key: 'order_id', val: body.order_id },
+      { key: 'tr', val: body.tr },
+      { key: 'orderRef', val: body.orderRef },
+    ].filter((c) => typeof c.val === 'string' && c.val.trim().length > 0)
 
-    // 1. Validate order reference
-    if (!orderId || typeof orderId !== 'string' || !orderId.trim()) {
+    if (orderRefCandidates.length === 0) {
       logWebhook('warn', 'PAYLOAD_REJECTED', {
         reason: 'INVALID_ORDER_ID',
       })
       throw ApiError.badRequest('Valid order reference is required.', 'INVALID_ORDER_ID')
     }
 
-    // 2. Validate payment amount
+    const orderId = orderRefCandidates[0].val.trim()
+    const hasConflictingOrderRef = orderRefCandidates.some((c) => c.val.trim() !== orderId)
+    if (hasConflictingOrderRef) {
+      logWebhook('warn', 'PAYLOAD_REJECTED', {
+        reason: 'CONFLICTING_ORDER_REFERENCES',
+        references: orderRefCandidates,
+      })
+      throw ApiError.badRequest('Conflicting order references in webhook payload.', 'INVALID_ORDER_ID')
+    }
+
+    // 2. Validate currency (if supplied)
+    const rawCurrency = body.currency ?? body.cu
+    if (rawCurrency !== undefined && rawCurrency !== null) {
+      const currencyStr = String(rawCurrency).trim().toUpperCase()
+      if (currencyStr !== 'INR') {
+        logWebhook('warn', 'PAYLOAD_REJECTED', {
+          orderId,
+          reason: 'INVALID_CURRENCY',
+          currency: currencyStr,
+        })
+        throw ApiError.badRequest('Invalid currency. Only INR payments are supported.', 'INVALID_CURRENCY')
+      }
+    }
+
+    // 3. Extract and sanitize payment amount
+    let rawAmount = body.amount ?? body.am ?? body.paidAmount ?? body.content
     if (rawAmount === undefined || rawAmount === null || rawAmount === '') {
       logWebhook('warn', 'PAYLOAD_REJECTED', {
         orderId,
@@ -180,23 +200,58 @@ export async function handleMakePaymentWebhook(req, res, next) {
       throw ApiError.badRequest('Payment amount is required.', 'INVALID_AMOUNT')
     }
 
+    if (typeof rawAmount === 'string') {
+      rawAmount = rawAmount.trim()
+      // Strip optional currency prefix "Rs. " or "INR " if present
+      const stripped = rawAmount.replace(/^(?:Rs\.?|INR)\s*/i, '').trim()
+      if (stripped.length > 0) {
+        rawAmount = stripped
+      }
+    }
+
     const parsedAmount = Number(rawAmount)
     if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
       logWebhook('warn', 'PAYLOAD_REJECTED', {
         orderId,
         reason: 'INVALID_AMOUNT',
         parsedAmount,
+        rawAmount,
       })
       throw ApiError.badRequest('Payment amount must be a positive number.', 'INVALID_AMOUNT')
     }
 
-    // 3. Reject explicit failure or decline notifications
-    if (
+    // Strict paise precision: cannot have fractional precision beyond 2 decimal places
+    if (Number(parsedAmount.toFixed(2)) !== parsedAmount) {
+      logWebhook('warn', 'PAYLOAD_REJECTED', {
+        orderId,
+        reason: 'INVALID_AMOUNT_PRECISION',
+        parsedAmount,
+      })
+      throw ApiError.badRequest(
+        'Payment amount cannot have fractional precision beyond 2 decimal places (paise).',
+        'INVALID_AMOUNT',
+      )
+    }
+
+    const status = body.status ? String(body.status).toUpperCase() : null
+    const evidenceText = typeof body.evidence === 'string' ? body.evidence : ''
+
+    logWebhook('info', 'PAYLOAD_RECEIVED', {
+      orderId,
+      rawAmount,
+      status: status || null,
+      hasEvidenceText: Boolean(evidenceText),
+      hasUtr: Boolean(body.utr || body.rrn || body.transactionId || body.txnId),
+    })
+
+    // 4. Reject explicit failure, decline, or "not received" notifications
+    const isExplicitNegative =
       status === 'FAILED' ||
       status === 'CANCELLED' ||
       status === 'DECLINED' ||
-      /fail|declin|bounc|reject/i.test(evidenceText)
-    ) {
+      /fail|declin|bounc|reject|not rec[ei]{2}ved/i.test(evidenceText)
+
+    if (isExplicitNegative) {
       logWebhook('warn', 'NOTIFICATION_REJECTED', {
         orderId,
         status,
@@ -208,12 +263,12 @@ export async function handleMakePaymentWebhook(req, res, next) {
       )
     }
 
-    // 4. Require positive notification evidence
+    // 5. Require positive notification evidence (supporting Make.com's "Payment recieved" typo as well)
     const hasNotificationEvidence =
       evidenceText === 'Payment received' ||
+      /payment rec[ei]{2}ved|received rs|credited/i.test(evidenceText) ||
       status === 'SUCCESS' ||
-      status === 'PAID' ||
-      /payment received|received rs|credited/i.test(evidenceText)
+      status === 'PAID'
 
     if (!hasNotificationEvidence) {
       logWebhook('warn', 'NOTIFICATION_REJECTED', {
@@ -229,11 +284,11 @@ export async function handleMakePaymentWebhook(req, res, next) {
 
     const supabase = getSupabaseAdmin()
 
-    // 5. Query order from database
+    // 6. Query order from database
     const { data: order, error: orderErr } = await supabase
       .from('orders')
       .select('*')
-      .eq('id', orderId.trim())
+      .eq('id', orderId)
       .maybeSingle()
 
     if (orderErr) {
@@ -251,6 +306,26 @@ export async function handleMakePaymentWebhook(req, res, next) {
       throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
     }
 
+    // 7. Validate payment attempt ID (if explicitly provided in webhook payload)
+    const rawAttemptId = body.attemptId || body.paymentAttemptId || null
+    if (
+      rawAttemptId &&
+      typeof rawAttemptId === 'string' &&
+      order.payment_attempt_id &&
+      rawAttemptId.trim() !== order.payment_attempt_id &&
+      rawAttemptId.trim() !== body.utr
+    ) {
+      logWebhook('warn', 'ATTEMPT_MISMATCH_REJECTED', {
+        orderId: order.id,
+        expectedAttemptId: order.payment_attempt_id,
+        receivedAttemptId: rawAttemptId,
+      })
+      throw ApiError.badRequest(
+        'Webhook notification attempt ID does not match order payment attempt.',
+        'PAYMENT_ATTEMPT_MISMATCH',
+      )
+    }
+
     // 6. Idempotency Check: Already paid
     if (order.payment_status === 'PAID') {
       logWebhook('info', 'IDEMPOTENT_ALREADY_PAID', {
@@ -266,36 +341,11 @@ export async function handleMakePaymentWebhook(req, res, next) {
       })
     }
 
-    // 7. Terminal State Guard: CANCELLED or terminal payment states cannot transition
-    if (order.status === 'CANCELLED' || ['EXPIRED', 'FAILED', 'REFUNDED'].includes(order.payment_status)) {
-      logWebhook('warn', 'TERMINAL_STATE_REJECTED', {
-        orderId: order.id,
-        orderStatus: order.status,
-        paymentStatus: order.payment_status,
-      })
-      throw ApiError.conflict(
-        'Order is cancelled or in a terminal payment state and cannot be marked paid.',
-        'TERMINAL_STATE',
-      )
-    }
-
-    // 8. Payment Window Expiry Guard: Webhooks arriving after the 2-minute payment window cannot mark paid
-    const now = Date.now()
-    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
-    if (Number.isFinite(windowExpiry) && now >= windowExpiry) {
-      logWebhook('warn', 'WINDOW_EXPIRED_REJECTED', {
-        orderId: order.id,
-        windowExpiresAt: order.payment_window_expires_at,
-        expiredByMs: now - windowExpiry,
-      })
-      throw ApiError.badRequest('Payment verification window has expired.', 'PAYMENT_WINDOW_EXPIRED')
-    }
-
-    // 9. Dynamic Platform Fee Anti-Tampering Check: Exact amount match required
+    // 7. Dynamic Platform Fee Anti-Tampering Check: Exact amount match required
     const expectedTotal = Number(order.total_payable)
     const amountDiff = Math.abs(parsedAmount - expectedTotal)
 
-    if (amountDiff > 0.005) {
+    if (Math.round(parsedAmount * 100) !== Math.round(expectedTotal * 100)) {
       logWebhook('warn', 'AMOUNT_MISMATCH_REJECTED', {
         orderId: order.id,
         expectedTotal,
@@ -307,6 +357,96 @@ export async function handleMakePaymentWebhook(req, res, next) {
         'PAYMENT_AMOUNT_MISMATCH',
         { expectedAmount: expectedTotal, receivedAmount: parsedAmount },
       )
+    }
+
+    // 8. Terminal State & Payment Window Expiry Guards:
+    // If order is cancelled/terminal or window expired, capture late telemetry as unverified evidence,
+    // and reject payment verification without mutating order status or inventory.
+    const isTerminal = order.status === 'CANCELLED' || ['EXPIRED', 'FAILED', 'REFUNDED'].includes(order.payment_status)
+    const now = Date.now()
+    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
+    const isWindowExpired = Number.isFinite(windowExpiry) && now >= windowExpiry
+
+    if (isTerminal || isWindowExpired) {
+      const utr = body.utr || body.rrn || body.transactionId || body.txnId || null
+      const dedupeKey = utr || body.attemptId || body.eventId || order.payment_attempt_id || `att_${order.id}`
+
+      const { data: existingRecord } = await supabase
+        .from('payment_records')
+        .select('*')
+        .eq('order_id', order.id)
+        .eq('attempt_id', dedupeKey)
+        .maybeSingle()
+
+      let recordId = existingRecord?.id || `pay_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`
+
+      if (!existingRecord) {
+        const { error: insertErr } = await supabase.from('payment_records').insert({
+          id: recordId,
+          order_id: order.id,
+          attempt_id: dedupeKey,
+          amount: expectedTotal,
+          status: 'EXPIRED',
+          provider: body.provider || 'UPI',
+          verification_source: 'MAKE_WEBHOOK_LATE_INGESTION',
+          evidence: null,
+          raw_payload: {
+            utr: utr || null,
+            sender: body.sender || body.payer || null,
+            timestamp: body.timestamp || new Date().toISOString(),
+            receivedAmount: parsedAmount,
+            notificationText: evidenceText || null,
+            lateArrival: true,
+            lateReason: isTerminal ? 'TERMINAL_STATE' : 'PAYMENT_WINDOW_EXPIRED',
+            orderStatusAtArrival: order.status,
+            orderPaymentStatusAtArrival: order.payment_status,
+            verifiedSettlement: false,
+            ingestionSource: 'make_webhook',
+          },
+          created_at: new Date().toISOString(),
+        })
+
+        if (insertErr) {
+          logWebhook('error', 'LATE_PAYMENT_INSERT_FAILED', {
+            orderId: order.id,
+            error: insertErr.message,
+          })
+          throw ApiError.internal(`Failed to persist late payment telemetry: ${insertErr.message || 'Database error'}`)
+        }
+      }
+
+      logWebhook('warn', isTerminal ? 'TERMINAL_STATE_LATE_INGESTION' : 'WINDOW_EXPIRED_LATE_INGESTION', {
+        orderId: order.id,
+        recordId,
+        attemptId: dedupeKey,
+        isDuplicate: Boolean(existingRecord),
+        orderStatus: order.status,
+        paymentStatus: order.payment_status,
+      })
+
+      if (isTerminal) {
+        throw ApiError.conflict(
+          'Order is cancelled or in a terminal payment state and cannot be marked paid.',
+          'TERMINAL_STATE',
+          {
+            orderId: order.id,
+            persistedAsUnverified: true,
+            recordId,
+            isDuplicate: Boolean(existingRecord),
+          },
+        )
+      } else {
+        throw ApiError.badRequest(
+          'Payment verification window has expired.',
+          'PAYMENT_WINDOW_EXPIRED',
+          {
+            orderId: order.id,
+            persistedAsUnverified: true,
+            recordId,
+            isDuplicate: Boolean(existingRecord),
+          },
+        )
+      }
     }
 
     // 10. Deduplicate event and persist payment evidence
@@ -325,8 +465,8 @@ export async function handleMakePaymentWebhook(req, res, next) {
     if (!existingRecord) {
       // FAIL-CLOSED INGESTION:
       // Store notification evidence as PROCESSING with evidence = null.
-      // This strictly avoids satisfying the mark_platform_fee_paid anti-shortcut constraint
-      // (which requires status = 'PAID' OR evidence IS NOT NULL) until authoritative verification succeeds.
+      // The database payment transition additionally requires status = 'PAID',
+      // evidence = 'Payment received', and verification_source = 'AUTHORITATIVE_GATEWAY'.
       const { error: insertErr } = await supabase.from('payment_records').insert({
         id: recordId,
         order_id: order.id,
@@ -337,12 +477,11 @@ export async function handleMakePaymentWebhook(req, res, next) {
         verification_source: 'MAKE_WEBHOOK_INGESTION',
         evidence: null,
         raw_payload: {
-          utr: utr || null,
-          sender: body.sender || body.payer || null,
+          utr: utr ? String(utr).slice(0, 64) : null,
+          sender: body.sender ? String(body.sender).slice(0, 64) : (body.payer ? String(body.payer).slice(0, 64) : null),
           timestamp: body.timestamp || new Date().toISOString(),
           receivedAmount: parsedAmount,
-          notificationText: evidenceText || null,
-          raw: body.rawPayload || null,
+          notificationText: evidenceText ? String(evidenceText).slice(0, 64) : null,
           verifiedSettlement: false,
           ingestionSource: 'make_webhook',
         },
@@ -388,7 +527,7 @@ export async function handleMakePaymentWebhook(req, res, next) {
       reason: gatewayVerification.reason || null,
     })
 
-    if (!gatewayVerification.verified) {
+    if (gatewayVerification?.verified !== true) {
       // FAIL CLOSED: No authoritative gateway confirmed bank settlement.
       // Do NOT call executeAtomicPaymentVerification(). Order remains PENDING.
       logWebhook('info', 'INGESTION_FAILED_CLOSED', {
@@ -409,13 +548,27 @@ export async function handleMakePaymentWebhook(req, res, next) {
     }
 
     // 12. Authoritative Gateway Confirmed: Upgrade evidence to verified and execute atomic transition
-    await supabase
+    const { error: verificationUpdateError } = await supabase
       .from('payment_records')
       .update({
         status: 'PAID',
         evidence: 'Payment received',
+        verification_source: 'AUTHORITATIVE_GATEWAY',
       })
       .eq('id', recordId)
+
+    // Do not continue to the order state transition unless the verified evidence
+    // was successfully persisted. The database function also validates the record,
+    // but this explicit check avoids relying on a later RPC failure to detect a
+    // failed evidence write.
+    if (verificationUpdateError) {
+      logWebhook('error', 'VERIFIED_EVIDENCE_PERSIST_FAILED', {
+        orderId: order.id,
+        recordId,
+        error: verificationUpdateError.message,
+      })
+      throw ApiError.internal('Failed to persist authoritative payment verification evidence.')
+    }
 
     await executeAtomicPaymentVerification(supabase, order.id)
 

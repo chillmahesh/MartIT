@@ -158,6 +158,46 @@ describe('Authentication & Authorization Endpoints', () => {
     expect(res.body.code).toBe('NOT_AN_APPLICANT')
   })
 
+  it('supports idempotent approval of an already approved runner', async () => {
+    // Eve is approved first
+    await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_applicant', status: 'approved' })
+
+    // Repeated approval succeeds idempotently without duplicate role entries
+    const res = await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_applicant', status: 'approved' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.runnerStatus).toBe('approved')
+    const runnerRoles = (state.user_roles || state.userRoles).filter(
+      (r) => r.user_id === 'usr_applicant' && r.role === ROLES.RUNNER,
+    )
+    expect(runnerRoles.length).toBe(1)
+  })
+
+  it('rejects runner status update for non-existent user with 404', async () => {
+    const res = await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_non_existent', status: 'approved' })
+
+    expect(res.status).toBe(404)
+    expect(res.body.code).toBe('USER_NOT_FOUND')
+  })
+
+  it('rejects runner status update with invalid status with 422', async () => {
+    const res = await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_applicant', status: 'invalid_status' })
+
+    expect(res.status).toBe(422)
+  })
+
   it('prevents granting runner role to a user who never applied', async () => {
     const res = await request(app)
       .post('/admin/roles/set')

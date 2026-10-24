@@ -53,19 +53,20 @@ export function createMockVerificationAdapter() {
 
     const evidence = evidenceStore.get(orderId)
 
-    // Trusted Make.com contract: exact match 'Payment received'
-    if (evidence === 'Payment received') {
+    // Trusted Make.com contract: match 'Payment received' or blueprint spelling 'Payment recieved'
+    if (evidence === 'Payment received' || evidence === 'Payment recieved' || evidence === 'SUCCESS') {
       return {
         status: 'verified',
-        rawResponse: 'Payment received',
+        rawResponse: evidence,
         message: 'Payment received and verified.',
       }
     }
 
-    // Default Make.com response when transaction is not matched
+    // Default Make.com response when transaction is not matched ('not recieved' or 'not received')
+    const negativeResponse = evidence === 'not recieved' ? 'not recieved' : 'not received'
     return {
       status: 'inconclusive',
-      rawResponse: 'not received',
+      rawResponse: negativeResponse,
       message:
         'Payment not detected yet. If money was debited from your UPI app, please contact campus support with your order reference.',
     }

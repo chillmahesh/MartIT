@@ -23,6 +23,7 @@ import { SAMPLE_STORES } from '@/mocks/campus'
 import { useLocations } from '@/hooks/useLocations'
 import { orderService } from '@/services/orderService'
 import { PAYMENT_STATUS, PAYMENT_STATUS_LABEL } from '@/utils/paymentMachine'
+import { cn } from '@/utils/cn'
 
 /**
  * Robust epoch millisecond timestamp parser.
@@ -213,7 +214,7 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
 
   // Check payment status with server
   const handleCheckStatus = async () => {
-    if (!order?.id) return
+    if (!order?.id || isChecking) return
     setIsChecking(true)
     setActionError(null)
     setInconclusiveFeedback(null)
@@ -223,6 +224,12 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
       if (res.order) {
         setOrder(res.order)
         onOrderUpdate?.(res.order)
+      } else if (res.status === 'verified') {
+        const updated = await orderService.get(order.id)
+        if (updated) {
+          setOrder(updated)
+          onOrderUpdate?.(updated)
+        }
       }
 
       if (res.status === 'inconclusive') {
@@ -230,9 +237,17 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
           res.message ||
             'Payment not detected yet. If money was debited from your UPI app, please contact campus support.',
         )
+      } else if (res.status === 'in_flight') {
+        setInconclusiveFeedback(
+          res.message || 'Payment verification is currently in progress. Please wait a moment.',
+        )
       }
     } catch (err) {
-      setActionError(err.message || 'Unable to check payment status. Please try again.')
+      if (err.code === 'VERIFICATION_IN_FLIGHT') {
+        setInconclusiveFeedback('Payment check is already in progress. Please wait a moment.')
+      } else {
+        setActionError(err.message || 'Unable to check payment status. Please try again.')
+      }
     } finally {
       setIsChecking(false)
     }
@@ -465,11 +480,13 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
                     size="lg"
                     block
                     loading={isChecking}
+                    disabled={isChecking}
                     onClick={handleCheckStatus}
                     className="font-bold shadow-2 hover:scale-[1.01] active:scale-[0.99]"
+                    data-testid="check-payment-btn"
                   >
-                    <RefreshCw className="size-4" aria-hidden="true" />
-                    <span>Check Payment Status</span>
+                    <RefreshCw className={cn("size-4", isChecking && "animate-spin")} aria-hidden="true" />
+                    <span>{isChecking ? 'Checking payment...' : 'Confirm Payment'}</span>
                   </Button>
                   <p className="text-[11px] text-center text-ink-subtle">
                     Tapping &quot;Check Payment Status&quot; queries the campus reconciliation adapter.

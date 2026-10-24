@@ -3,6 +3,7 @@ import request from 'supertest'
 import { createApp } from '../app.js'
 import { createMockSupabaseClient } from './testHelpers.js'
 import { ROLES } from '../utils/permissions.js'
+import { setMakeVerifier, inFlightPaymentChecks } from '../routes/orders.js'
 
 describe('Order History & Detail Endpoints', () => {
   let app
@@ -359,6 +360,7 @@ describe('Payment State Transitions & Hardening', () => {
       payment_records: [],
     })
     mockState = mock.state
+    setMakeVerifier(null)
     app = createApp()
   })
 
@@ -402,7 +404,9 @@ describe('Payment State Transitions & Hardening', () => {
     // Add verified payment record matching exact order total (115.15)
     mockState.payment_records.push({
       order_id: 'ord_active_win',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 
@@ -429,7 +433,9 @@ describe('Payment State Transitions & Hardening', () => {
     // Underpaid evidence (e.g. ₹10.00 instead of ₹115.15)
     mockState.payment_records.push({
       order_id: 'ord_active_win',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 10.00,
     })
 
@@ -446,11 +452,35 @@ describe('Payment State Transitions & Hardening', () => {
     expect(dbOrder.payment_status).toBe('PENDING')
   })
 
+  it('rejects check-payment transition when payment record lacks authoritative verification source', async () => {
+    // Unverified evidence from raw ingestion without gateway verification
+    mockState.payment_records.push({
+      order_id: 'ord_active_win',
+      status: 'PROCESSING',
+      evidence: null,
+      verification_source: 'MAKE_WEBHOOK_INGESTION',
+      amount: 115.15,
+    })
+
+    const res = await request(app)
+      .post('/api/v1/orders/ord_active_win/check-payment')
+      .set('Authorization', 'Bearer tok_alice')
+
+    expect(res.status).toBe(200)
+    expect(res.body.status).toBe('inconclusive')
+    expect(res.body.paymentStatus).toBe('PENDING')
+
+    const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+    expect(dbOrder.payment_status).toBe('PENDING')
+  })
+
   it('Late payment verification cannot overwrite terminal state (EXPIRED)', async () => {
     // Evidence arrives late after order is already in terminal EXPIRED state
     mockState.payment_records.push({
       order_id: 'ord_terminal_expired',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 
@@ -470,7 +500,9 @@ describe('Payment State Transitions & Hardening', () => {
   it('handles duplicate verification calls idempotently without state corruption', async () => {
     mockState.payment_records.push({
       order_id: 'ord_active_win',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 
@@ -590,7 +622,9 @@ describe('Payment State Transitions & Hardening', () => {
 
     mockState.payment_records.push({
       order_id: 'ord_cancelled_test',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 
@@ -622,7 +656,9 @@ describe('Payment State Transitions & Hardening', () => {
 
     mockState.payment_records.push({
       order_id: 'ord_cancelled_pending_test',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 
@@ -641,7 +677,9 @@ describe('Payment State Transitions & Hardening', () => {
   it('fails safely with 500 and does NOT mutate database state or fall back to REST updates when RPC fails during check-payment', async () => {
     mockState.payment_records.push({
       order_id: 'ord_active_win',
+      status: 'PAID',
       evidence: 'Payment received',
+      verification_source: 'AUTHORITATIVE_GATEWAY',
       amount: 115.15,
     })
 
@@ -686,6 +724,334 @@ describe('Payment State Transitions & Hardening', () => {
       (r) => r.active_order_id === 'ord_active_win',
     )
     expect(feeSlot.active_order_id).toBe('ord_active_win')
+  })
+
+  describe('Make.com Payment Confirmation Integration (Milestone 1)', () => {
+    it('transitions PENDING order to PAID and CONFIRMED when Make.com responds with blueprint spelling "Payment recieved"', async () => {
+      setMakeVerifier(async ({ orderId, amount }) => {
+        expect(orderId).toBe('ord_active_win')
+        expect(amount).toBe(115.15)
+        return {
+          success: true,
+          status: 'verified',
+          rawResponse: 'Payment recieved',
+          message: 'Payment received and verified.',
+        }
+      })
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('verified')
+      expect(res.body.paymentStatus).toBe('PAID')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PAID')
+      expect(dbOrder.status).toBe('CONFIRMED')
+
+      const paymentRecord = mockState.payment_records.find((r) => r.order_id === 'ord_active_win')
+      expect(paymentRecord).toBeDefined()
+      expect(paymentRecord.status).toBe('PAID')
+      expect(paymentRecord.verification_source).toBe('AUTHORITATIVE_GATEWAY')
+      expect(paymentRecord.evidence).toBe('Payment received')
+    })
+
+    it('transitions PENDING order to PAID and CONFIRMED when Make.com responds with standard spelling "Payment received"', async () => {
+      setMakeVerifier(async () => ({
+        success: true,
+        status: 'verified',
+        rawResponse: 'Payment received',
+        message: 'Payment received and verified.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('verified')
+      expect(res.body.paymentStatus).toBe('PAID')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PAID')
+      expect(dbOrder.status).toBe('CONFIRMED')
+    })
+
+    it('leaves order PENDING and returns inconclusive when Make.com responds with blueprint spelling "not recieved"', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'PAYMENT_NOT_RECEIVED',
+        rawResponse: 'not recieved',
+        message: 'Payment not detected yet. Direct customer to contact admin if money was deducted.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+      expect(res.body.message).toContain('contact admin')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+      expect(dbOrder.status).toBe('CREATED')
+    })
+
+    it('leaves order PENDING and returns inconclusive when Make.com responds with standard spelling "not received"', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'PAYMENT_NOT_RECEIVED',
+        rawResponse: 'not received',
+        message: 'Payment not detected yet. Direct customer to contact admin if money was deducted.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+    })
+
+    it('handles Make.com timeout gracefully without marking order paid', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'TIMEOUT',
+        message: 'Request timed out.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+    })
+
+    it('handles Make.com network error gracefully without marking order paid', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'NETWORK_ERROR',
+        message: 'Connection reset by peer.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+    })
+
+    it('handles non-200 HTTP response from Make.com safely without marking paid', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        httpStatus: 500,
+        reason: 'HTTP_ERROR',
+        message: 'Make.com scenario error.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+    })
+
+    it('handles unknown or malformed response body from Make.com safely without marking paid', async () => {
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'UNKNOWN_RESPONSE',
+        rawResponse: '<html>502 Bad Gateway</html>',
+        message: 'Payment verification returned an unconfirmed response.',
+      }))
+
+      const res = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res.status).toBe(200)
+      expect(res.body.status).toBe('inconclusive')
+      expect(res.body.paymentStatus).toBe('PENDING')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_active_win')
+      expect(dbOrder.payment_status).toBe('PENDING')
+    })
+
+    it('handles repeated check requests idempotently once confirmed', async () => {
+      setMakeVerifier(async () => ({
+        success: true,
+        status: 'verified',
+        rawResponse: 'Payment recieved',
+        message: 'Payment received and verified.',
+      }))
+
+      // First check confirms payment
+      const res1 = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+      expect(res1.body.status).toBe('verified')
+
+      // Second check returns verified without querying Make.com or duplicating records
+      let secondVerifierCalled = false
+      setMakeVerifier(async () => {
+        secondVerifierCalled = true
+        return { success: false, status: 'inconclusive' }
+      })
+
+      const res2 = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(res2.status).toBe(200)
+      expect(res2.body.status).toBe('verified')
+      expect(res2.body.paymentStatus).toBe('PAID')
+      expect(secondVerifierCalled).toBe(false)
+    })
+
+    it('rejects concurrent in-flight payment checks with 409 VERIFICATION_IN_FLIGHT (Milestone 5 Goal E)', async () => {
+      let resolveMake
+      let makeVerifierEntered
+      const enteredPromise = new Promise((resolve) => {
+        makeVerifierEntered = resolve
+      })
+      const makePromise = new Promise((resolve) => {
+        resolveMake = resolve
+      })
+
+      setMakeVerifier(async () => {
+        makeVerifierEntered()
+        return makePromise
+      })
+
+      // Start the first check request asynchronously by attaching .then() to initiate the HTTP request
+      const req1Promise = request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+        .then((r) => r)
+
+      // Wait until request 1 has acquired the in-flight lock and entered the verifier
+      await enteredPromise
+
+      // Dispatch second concurrent request while first is in-flight
+      const res2 = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      // The second request must be rejected with 409 and code VERIFICATION_IN_FLIGHT
+      expect(res2.status).toBe(409)
+      expect(res2.body.status).toBe('in_flight')
+      expect(res2.body.code).toBe('VERIFICATION_IN_FLIGHT')
+      expect(res2.body.message).toContain('in progress')
+
+      // Complete the first verification
+      resolveMake({
+        success: true,
+        status: 'verified',
+        rawResponse: 'Payment recieved',
+        message: 'Payment received and verified.',
+      })
+
+      const res1 = await req1Promise
+      expect(res1.status).toBe(200)
+      expect(res1.body.status).toBe('verified')
+      expect(res1.body.paymentStatus).toBe('PAID')
+
+      // Verify the in-flight lock was released
+      expect(inFlightPaymentChecks.has('ord_active_win')).toBe(false)
+
+      // Subsequent check hits the idempotent fast-path
+      const res3 = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+      expect(res3.status).toBe(200)
+      expect(res3.body.status).toBe('verified')
+    })
+
+    it('releases in-flight lock when verification is inconclusive or fails, permitting retry (Milestone 5 Goal E)', async () => {
+      let resolveMake
+      let makeVerifierEntered
+      const enteredPromise = new Promise((resolve) => {
+        makeVerifierEntered = resolve
+      })
+      const makePromise = new Promise((resolve) => {
+        resolveMake = resolve
+      })
+
+      setMakeVerifier(async () => {
+        makeVerifierEntered()
+        return makePromise
+      })
+
+      const req1Promise = request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+        .then((r) => r)
+
+      await enteredPromise
+
+      // Concurrent request is locked out
+      const resConcurrent = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+      expect(resConcurrent.status).toBe(409)
+      expect(resConcurrent.body.code).toBe('VERIFICATION_IN_FLIGHT')
+
+      // Complete first verification as inconclusive
+      resolveMake({
+        success: false,
+        status: 'inconclusive',
+        reason: 'NOT_RECEIVED',
+        rawResponse: 'not recieved',
+      })
+
+      const res1 = await req1Promise
+      expect(res1.status).toBe(200)
+      expect(res1.body.status).toBe('inconclusive')
+
+      // Lock must be released
+      expect(inFlightPaymentChecks.has('ord_active_win')).toBe(false)
+
+      // Subsequent retry succeeds without lock rejection
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'NOT_RECEIVED',
+        rawResponse: 'not recieved',
+      }))
+      const resRetry = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+      expect(resRetry.status).toBe(200)
+      expect(resRetry.body.status).toBe('inconclusive')
+    })
   })
 })
 
@@ -1466,3 +1832,279 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
     expect(order.payment_status).toBe('PENDING')
   })
 })
+
+describe('Milestone 3 — Runner Order Availability & Exclusive Acceptance', () => {
+  let app
+  let mockState
+
+  const assignedOrder = {
+    id: 'ord_assigned_1',
+    customer_id: 'usr_alice',
+    runner_id: 'usr_runner',
+    delivery_location_id: 'loc_hostel_a',
+    delivery_location_snapshot: { name: 'Hostel A' },
+    status: 'PREPARING',
+    payment_status: 'PAID',
+    item_subtotal: '120.00',
+    combined_delivery_fee: '15.00',
+    base_amount: '135.00',
+    platform_fee: '0.12',
+    total_payable: '135.12',
+    handover_otp_hash: 'secret_hash_value',
+    _mockOtp: '123456',
+    created_at: new Date(Date.now() - 60000).toISOString(),
+    order_fulfillment_groups: [],
+  }
+
+  const availableConfirmedOrder = {
+    id: 'ord_available_confirmed',
+    customer_id: 'usr_alice',
+    runner_id: null,
+    delivery_location_id: 'loc_hostel_a',
+    delivery_location_snapshot: { name: 'Hostel A' },
+    status: 'CONFIRMED',
+    payment_status: 'PAID',
+    item_subtotal: '200.00',
+    combined_delivery_fee: '15.00',
+    base_amount: '215.00',
+    platform_fee: '0.25',
+    total_payable: '215.25',
+    created_at: new Date().toISOString(),
+    order_fulfillment_groups: [],
+  }
+
+  const awaitingPaymentOrder = {
+    id: 'ord_awaiting_payment',
+    customer_id: 'usr_alice',
+    runner_id: null,
+    delivery_location_id: 'loc_hostel_a',
+    delivery_location_snapshot: { name: 'Hostel A' },
+    status: 'AWAITING_PAYMENT',
+    payment_status: 'PENDING',
+    item_subtotal: '100.00',
+    combined_delivery_fee: '15.00',
+    base_amount: '115.00',
+    platform_fee: '0.10',
+    total_payable: '115.10',
+    created_at: new Date().toISOString(),
+    order_fulfillment_groups: [],
+  }
+
+  beforeEach(() => {
+    const mock = createMockSupabaseClient({
+      users: [
+        { id: 'usr_alice', token: 'tok_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
+        { id: 'usr_runner', token: 'tok_runner', email: 'runner@campus.edu', name: 'Runner Rob' },
+        { id: 'usr_runner2', token: 'tok_runner2', email: 'runner2@campus.edu', name: 'Runner Rita' },
+        { id: 'usr_applicant', token: 'tok_applicant', email: 'applicant@campus.edu', name: 'Applicant Alex' },
+      ],
+      profiles: [
+        { id: 'usr_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
+        { id: 'usr_runner', email: 'runner@campus.edu', name: 'Runner Rob', runner_status: 'approved' },
+        { id: 'usr_runner2', email: 'runner2@campus.edu', name: 'Runner Rita', runner_status: 'approved' },
+        { id: 'usr_applicant', email: 'applicant@campus.edu', name: 'Applicant Alex', runner_status: 'applicant' },
+      ],
+      userRoles: [
+        { user_id: 'usr_alice', role: ROLES.CUSTOMER },
+        { user_id: 'usr_runner', role: ROLES.RUNNER },
+        { user_id: 'usr_runner2', role: ROLES.RUNNER },
+        { user_id: 'usr_applicant', role: ROLES.CUSTOMER },
+      ],
+      orders: [
+        structuredClone(assignedOrder),
+        structuredClone(availableConfirmedOrder),
+        structuredClone(awaitingPaymentOrder),
+      ],
+    })
+    mockState = mock.state
+    app = createApp()
+  })
+
+  it('exposes unassigned CONFIRMED orders to approved online runners in GET /api/v1/runner/orders', async () => {
+    const res = await request(app)
+      .get('/api/v1/runner/orders')
+      .set('Authorization', 'Bearer tok_runner')
+
+    expect(res.status).toBe(200)
+    expect(Array.isArray(res.body)).toBe(true)
+    expect(res.body.length).toBe(2)
+
+    const ids = res.body.map((o) => o.id)
+    expect(ids).toContain('ord_assigned_1')
+    expect(ids).toContain('ord_available_confirmed')
+    expect(ids).not.toContain('ord_awaiting_payment')
+
+    // Sanitization check: no OTP leak
+    for (const order of res.body) {
+      expect(order.handover_otp_hash).toBeUndefined()
+      expect(order._mockOtp).toBeUndefined()
+    }
+  })
+
+  it('excludes unassigned available orders when runner is offline', async () => {
+    // Via GET with query param ?isOnline=false
+    const resQuery = await request(app)
+      .get('/api/v1/runner/orders?isOnline=false')
+      .set('Authorization', 'Bearer tok_runner')
+
+    expect(resQuery.status).toBe(200)
+    expect(resQuery.body.length).toBe(1)
+    expect(resQuery.body[0].id).toBe('ord_assigned_1')
+
+    // Via POST with body { isOnline: false }
+    const resBody = await request(app)
+      .post('/runner/orders/assigned')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: false })
+
+    expect(resBody.status).toBe(200)
+    expect(resBody.body.length).toBe(1)
+    expect(resBody.body[0].id).toBe('ord_assigned_1')
+  })
+
+  it('allows approved online runner to accept available order via POST /api/v1/runner/orders/:id/accept', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(200)
+    expect(res.body.id).toBe('ord_available_confirmed')
+    expect(res.body.status).toBe('PREPARING')
+    expect(res.body.runner_id).toBe('usr_runner')
+
+    // Verify persisted state in mock database
+    const orderInDb = mockState.orders.find((o) => o.id === 'ord_available_confirmed')
+    expect(orderInDb.runner_id).toBe('usr_runner')
+    expect(orderInDb.status).toBe('PREPARING')
+  })
+
+  it('allows approved online runner to accept available order via RPC endpoint POST /runner/order/accept', async () => {
+    const res = await request(app)
+      .post('/runner/order/accept')
+      .set('Authorization', 'Bearer tok_runner2')
+      .send({ orderId: 'ord_available_confirmed', isOnline: true })
+
+    expect(res.status).toBe(200)
+    expect(res.body.id).toBe('ord_available_confirmed')
+    expect(res.body.status).toBe('PREPARING')
+    expect(res.body.runner_id).toBe('usr_runner2')
+  })
+
+  it('rejects offline runner from accepting orders with 400 RUNNER_OFFLINE', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: false })
+
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('RUNNER_OFFLINE')
+  })
+
+  it('atomically enforces exclusive assignment and rejects concurrent runner with 409 ORDER_ALREADY_ASSIGNED', async () => {
+    // Runner 1 claims the order first
+    const firstClaim = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: true })
+
+    expect(firstClaim.status).toBe(200)
+    expect(firstClaim.body.runner_id).toBe('usr_runner')
+
+    // Runner 2 tries to claim the same order concurrently
+    const secondClaim = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_runner2')
+      .send({ isOnline: true })
+
+    expect(secondClaim.status).toBe(409)
+    expect(secondClaim.body.code).toBe('ORDER_ALREADY_ASSIGNED')
+    expect(secondClaim.body.details?.assignedRunnerId).toBe('usr_runner')
+
+    // Confirm DB still has Runner 1 exclusively
+    const orderInDb = mockState.orders.find((o) => o.id === 'ord_available_confirmed')
+    expect(orderInDb.runner_id).toBe('usr_runner')
+  })
+
+  it('rejects duplicate acceptance by same runner with 400 ORDER_ALREADY_ACCEPTED', async () => {
+    // Already assigned order for Runner 1
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_assigned_1/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('ORDER_ALREADY_ACCEPTED')
+  })
+
+  it('rejects accepting an unpaid order with 409 UNAVAILABLE_REQUEST', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_awaiting_payment/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('UNAVAILABLE_REQUEST')
+  })
+
+  it('blocks customers from accepting orders with 403 FORBIDDEN', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('blocks unapproved runner applicants with 403 FORBIDDEN', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/accept')
+      .set('Authorization', 'Bearer tok_applicant')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('FORBIDDEN')
+  })
+
+  it('returns 404 ORDER_NOT_FOUND when accepting a non-existent order', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_non_existent/accept')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ isOnline: true })
+
+    expect(res.status).toBe(404)
+    expect(res.body.code).toBe('ORDER_NOT_FOUND')
+  })
+
+  it('allows assigned runner to confirm store pickup via POST /api/v1/runner/orders/:id/pickup-store', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_assigned_1/pickup-store')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ storeId: 'store_campus_mart' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.success).toBe(true)
+    expect(res.body.orderId).toBe('ord_assigned_1')
+    expect(res.body.storeId).toBe('store_campus_mart')
+  })
+
+  it('forbids unassigned runner from confirming store pickup', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_assigned_1/pickup-store')
+      .set('Authorization', 'Bearer tok_runner2')
+      .send({ storeId: 'store_campus_mart' })
+
+    expect(res.status).toBe(403)
+  })
+
+  it('rejects store pickup confirmation for order not in PREPARING status', async () => {
+    const res = await request(app)
+      .post('/api/v1/runner/orders/ord_available_confirmed/pickup-store')
+      .set('Authorization', 'Bearer tok_runner')
+      .send({ storeId: 'store_campus_mart' })
+
+    expect(res.status).toBe(403)
+  })
+})
+

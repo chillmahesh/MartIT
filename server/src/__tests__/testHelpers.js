@@ -1,6 +1,13 @@
 import { setSupabaseAdmin } from '../config/supabase.js'
 import { ROLES } from '../utils/permissions.js'
 
+function matchesFilter(rowVal, filterVal) {
+  if (filterVal === null) {
+    return rowVal === null || rowVal === undefined
+  }
+  return rowVal === filterVal
+}
+
 /**
  * Creates an in-memory mock Supabase client for testing Express routes.
  */
@@ -131,7 +138,7 @@ export function createMockSupabaseClient({
         },
         async maybeSingle() {
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value) &&
+            filters.every((f) => matchesFilter(row[f.column], f.value)) &&
             inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
           let row = results[0] || null
@@ -142,7 +149,7 @@ export function createMockSupabaseClient({
         },
         async single() {
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value) &&
+            filters.every((f) => matchesFilter(row[f.column], f.value)) &&
             inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
           if (results.length === 0) {
@@ -208,9 +215,12 @@ export function createMockSupabaseClient({
         },
         then(resolve, reject) {
           if (pendingUpdate) {
+            if (state.updateErrors?.[table]) {
+              return resolve({ data: null, error: { message: state.updateErrors[table] } })
+            }
             const updatedRows = []
             for (let i = 0; i < currentTableData.length; i++) {
-              if (filters.every((f) => currentTableData[i][f.column] === f.value)) {
+              if (filters.every((f) => matchesFilter(currentTableData[i][f.column], f.value))) {
                 currentTableData[i] = { ...currentTableData[i], ...pendingUpdate }
                 updatedRows.push(currentTableData[i])
               }
@@ -220,7 +230,7 @@ export function createMockSupabaseClient({
 
           if (isDelete) {
             const kept = currentTableData.filter(
-              (row) => !filters.every((f) => row[f.column] === f.value),
+              (row) => !filters.every((f) => matchesFilter(row[f.column], f.value)),
             )
             currentTableData.length = 0
             currentTableData.push(...kept)
@@ -229,7 +239,7 @@ export function createMockSupabaseClient({
           }
 
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value) &&
+            filters.every((f) => matchesFilter(row[f.column], f.value)) &&
             inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
           // Handle relationships in mock if queried
@@ -1015,6 +1025,47 @@ export function createMockSupabaseClient({
             expires_at: expIso,
             attempts_remaining: Math.max(0, 3 - (order.handover_attempts_count || 0)),
           }],
+          error: null,
+        }
+      }
+
+      if (fn === 'admin_set_runner_status') {
+        const { p_user_id, p_status } = args || {}
+        if (!['approved', 'suspended'].includes(p_status)) {
+          return { data: null, error: { message: 'INVALID_STATUS: Runner status must be either approved or suspended.' } }
+        }
+        const profile = state.profiles.find((p) => p.id === p_user_id)
+        if (!profile) {
+          return { data: null, error: { message: 'USER_NOT_FOUND: Target user profile does not exist.' } }
+        }
+        if (profile.runner_status == null) {
+          return { data: null, error: { message: 'NOT_AN_APPLICANT: This user has not applied to be a runner.' } }
+        }
+
+        profile.runner_status = p_status
+        const roles = state.user_roles || state.userRoles || []
+        if (p_status === 'approved') {
+          if (!roles.some((r) => r.user_id === p_user_id && r.role === ROLES.RUNNER)) {
+            roles.push({ user_id: p_user_id, role: ROLES.RUNNER })
+          }
+        } else if (p_status === 'suspended') {
+          if (state.user_roles) {
+            state.user_roles = state.user_roles.filter((r) => !(r.user_id === p_user_id && r.role === ROLES.RUNNER))
+          }
+          if (state.userRoles) {
+            state.userRoles = state.userRoles.filter((r) => !(r.user_id === p_user_id && r.role === ROLES.RUNNER))
+          }
+        }
+
+        return {
+          data: {
+            success: true,
+            userId: p_user_id,
+            runnerStatus: p_status,
+            name: profile.name,
+            email: profile.email,
+            message: `Runner status updated to ${p_status}.`,
+          },
           error: null,
         }
       }

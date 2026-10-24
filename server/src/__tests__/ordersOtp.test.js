@@ -629,4 +629,64 @@ describe('Production Delivery OTP Backend Verification', () => {
       expect(dbOrder.handover_attempts_count).toBe(1)
     })
   })
+
+  // 12. OTP Durability & Recovery After Server Restart
+  describe('Resilience & Recovery After Backend Server Restart', () => {
+    it('handles server restart: activeOtpStore wiped, customer sees active challenge and re-issues OTP cleanly', async () => {
+      // 1. Order is in ON_THE_WAY with hash in PostgreSQL, but server restarts -> RAM wiped
+      activeOtpStore.clear()
+      expect(activeOtpStore.get('ord_transit_1')).toBeNull()
+
+      // 2. Customer checks delivery OTP after backend restart
+      const getRes = await request(app)
+        .get('/api/v1/orders/ord_transit_1/delivery-otp')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(getRes.status).toBe(200)
+      expect(getRes.body.otp).toBeNull() // Plaintext not in RAM
+      expect(getRes.body.status).toBe('ON_THE_WAY')
+      expect(getRes.body.isExpired).toBe(false)
+      expect(getRes.body.message).toContain('Click refresh if you need a new code')
+
+      // 3. Customer clicks refresh in CustomerDeliveryOtpCard
+      const refreshRes = await request(app)
+        .post('/api/v1/orders/ord_transit_1/refresh-otp')
+        .set('Authorization', 'Bearer tok_alice')
+
+      expect(refreshRes.status).toBe(200)
+      expect(refreshRes.body.otp).toMatch(/^\d{6}$/)
+      const newOtp = refreshRes.body.otp
+
+      // In-memory store is rehydrated
+      expect(activeOtpStore.get('ord_transit_1')?.otp).toBe(newOtp)
+
+      // 4. Runner verifies with the new OTP
+      const verifyRes = await request(app)
+        .post('/api/v1/runner/orders/ord_transit_1/verify-handover')
+        .set('Authorization', 'Bearer tok_runner_approved')
+        .send({ otp: newOtp })
+
+      expect(verifyRes.status).toBe(200)
+      expect(verifyRes.body.status).toBe('DELIVERED')
+    })
+
+    it('verifies delivery via DB hash when customer already noted OTP prior to server restart', async () => {
+      // Server restarts, clearing in-memory store
+      activeOtpStore.clear()
+      expect(activeOtpStore.get('ord_transit_1')).toBeNull()
+
+      // Customer tells runner the original valid OTP they had memorized
+      const verifyRes = await request(app)
+        .post('/api/v1/runner/orders/ord_transit_1/verify-handover')
+        .set('Authorization', 'Bearer tok_runner_approved')
+        .send({ otp: validOtp })
+
+      expect(verifyRes.status).toBe(200)
+      expect(verifyRes.body.status).toBe('DELIVERED')
+
+      const dbOrder = mockState.orders.find((o) => o.id === 'ord_transit_1')
+      expect(dbOrder.status).toBe('DELIVERED')
+      expect(dbOrder.handover_otp_hash).toBeNull()
+    })
+  })
 })

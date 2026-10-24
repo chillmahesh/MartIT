@@ -49,15 +49,20 @@ for (const file of files) {
     console.warn(`⚠️ [${file}] Potential mismatched parentheses count: ${openParens} open, ${closeParens} close.`)
   }
 
+  // Strip comments for semantic checks
+  const codeOnly = content
+    .replace(/--.*$/gm, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+
   // Check for prohibited floating point monetary types
-  if (/float|double precision|real/i.test(content)) {
+  if (/float|double precision|real/i.test(codeOnly)) {
     console.error(`❌ [${file}] Prohibited floating-point type found in migration. Always use numeric or integer for money!`)
     hasErrors = true
   }
 
   // Check that SECURITY DEFINER functions set explicit search_path
-  const secDefMatches = content.match(/SECURITY\s+DEFINER/gi) || []
-  const searchPathMatches = content.match(/SET\s+search_path\s*=/gi) || []
+  const secDefMatches = codeOnly.match(/SECURITY\s+DEFINER/gi) || []
+  const searchPathMatches = codeOnly.match(/SET\s+search_path\s*=/gi) || []
   if (secDefMatches.length > 0 && searchPathMatches.length < secDefMatches.length) {
     console.error(`❌ [${file}] Found SECURITY DEFINER function(s) without explicit SET search_path!`)
     hasErrors = true

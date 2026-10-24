@@ -5,6 +5,7 @@ import { authenticate } from '../middleware/auth.js'
 import { getSupabaseAdmin } from '../config/supabase.js'
 import { ApiError } from '../utils/errors.js'
 import { ROLES } from '../utils/permissions.js'
+import { env } from '../config/env.js'
 import {
   FLAT_DELIVERY_FEE,
   MAX_SERVICE_KM,
@@ -15,6 +16,131 @@ import {
 import { parseCoordinate, straightLineKm } from '../../../src/utils/distance.js'
 
 export const ordersRouter = Router()
+
+// Pluggable Make.com verification client for testing / dependency injection
+let customMakeVerifier = null
+
+export function setMakeVerifier(fn) {
+  customMakeVerifier = fn
+}
+
+/**
+ * Queries Make.com verification webhook to check whether customer payment was received in merchant inbox.
+ *
+ * Implements strict response contract:
+ * - Distinguishes confirmed positive (e.g. "Payment recieved", "Payment received", SUCCESS, PAID)
+ *   from negative ("not recieved", "not received", FAILED, DECLINED), timeout, network error, and malformed body.
+ * - HTTP 200 alone does not establish payment success.
+ */
+export async function queryMakePaymentVerification({ orderId, amount }) {
+  if (typeof customMakeVerifier === 'function') {
+    try {
+      return await customMakeVerifier({ orderId, amount })
+    } catch (err) {
+      return {
+        success: false,
+        status: 'inconclusive',
+        reason: 'MAKE_WEBHOOK_NETWORK_ERROR',
+        message: err.message,
+      }
+    }
+  }
+
+  const webhookUrl = env.MAKE_VERIFICATION_WEBHOOK_URL || process.env.MAKE_VERIFICATION_WEBHOOK_URL
+  if (!webhookUrl) {
+    return {
+      success: false,
+      status: 'inconclusive',
+      reason: 'MAKE_WEBHOOK_UNCONFIGURED',
+      message: 'Make.com payment verification URL is not configured.',
+    }
+  }
+
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10000)
+
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        content: Number(amount),
+        amount: Number(amount),
+        orderId: String(orderId),
+      }),
+      signal: controller.signal,
+    })
+    clearTimeout(timeout)
+
+    if (!res.ok) {
+      return {
+        success: false,
+        status: 'inconclusive',
+        httpStatus: res.status,
+        reason: 'HTTP_ERROR',
+        message: `Make.com returned non-OK HTTP status: ${res.status}`,
+      }
+    }
+
+    const responseText = await res.text()
+    let responseJson = null
+    try {
+      responseJson = JSON.parse(responseText)
+    } catch {
+      // Body may be plain text from webhook scenario, e.g. "Payment recieved"
+    }
+
+    // Explicit negative check: "not recieved", "not received", fail, declined, rejected, bounced
+    const isNegative =
+      /not rec[ei]{2}ved|fail|declin|reject|bounc/i.test(responseText) ||
+      responseJson?.status === 'FAILED' ||
+      responseJson?.status === 'DECLINED'
+
+    if (isNegative) {
+      return {
+        success: false,
+        status: 'inconclusive',
+        reason: 'PAYMENT_NOT_RECEIVED',
+        rawResponse: responseText,
+        message: 'Payment not detected yet. Direct customer to contact admin if money was deducted.',
+      }
+    }
+
+    // Confirmed positive check: "Payment recieved", "Payment received", SUCCESS, PAID
+    const isPositive =
+      /payment rec[ei]{2}ved/i.test(responseText) ||
+      responseJson?.status === 'SUCCESS' ||
+      responseJson?.paymentStatus === 'PAID' ||
+      responseJson?.verified === true
+
+    if (isPositive) {
+      return {
+        success: true,
+        status: 'verified',
+        rawResponse: responseText,
+        message: 'Payment received and verified.',
+      }
+    }
+
+    // Malformed, unknown, or ambiguous body
+    return {
+      success: false,
+      status: 'inconclusive',
+      reason: 'UNKNOWN_RESPONSE',
+      rawResponse: responseText,
+      message: 'Payment verification returned an unconfirmed response.',
+    }
+  } catch (netErr) {
+    return {
+      success: false,
+      status: 'inconclusive',
+      reason: netErr.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK_ERROR',
+      message: netErr.message || 'Failed to query Make.com payment verification.',
+    }
+  }
+}
 
 /**
  * Customer order history retrieval.
@@ -143,6 +269,7 @@ export function formatCanonicalOrder(order) {
   return {
     id: order.id,
     customerId: order.customer_id || order.customerId,
+    runnerId: order.runner_id || order.runnerId || null,
     storeId,
     locationId,
     deliveryLocationId: locationId,
@@ -273,13 +400,17 @@ async function handleGetOrder(req, res, next) {
   }
 }
 
+export const inFlightPaymentChecks = new Set()
+
 /**
  * Dedicated atomic payment verification check endpoint.
  * Server-authorized mutation: transitions payment state based on verification evidence and timers.
  */
 async function handleCheckPayment(req, res, next) {
+  const orderId = req.params?.id || req.body?.orderId
+  let lockAcquired = false
+
   try {
-    const orderId = req.params?.id || req.body?.orderId
     if (!orderId) {
       throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
     }
@@ -316,9 +447,6 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    const now = Date.now()
-    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
-
     // 2. Terminal state guard: If already EXPIRED, FAILED, REFUNDED, or order CANCELLED, prevent late overwrite
     if (order.status === 'CANCELLED' || ['EXPIRED', 'FAILED', 'REFUNDED'].includes(order.payment_status)) {
       return res.status(200).json({
@@ -329,7 +457,23 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    // 3. Server-authoritative 2-minute timer expiry check
+    // 3. Concurrency guard: prevent concurrent in-flight verification checks for the same order (Goal E)
+    if (inFlightPaymentChecks.has(orderId)) {
+      return res.status(409).json({
+        orderId,
+        status: 'in_flight',
+        code: 'VERIFICATION_IN_FLIGHT',
+        message: 'Payment verification is currently in progress. Please wait a moment.',
+      })
+    }
+
+    inFlightPaymentChecks.add(orderId)
+    lockAcquired = true
+
+    const now = Date.now()
+    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
+
+    // 4. Server-authoritative 2-minute timer expiry check
     if (now >= windowExpiry) {
       await executeAtomicPaymentExpiry(supabase, order.id, false)
 
@@ -341,15 +485,18 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    // 4. Server-verified evidence check (e.g. from payment_records / Make.com webhook)
+    // 4. Server-verified evidence check (e.g. from prior webhook or check)
     const { data: verifiedPayment } = await supabase
       .from('payment_records')
       .select('*')
       .eq('order_id', order.id)
+      .eq('status', 'PAID')
       .eq('evidence', 'Payment received')
+      .eq('verification_source', 'AUTHORITATIVE_GATEWAY')
       .maybeSingle()
 
-    if (verifiedPayment && Number(verifiedPayment.amount) === Number(order.total_payable)) {
+    const toPaise = (amt) => Math.round(Number(amt) * 100)
+    if (verifiedPayment && toPaise(verifiedPayment.amount) === toPaise(order.total_payable)) {
       await executeAtomicPaymentVerification(supabase, order.id)
 
       return res.status(200).json({
@@ -360,15 +507,83 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    // 5. Inconclusive check response ('not received') while window is still active
+    // 5. Query Make.com verification workflow
+    // Backend waits the required five seconds before querying Make.com (bypassed in test environment)
+    const bypassDelay = req.headers['x-bypass-delay'] === 'true' || process.env.NODE_ENV === 'test'
+    if (!bypassDelay) {
+      await new Promise((resolve) => setTimeout(resolve, 5000))
+    }
+
+    const makeResult = await queryMakePaymentVerification({
+      orderId: order.id,
+      amount: Number(order.total_payable),
+    })
+
+    if (makeResult?.success === true) {
+      const recordId = `pay_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`
+      const dedupeKey = order.payment_attempt_id || `make_${order.id}`
+
+      const { data: existingRec } = await supabase
+        .from('payment_records')
+        .select('id')
+        .eq('order_id', order.id)
+        .eq('attempt_id', dedupeKey)
+        .maybeSingle()
+
+      if (existingRec) {
+        await supabase
+          .from('payment_records')
+          .update({
+            status: 'PAID',
+            evidence: 'Payment received',
+            verification_source: 'AUTHORITATIVE_GATEWAY',
+          })
+          .eq('id', existingRec.id)
+      } else {
+        await supabase
+          .from('payment_records')
+          .insert({
+            id: recordId,
+            order_id: order.id,
+            attempt_id: dedupeKey,
+            amount: Number(order.total_payable),
+            status: 'PAID',
+            provider: 'UPI',
+            verification_source: 'AUTHORITATIVE_GATEWAY',
+            evidence: 'Payment received',
+            raw_payload: {
+              makeResponse: makeResult.rawResponse || 'Payment recieved',
+              verifiedAt: new Date().toISOString(),
+              verifiedVia: 'MAKE_COM_CONFIRMATION',
+            },
+            created_at: new Date().toISOString(),
+          })
+      }
+
+      await executeAtomicPaymentVerification(supabase, order.id)
+
+      return res.status(200).json({
+        orderId: order.id,
+        status: 'verified',
+        paymentStatus: 'PAID',
+        message: 'Payment received and verified.',
+      })
+    }
+
+    // 6. Inconclusive check response ('not received' or unconfirmed) while window is still active
     return res.status(200).json({
       orderId: order.id,
       status: 'inconclusive',
       paymentStatus: 'PENDING',
       message: 'Payment not received yet. Direct customer to contact admin if money was deducted.',
+      reason: makeResult?.reason || undefined,
     })
   } catch (err) {
     next(err)
+  } finally {
+    if (lockAcquired && orderId) {
+      inFlightPaymentChecks.delete(orderId)
+    }
   }
 }
 
@@ -499,9 +714,9 @@ export async function executeAtomicPaymentVerification(supabase, orderId) {
 
 /**
  * GET /api/v1/runner/orders - Authenticated runner's assigned orders.
- * Strictly limited to approved runners viewing only their assigned orders.
+ * Strictly limited to approved runners viewing their assigned orders and, when online, available confirmed orders.
  */
-async function handleRunnerAssignedOrders(req, res, next) {
+export async function handleRunnerAssignedOrders(req, res, next) {
   try {
     if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
       throw ApiError.forbidden('You must be a runner to access this queue.')
@@ -510,8 +725,11 @@ async function handleRunnerAssignedOrders(req, res, next) {
       throw ApiError.forbidden('Runner application is pending approval or suspended.')
     }
 
+    const isOnline = req.body?.isOnline !== false && req.body?.isOnline !== 'false' && req.query?.isOnline !== 'false'
     const supabase = getSupabaseAdmin()
-    const { data: orders, error } = await supabase
+
+    // 1. Orders assigned to this runner
+    const { data: assignedOrders, error: assignedErr } = await supabase
       .from('orders')
       .select(`
         id,
@@ -540,11 +758,63 @@ async function handleRunnerAssignedOrders(req, res, next) {
       .eq('runner_id', req.user.id)
       .order('created_at', { ascending: false })
 
-    if (error) {
+    if (assignedErr) {
       throw ApiError.internal('Failed to retrieve runner orders.')
     }
 
-    const sanitized = (orders || []).map((o) => {
+    let availableOrders = []
+    // 2. Unassigned CONFIRMED orders available to online runners
+    if (isOnline) {
+      const { data: unassigned, error: availErr } = await supabase
+        .from('orders')
+        .select(`
+          id,
+          customer_id,
+          runner_id,
+          delivery_location_id,
+          delivery_location_snapshot,
+          status,
+          payment_status,
+          item_subtotal,
+          combined_delivery_fee,
+          base_amount,
+          platform_fee,
+          total_payable,
+          route_distance_km,
+          routing_provider,
+          created_at,
+          order_fulfillment_groups (
+            id,
+            store_id,
+            status,
+            pickup_sequence_index,
+            picked_up_at
+          )
+        `)
+        .is('runner_id', null)
+        .eq('status', 'CONFIRMED')
+        .order('created_at', { ascending: false })
+
+      if (availErr) {
+        throw ApiError.internal('Failed to retrieve available orders.')
+      }
+      availableOrders = unassigned || []
+    }
+
+    const orderMap = new Map()
+    for (const o of (assignedOrders || [])) {
+      orderMap.set(o.id, o)
+    }
+    for (const o of availableOrders) {
+      if (!orderMap.has(o.id)) {
+        orderMap.set(o.id, o)
+      }
+    }
+
+    const combined = Array.from(orderMap.values())
+    combined.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+
+    const sanitized = combined.map((o) => {
       const copy = { ...o }
       delete copy.handover_otp_hash
       delete copy.handoverOtpHash
@@ -554,6 +824,233 @@ async function handleRunnerAssignedOrders(req, res, next) {
     })
 
     res.status(200).json(sanitized)
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
+ * Runner Order Acceptance endpoint (Milestone 3).
+ * Atomically claims an available CONFIRMED order for the calling runner.
+ * Enforces:
+ * - Approved runner authentication
+ * - Online availability check
+ * - Atomic exclusive claiming via conditional SQL update (runner_id IS NULL AND status = 'CONFIRMED')
+ * - Transitions order status to PREPARING
+ * - Concurrency conflict rejection with HTTP 409 ORDER_ALREADY_ASSIGNED
+ */
+export async function handleRunnerAcceptOrder(req, res, next) {
+  try {
+    if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You must be a runner to accept delivery requests.')
+    }
+    if (req.user.runnerStatus !== 'approved' && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('Runner application is pending approval or suspended.')
+    }
+
+    const orderId = req.params?.id || req.body?.orderId
+    const isOnline = req.body?.isOnline !== false && req.body?.isOnline !== 'false' && req.query?.isOnline !== 'false'
+
+    if (!orderId) {
+      throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
+    }
+    if (!isOnline) {
+      throw ApiError.badRequest('Runner must be online to accept delivery requests.', 'RUNNER_OFFLINE')
+    }
+
+    const supabase = getSupabaseAdmin()
+
+    // Atomic claim: only succeeds if runner_id IS NULL and status = 'CONFIRMED'
+    const { data: updatedRows, error: updateErr } = await supabase
+      .from('orders')
+      .update({
+        runner_id: req.user.id,
+        status: 'PREPARING',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', orderId)
+      .is('runner_id', null)
+      .eq('status', 'CONFIRMED')
+      .select(`
+        id,
+        customer_id,
+        runner_id,
+        delivery_location_id,
+        delivery_location_snapshot,
+        status,
+        payment_status,
+        item_subtotal,
+        combined_delivery_fee,
+        base_amount,
+        platform_fee,
+        total_payable,
+        route_distance_km,
+        routing_provider,
+        created_at,
+        order_fulfillment_groups (
+          id,
+          store_id,
+          status,
+          pickup_sequence_index,
+          picked_up_at
+        )
+      `)
+
+    if (updateErr) {
+      throw ApiError.internal('Failed to accept order.')
+    }
+
+    if (Array.isArray(updatedRows) && updatedRows.length > 0) {
+      const order = updatedRows[0]
+      const sanitized = { ...order }
+      delete sanitized.handover_otp_hash
+      delete sanitized.handoverOtpHash
+      delete sanitized._mockOtp
+      delete sanitized.otp
+      return res.status(200).json(sanitized)
+    }
+
+    // If update returned 0 rows, evaluate existing order state to return specific error code
+    const { data: existingOrder, error: fetchErr } = await supabase
+      .from('orders')
+      .select('id, runner_id, status')
+      .eq('id', orderId)
+      .maybeSingle()
+
+    if (fetchErr) {
+      throw ApiError.internal('Failed to retrieve order state.')
+    }
+
+    if (!existingOrder) {
+      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+    }
+
+    if (existingOrder.runner_id === req.user.id) {
+      throw new ApiError(
+        'ORDER_ALREADY_ACCEPTED',
+        'You have already accepted this delivery request.',
+        400,
+        { orderId }
+      )
+    }
+
+    if (existingOrder.runner_id && existingOrder.runner_id !== req.user.id) {
+      throw new ApiError(
+        'ORDER_ALREADY_ASSIGNED',
+        'This delivery request has already been assigned to another runner.',
+        409,
+        { orderId, assignedRunnerId: existingOrder.runner_id }
+      )
+    }
+
+    if (existingOrder.status !== 'CONFIRMED') {
+      throw new ApiError(
+        'UNAVAILABLE_REQUEST',
+        `Order is in ${existingOrder.status} status and is no longer available for acceptance.`,
+        409,
+        { orderId, status: existingOrder.status }
+      )
+    }
+
+    throw new ApiError(
+      'ORDER_ALREADY_ASSIGNED',
+      'This delivery request has already been assigned to another runner.',
+      409,
+      { orderId }
+    )
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
+ * Runner Store Pickup Confirmation endpoint.
+ * Confirms collection of items from a participating store within an order.
+ * When all fulfillment groups are collected, transitions order status to PICKED_UP.
+ */
+export async function handleRunnerPickupStore(req, res, next) {
+  try {
+    if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You must be a runner to confirm store pickup.')
+    }
+    if (req.user.runnerStatus !== 'approved' && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('Runner application is pending approval or suspended.')
+    }
+
+    const orderId = req.params?.id || req.body?.orderId
+    const storeId = req.body?.storeId
+
+    if (!orderId) {
+      throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
+    }
+    if (!storeId) {
+      throw ApiError.badRequest('Store identifier is required.', 'INVALID_STORE_ID')
+    }
+
+    const supabase = getSupabaseAdmin()
+
+    // 1. Fetch order and verify runner assignment
+    const { data: order, error: orderErr } = await supabase
+      .from('orders')
+      .select('id, runner_id, status')
+      .eq('id', orderId)
+      .maybeSingle()
+
+    if (orderErr || !order) {
+      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+    }
+    if (order.runner_id !== req.user.id && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You are not assigned to this delivery.', 'FORBIDDEN')
+    }
+    if (order.status !== 'PREPARING') {
+      throw ApiError.badRequest(
+        `Store pickups can only be confirmed while order is preparing (current status: ${order.status}).`,
+        'INVALID_ORDER_STATE'
+      )
+    }
+
+    // 2. Update fulfillment group for this store
+    await supabase
+      .from('order_fulfillment_groups')
+      .update({
+        status: 'PICKED_UP',
+        picked_up_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+      .eq('store_id', storeId)
+
+    // 3. Check if all fulfillment groups for this order are picked up
+    const { data: groups } = await supabase
+      .from('order_fulfillment_groups')
+      .select('id, status')
+      .eq('order_id', orderId)
+
+    const allGroups = groups || []
+    const allPickedUp = allGroups.length > 0 && allGroups.every((g) => g.status === 'PICKED_UP')
+
+    let finalStatus = order.status
+    if (allPickedUp) {
+      finalStatus = 'PICKED_UP'
+      await supabase
+        .from('orders')
+        .update({
+          status: 'PICKED_UP',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', orderId)
+    }
+
+    res.status(200).json({
+      success: true,
+      orderId,
+      storeId,
+      status: finalStatus,
+      allStoresPickedUp: allPickedUp,
+      message: allPickedUp
+        ? 'All items collected from store. Order is ready for transit!'
+        : 'Store pickup confirmed.',
+    })
   } catch (err) {
     next(err)
   }
@@ -1452,9 +1949,17 @@ ordersRouter.post('/orders/expire', authenticate, handleExpirePayment)
 ordersRouter.get('/api/v1/runner/orders', authenticate, handleRunnerAssignedOrders)
 ordersRouter.post('/runner/orders/assigned', authenticate, handleRunnerAssignedOrders)
 
+// Runner order acceptance (Milestone 3)
+ordersRouter.post('/api/v1/runner/orders/:id/accept', authenticate, handleRunnerAcceptOrder)
+ordersRouter.post('/runner/order/accept', authenticate, handleRunnerAcceptOrder)
+
 // Runner order lifecycle transition
 ordersRouter.post('/api/v1/runner/orders/:id/transition', authenticate, handleRunnerTransitionOrder)
 ordersRouter.post('/runner/order/transition', authenticate, handleRunnerTransitionOrder)
+
+// Runner store pickup confirmation
+ordersRouter.post('/api/v1/runner/orders/:id/pickup-store', authenticate, handleRunnerPickupStore)
+ordersRouter.post('/runner/order/pickupStore', authenticate, handleRunnerPickupStore)
 
 // Customer delivery OTP challenge retrieval
 ordersRouter.get('/api/v1/orders/:id/delivery-otp', authenticate, handleGetDeliveryOtp)
