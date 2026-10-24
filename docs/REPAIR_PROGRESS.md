@@ -27,7 +27,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M3 | Runner dashboard and availability | VERIFIED | Commit dcb845d; route /runner verified, online guard, atomic acceptance, pickup-store endpoint & 55 runner tests + 84 orders tests | Complete; proceed to M4 |
 | M4 | Demo runner procedure | VERIFIED | Safe UI approval steps documented, persisted status verified, access gate confirmed | Complete; proceed to M5 |
 | M5 | Payment latency and duplicate prevention | VERIFIED | Commit 20bb63c; inFlightPaymentChecks concurrency lock, disabled click state, HTTP 409 guard, 86 order tests passed | Complete; proceed to M6 |
-| M6 | Supabase findings review | NOT_STARTED | — | Correlate advisor findings with code; only justified fixes |
+| M6 | Supabase findings review | VERIFIED | Migration 20261024000002, advisor review audit trail, 628 passed tests | Complete; proceed to M7 |
 | M7 | Regression suite and final audit | NOT_STARTED | — | Tests/build/lint/migrations; diff review; live-vs-mocked report |
 
 ## Milestone Evidence & Audit Trails
@@ -155,3 +155,47 @@ This is the durable execution ledger. Update it throughout implementation. Never
     - `node scripts/validate-migrations.mjs`: 12 migration files validated, exit code 0.
     - `npm run build`: cleanly passed without error, exit code 0.
     - `git diff --check`: 0 whitespace issues.
+
+### M6 — Supabase Security & Database Review
+- **Date / Session:** 2026-10-24
+- **Files Modified / Created:**
+  - `supabase/migrations/20261024000002_add_missing_foreign_key_indexes.sql`:
+    - Created forward migration adding 8 missing foreign key indexes:
+      - `idx_stores_owner` on `public.stores(owner_id)`
+      - `idx_orders_delivery_location` on `public.orders(delivery_location_id)`
+      - `idx_orders_fee_paise` on `public.orders(fee_paise)`
+      - `idx_order_items_store` on `public.order_items(store_id)`
+      - `idx_order_items_product` on `public.order_items(product_id)`
+      - `idx_inventory_reservations_store` on `public.inventory_reservations(store_id)`
+      - `idx_inventory_reservations_product` on `public.inventory_reservations(product_id)`
+      - `idx_platform_fee_reservations_order` on `public.platform_fee_reservations(active_order_id)`
+    - Prevents table scans during foreign key CASCADE/RESTRICT operations and eliminates lock contention during concurrent checkouts.
+  - `supabase/tests/database_integrity_test.sql`:
+    - Added `TEST 13: Foreign Key Index Presence` asserting all 8 foreign key indexes exist in the schema.
+- **Advisor Leads Audit & Resolution Matrix:**
+  1. `public.rls_auto_enable()` callable by `anon` and `authenticated`:
+     - *Status:* `RESOLVED_BY_MIGRATION` (statically verified).
+     - *Detail:* Addressed on this audit branch in migration `20261022120000_restrict_rls_auto_enable_execute.sql` with regression test in `database_integrity_test.sql` lines 84–89.
+  2. `SECURITY DEFINER` routines missing `SET search_path`:
+     - *Status:* `VERIFIED_SECURE`.
+     - *Detail:* Audited all 33 stored procedures and triggers across all 13 migrations. 100% of SECURITY DEFINER functions explicitly specify `SET search_path = public, pg_temp` or `public, extensions, pg_temp`, preventing search-path hijacking attacks. Enforced continuously by `scripts/validate-migrations.mjs`.
+  3. `SECURITY DEFINER` execution grants to authenticated users:
+     - *Status:* `INTENTIONAL_BY_DESIGN` (safe, least privilege).
+     - *Detail:* `auth_user_has_role`, `auth_is_admin`, `auth_is_approved_runner`, and `auth_owns_store` require `GRANT EXECUTE TO authenticated` because Supabase evaluates Row Level Security policies using these functions under the user's authenticated session. Execution by `anon` and `PUBLIC` is strictly revoked. `apply_for_runner()` enforces `auth.uid() IS NOT NULL` and only allows self-application as `applicant`. `admin_set_runner_status()` and `mark_platform_fee_paid()` are restricted to `service_role`.
+  4. Missing foreign key indexes:
+     - *Status:* `RESOLVED_BY_MIGRATION`.
+     - *Detail:* Added 8 missing foreign key indexes in forward migration `20261024000002_add_missing_foreign_key_indexes.sql`.
+  5. Leaked-password protection disabled:
+     - *Status:* `EXTERNAL_DASHBOARD_CONFIG`.
+     - *Detail:* Supabase Auth configuration setting in Dashboard (`Authentication -> Attack Protection -> Leaked Passwords`). Cannot be managed via database migrations; documented in staging checklist.
+  6. `citext` installed in `public` schema:
+     - *Status:* `ACCEPTED_RISK_LOW`.
+     - *Detail:* Extension is required by `profiles.email citext`. Moving extensions between schemas in live Supabase risks migration drift and function breakages without security benefit. Retained as-is.
+  7. RLS initialization-plan and multiple permissive policies:
+     - *Status:* `INVESTIGATED_PRESERVED`.
+     - *Detail:* Evaluated multiple permissive policies on `orders`. These represent distinct role-based read/write access paths (customer, runner, store owner, admin) evaluated via logical OR, which is standard Supabase architecture.
+- **Verification Commands & Evidence:**
+  - `node scripts/validate-migrations.mjs`: 13 migration files validated cleanly, exit code 0.
+  - Full suite `npm test`: 31 files passed, 628 passed, 1 skipped (629 total), exit code 0.
+  - `npm run build`: cleanly compiled client and SSR bundles, exit code 0.
+  - `git diff --check`: 0 whitespace issues.

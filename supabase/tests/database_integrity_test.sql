@@ -598,4 +598,42 @@ BEGIN
 END;
 $$;
 
+-- ------------------------------------------------------------------------------
+-- TEST 13: Foreign Key Index Presence (Supabase Advisor Review)
+-- Verify that foreign key columns on critical tables have supporting indexes
+-- ------------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_missing TEXT[] := ARRAY[]::TEXT[];
+  v_idx RECORD;
+BEGIN
+  FOR v_idx IN
+    SELECT unnest(ARRAY[
+      'idx_stores_owner',
+      'idx_orders_delivery_location',
+      'idx_orders_fee_paise',
+      'idx_order_items_store',
+      'idx_order_items_product',
+      'idx_inventory_reservations_store',
+      'idx_inventory_reservations_product',
+      'idx_platform_fee_reservations_order'
+    ]) AS index_name
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_indexes
+      WHERE schemaname = 'public'
+        AND indexname = v_idx.index_name
+    ) THEN
+      v_missing := array_append(v_missing, v_idx.index_name);
+    END IF;
+  END LOOP;
+
+  IF array_length(v_missing, 1) > 0 THEN
+    RAISE EXCEPTION 'INDEX INTEGRITY FAIL: missing foreign key indexes: %', v_missing;
+  END IF;
+
+  RAISE NOTICE '✓ TEST 13 PASSED: All recommended foreign key indexes are present.';
+END;
+$$;
+
 ROLLBACK;
