@@ -133,6 +133,14 @@
 
 ## Progress log
 
+- **2026-10-24 | Deep Dead-Code Cleanup & Safe Removal:**
+  - Established clean baseline across full automated test suite (31 files, 630 passed, 1 skipped), 13 migrations validated, and production client/SSR build.
+  - Eliminated 19 unused import and declaration instances across frontend and backend (`server/src/middleware/auth.js`, `server/src/routes/orders.js`, `DeliveryDetailsForm.jsx`, `OrderConfirmationView.jsx`, `CustomerDeliveryOtpCard.jsx`, `supabaseClient.js`, `AdminConsolePage.jsx`, `AdminLoginPage.jsx`, `LoginPage.jsx`, `ResetPasswordPage.jsx`, `SignupPage.jsx`, `CartPage.jsx`, `HomePage.jsx`, `ProfilePage.jsx`, `checkoutDetails.test.jsx`, `customerPaymentFlow.test.js`, `flatDeliveryFeePolicy.test.jsx`, `runnerDashboard.test.jsx`, `runnerOtpVerification.test.jsx`).
+  - Safely removed confirmed obsolete and unreferenced component modules `src/components/layout/PhasePlaceholder.jsx` (29 lines) and `src/components/cart/DeliveryLocationSelector.jsx` (129 lines), replaced by active live screens and `DeliveryDetailsForm.jsx`.
+  - Aligned `docs/implementation-roadmap.md` with active delivery details form and implemented application pages.
+  - Hardened route dynamic-import test timeout in `adminAuth.test.jsx` from 15s to 30s to prevent concurrent worker execution flakes.
+  - Re-verified full test suite (31 test files, 630 passed, 1 skipped, 0 failures), migration validator (13 migrations valid), and production build.
+  - Commit SHAs: `fb1edc7`, `7c78a5f`, `5b411fa`, `7f54711`.
 - **2026-10-24 | Milestone 5 & Final Product Plan Execution:**
   - Synchronized `docs/FINAL_PRODUCT_PLAN.md` with complete implementation evidence across Milestones 0 through 5.
   - Updated `README.md` to accurately reflect completed capabilities (6-stage tracking stepper, atomic runner approval RPC, exclusive runner acceptance, restart-resilient OTP verification).
