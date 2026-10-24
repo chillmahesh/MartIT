@@ -226,11 +226,23 @@ export function formatCanonicalOrder(order) {
     null
 
   // Extract customer details from trusted location snapshot or order record
+  const snapshot = order.delivery_location_snapshot || order.deliveryLocationSnapshot
   const customerDetails =
-    order.delivery_location_snapshot?.customerDetails ||
+    snapshot?.customerDetails ||
     order.customer_details ||
     order.customerDetails ||
-    null
+    (snapshot?.fullName || snapshot?.name
+      ? {
+          fullName: snapshot.fullName || 'Customer',
+          phoneNumber: snapshot.phoneNumber || null,
+          selectedDestination: snapshot.name || null,
+          detailedAddress: [
+            snapshot.roomNumber,
+            snapshot.group_name,
+            snapshot.landmark,
+          ].filter(Boolean).join(', ') || null,
+        }
+      : null)
 
   // Map order_fulfillment_groups[].order_items[] into canonical top-level lines
   const mappedLines = fulfillmentGroups.flatMap((group) => {
@@ -256,12 +268,42 @@ export function formatCanonicalOrder(order) {
     ? mappedLines
     : (Array.isArray(order.lines) ? order.lines : [])
 
-  const itemSubtotal = Number(order.item_subtotal ?? order.pricing?.itemSubtotal ?? 0)
-  const deliveryFee = Number(order.combined_delivery_fee ?? order.pricing?.deliveryFee ?? 0)
-  const baseAmount = Number(order.base_amount ?? order.pricing?.baseAmount ?? 0)
-  const platformFee = Number(order.platform_fee ?? order.pricing?.platformFee ?? 0)
-  const total = Number(order.total_payable ?? order.pricing?.total ?? 0)
-  const distanceKm = Number(order.route_distance_km ?? order.pricing?.distanceKm ?? 0)
+  const itemSubtotal = Number(
+    order.item_subtotal ??
+    order.itemSubtotal ??
+    order.pricing?.itemSubtotal ??
+    (mappedLines.length > 0 ? mappedLines.reduce((sum, l) => sum + (l.lineSubtotal || 0), 0) : 0)
+  )
+  const deliveryFee = Number(
+    order.combined_delivery_fee ??
+    order.combinedDeliveryFee ??
+    order.pricing?.deliveryFee ??
+    0
+  )
+  const baseAmount = Number(
+    order.base_amount ??
+    order.baseAmount ??
+    order.pricing?.baseAmount ??
+    Math.round(itemSubtotal + deliveryFee)
+  )
+  const platformFee = Number(
+    order.platform_fee ??
+    order.platformFee ??
+    order.pricing?.platformFee ??
+    0
+  )
+  const total = Number(
+    order.total_payable ??
+    order.totalPayable ??
+    order.pricing?.total ??
+    (baseAmount + platformFee)
+  )
+  const distanceKm = Number(
+    order.route_distance_km ??
+    order.routeDistanceKm ??
+    order.pricing?.distanceKm ??
+    0
+  )
 
   return {
     id: order.id,
@@ -270,7 +312,7 @@ export function formatCanonicalOrder(order) {
     storeId,
     locationId,
     deliveryLocationId: locationId,
-    deliveryLocationSnapshot: order.delivery_location_snapshot || order.deliveryLocationSnapshot || null,
+    deliveryLocationSnapshot: snapshot || null,
     lines,
     customerDetails,
     status: order.status,
@@ -296,6 +338,19 @@ export function formatCanonicalOrder(order) {
     },
     fulfillmentGroups,
     createdAt: order.created_at || order.createdAt,
+    // Backward compatibility for snake_case callers
+    customer_id: order.customer_id || order.customerId,
+    runner_id: order.runner_id || order.runnerId || null,
+    created_at: order.created_at || order.createdAt,
+    item_subtotal: itemSubtotal,
+    combined_delivery_fee: deliveryFee,
+    base_amount: baseAmount,
+    platform_fee: platformFee,
+    total_payable: total,
+    route_distance_km: distanceKm,
+    delivery_location_id: locationId,
+    delivery_location_snapshot: snapshot || null,
+    order_fulfillment_groups: fulfillmentGroups,
   }
 }
 
@@ -747,9 +802,19 @@ export async function handleRunnerAssignedOrders(req, res, next) {
         order_fulfillment_groups (
           id,
           store_id,
+          store_snapshot,
           status,
           pickup_sequence_index,
-          picked_up_at
+          picked_up_at,
+          order_items (
+            id,
+            product_id,
+            product_name,
+            product_pack,
+            unit_price,
+            quantity,
+            line_subtotal
+          )
         )
       `)
       .eq('runner_id', req.user.id)
@@ -783,9 +848,19 @@ export async function handleRunnerAssignedOrders(req, res, next) {
           order_fulfillment_groups (
             id,
             store_id,
+            store_snapshot,
             status,
             pickup_sequence_index,
-            picked_up_at
+            picked_up_at,
+            order_items (
+              id,
+              product_id,
+              product_name,
+              product_pack,
+              unit_price,
+              quantity,
+              line_subtotal
+            )
           )
         `)
         .is('runner_id', null)
@@ -812,12 +887,12 @@ export async function handleRunnerAssignedOrders(req, res, next) {
     combined.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
 
     const sanitized = combined.map((o) => {
-      const copy = { ...o }
-      delete copy.handover_otp_hash
-      delete copy.handoverOtpHash
-      delete copy._mockOtp
-      delete copy.otp
-      return copy
+      const canonical = formatCanonicalOrder(o)
+      delete canonical.handover_otp_hash
+      delete canonical.handoverOtpHash
+      delete canonical._mockOtp
+      delete canonical.otp
+      return canonical
     })
 
     res.status(200).json(sanitized)

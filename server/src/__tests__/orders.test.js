@@ -1939,6 +1939,16 @@ describe('Milestone 3 — Runner Order Availability & Exclusive Acceptance', () 
       expect(order.handover_otp_hash).toBeUndefined()
       expect(order._mockOtp).toBeUndefined()
     }
+
+    // Canonical pricing and database field parity
+    const assigned = res.body.find((o) => o.id === 'ord_assigned_1')
+    expect(assigned.pricing).toBeDefined()
+    expect(assigned.pricing.itemSubtotal).toBe(120)
+    expect(assigned.pricing.deliveryFee).toBe(15)
+    expect(assigned.pricing.total).toBe(135.12)
+    expect(assigned.item_subtotal).toBe(120)
+    expect(assigned.combined_delivery_fee).toBe(15)
+    expect(assigned.total_payable).toBe(135.12)
   })
 
   it('excludes unassigned available orders when runner is offline', async () => {

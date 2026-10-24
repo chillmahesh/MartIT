@@ -146,6 +146,143 @@ describe('Runner Dashboard UI — Milestone 1', () => {
       const htmlFallback = renderToString(<DeliveryCard order={orderWithoutLocation} />)
       expect(htmlFallback).toContain('Campus Destination')
     })
+
+    it('renders persisted database order with snake_case fields and relational order_fulfillment_groups correctly without showing ₹0 or 0 items', () => {
+      const dbDeliveredOrder = {
+        id: 'ord_pg_delivered_77',
+        customer_id: 'usr_customer_42',
+        runner_id: 'usr_runner_active',
+        delivery_location_id: 'loc_library',
+        delivery_location_snapshot: {
+          id: 'loc_library',
+          name: 'Central Library',
+          group_name: 'Academic Zone',
+          customerDetails: {
+            fullName: 'Priya Sharma',
+            selectedDestination: 'Central Library Study Hall',
+            detailedAddress: 'Table 14, 2nd Floor',
+          },
+        },
+        status: ORDER_STATUS.DELIVERED,
+        payment_status: 'PAID',
+        item_subtotal: 185,
+        combined_delivery_fee: 10,
+        base_amount: 195,
+        platform_fee: 0.12,
+        total_payable: 195.12,
+        created_at: '2026-10-24T10:00:00.000Z',
+        handover_verified_at: '2026-10-24T10:25:00.000Z',
+        order_fulfillment_groups: [
+          {
+            id: 'fg_1',
+            store_id: 'store_campus_mart',
+            store_snapshot: { name: 'Campus Mart' },
+            status: 'PICKED_UP',
+            order_items: [
+              { id: 'item_1', product_name: 'Cold Coffee', quantity: 2, unit_price: 60, line_subtotal: 120 },
+              { id: 'item_2', product_name: 'Veg Sandwich', quantity: 1, unit_price: 65, line_subtotal: 65 },
+            ],
+          },
+        ],
+      }
+
+      const html = renderToString(<DeliveryCard order={dbDeliveredOrder} isOnline={true} />)
+
+      // Must display actual item count and subtotal, NOT 0 items / ₹0
+      expect(html).toContain('3 items')
+      expect(html).not.toContain('0 items')
+      expect(html).toContain('₹185')
+      expect(html).toContain('2× Cold Coffee')
+
+      // Must display actual delivery fee and payout
+      expect(html).toContain('Delivery Fee')
+      expect(html).toContain('₹10')
+      expect(html).toContain('Est. Payout ₹8')
+
+      // Must display store and destination from snapshots
+      expect(html).toContain('Campus Mart')
+      expect(html).toContain('Central Library Study Hall')
+      expect(html).toContain('Table 14, 2nd Floor')
+      expect(html).toContain('Recipient: Priya Sharma')
+
+      // Delivered status indicators
+      expect(html).toContain('Delivered')
+      expect(html).toContain('OTP Verified')
+    })
+
+    it('preserves legitimate zero-value delivery fee without inventing charges', () => {
+      const zeroFeeOrder = {
+        id: 'ord_free_delivery_1',
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_snack_1', name: 'Snack Pack', quantity: 2, unitPrice: 25, lineSubtotal: 50 }],
+        pricing: {
+          itemSubtotal: 50,
+          deliveryFee: 0,
+          total: 50.12,
+        },
+        status: ORDER_STATUS.CONFIRMED,
+      }
+
+      const html = renderToString(<DeliveryCard order={zeroFeeOrder} isOnline={true} />)
+      expect(html).toContain('2 items')
+      expect(html).toContain('₹50')
+      expect(html).toContain('Delivery Fee')
+      expect(html).toContain('₹0')
+    })
+
+    it('handles long order IDs and addresses with overflow protection classes', () => {
+      const longOrder = {
+        id: '550e8400-e29b-41d4-a716-446655440000',
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_item', name: 'Standard Item', quantity: 1, unitPrice: 40, lineSubtotal: 40 }],
+        customerDetails: {
+          fullName: 'Prof. Ananya Venkataraman Subrahmanyam',
+          selectedDestination: 'Department of Advanced Computing and Machine Intelligence Complex',
+          detailedAddress: 'Building 7, Block C, Room 304B, North Wing Near Faculty Lounge',
+        },
+        pricing: { deliveryFee: 10, itemSubtotal: 40, total: 50.12 },
+        status: ORDER_STATUS.ON_THE_WAY,
+      }
+
+      const html = renderToString(<DeliveryCard order={longOrder} isOnline={true} currentRunnerId="u_me" />)
+      expect(html).toContain('#550e8400-e29b-41d4-a716-446655440000')
+      expect(html).toContain('truncate')
+      expect(html).toContain('min-w-0')
+      expect(html).toContain('Department of Advanced Computing')
+      expect(html).toContain('Prof. Ananya Venkataraman Subrahmanyam')
+    })
+
+    it('displays consistent non-zero amounts across PREPARING, ON_THE_WAY, and DELIVERED states', () => {
+      const baseOrder = {
+        id: 'ord_lifecycle_amounts',
+        storeId: 'store_campus_mart',
+        lines: [
+          { productId: 'p_1', name: 'Notebook', quantity: 3, unitPrice: 50, lineSubtotal: 150 },
+        ],
+        item_subtotal: 150,
+        combined_delivery_fee: 10,
+        customerDetails: { fullName: 'Rohan Gupta', selectedDestination: 'Hostel B' },
+      }
+
+      const preparingHtml = renderToString(
+        <DeliveryCard order={{ ...baseOrder, status: ORDER_STATUS.PREPARING }} isOnline={true} />,
+      )
+      const transitHtml = renderToString(
+        <DeliveryCard order={{ ...baseOrder, status: ORDER_STATUS.ON_THE_WAY }} isOnline={true} currentRunnerId="u_me" />,
+      )
+      const deliveredHtml = renderToString(
+        <DeliveryCard order={{ ...baseOrder, status: ORDER_STATUS.DELIVERED }} isOnline={true} />,
+      )
+
+      for (const html of [preparingHtml, transitHtml, deliveredHtml]) {
+        expect(html).toContain('3 items')
+        expect(html).not.toContain('0 items')
+        expect(html).toContain('₹150')
+        expect(html).toContain('₹10')
+      }
+    })
   })
 
   // 4. Delivery Sections & Empty States
