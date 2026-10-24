@@ -28,7 +28,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M4 | Demo runner procedure | VERIFIED | Safe UI approval steps documented, persisted status verified, access gate confirmed | Complete; proceed to M5 |
 | M5 | Payment latency and duplicate prevention | VERIFIED | Commit 20bb63c; inFlightPaymentChecks concurrency lock, disabled click state, HTTP 409 guard, 86 order tests passed | Complete; proceed to M6 |
 | M6 | Supabase findings review | VERIFIED | Commit 4f3a4ed; Migration 20261024000002, advisor review audit trail, 628 passed tests | Complete; proceed to M7 |
-| M7 | Regression suite and final audit | NOT_STARTED | — | Tests/build/lint/migrations; diff review; live-vs-mocked report |
+| M7 | Regression suite and final audit | VERIFIED | 13 migrations valid, 31 test files (628 passed, 1 skipped), clean build, diff verified | None; all milestones M0–M7 completed |
 
 ## Milestone Evidence & Audit Trails
 
@@ -200,3 +200,31 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - Full suite `npm test`: 31 files passed, 628 passed, 1 skipped (629 total), exit code 0.
   - `npm run build`: cleanly compiled client and SSR bundles, exit code 0.
   - `git diff --check`: 0 whitespace issues.
+
+### M7 — Full Regression Suite & Final Audit
+- **Date / Session:** 2026-10-24
+- **Automated Verification Results:**
+  - **Migration Static Checks:** `node scripts/validate-migrations.mjs` -> 13 migration files validated with 0 errors (exit code 0).
+  - **Full Automated Test Suite:** `npm test` -> 31 test files passed, 628 passed, 1 skipped (629 total), exit code 0.
+  - **Production Bundle Build:** `npm run build` -> Client bundle (695 kB main bundle) and SSR bundle (93.5 kB entry) compiled cleanly with zero errors (exit code 0).
+  - **Code Quality & Whitespace:** `git diff --check` -> 0 trailing whitespace or format issues.
+- **Milestone Summary Table:**
+  - `M0`: Baseline established; root causes proven for Goals A, B, and C (Commit `8b13b9f`).
+  - `M1`: Admin runner approval privilege escalation fixed; forward migration `20261024000001` added with atomic RPC `admin_set_runner_status` (Commit `e38c0a3`).
+  - `M2`: Contradictory order tracking badges eliminated; 6-stage lifecycle progress tracker added; live polling safely implemented (Commit `32cb379`).
+  - `M3`: Runner dashboard verified at `/runner`; store-by-store pickup endpoint `handleRunnerPickupStore` implemented with strict role checks (Commit `dcb845d`).
+  - `M4`: Safe demo runner approval and activation procedure documented step-by-step for campus administrators (Commit `bd9efa7`).
+  - `M5`: In-flight payment concurrency guard `inFlightPaymentChecks` added with HTTP 409 lockout; frontend button immediately disabled during checks; required 5-second Gmail wait preserved (Commit `20bb63c`).
+  - `M6`: Supabase advisor leads audited; 8 missing foreign key indexes added in forward migration `20261024000002`; all SECURITY DEFINER search paths verified (Commit `4f3a4ed`).
+  - `M7`: Full regression test suite, static checks, build, and audit documentation completed.
+- **Distinction Between Automated/Mocked Tests and Live Staging Requirements:**
+  - *Automated / Local Proof:* Complete unit and integration test coverage across all Express endpoints, mock Supabase RPC handlers, React views, state machines, and concurrency locks passing cleanly.
+  - *Live Staging Requirements:*
+    1. Apply forward migrations `20261024000001_fix_admin_runner_approval_privilege.sql` and `20261024000002_add_missing_foreign_key_indexes.sql` to staging Supabase instance (`uuuqaeptpripmvavihza`).
+    2. Enable "Leaked Passwords Protection" in Supabase Auth Dashboard (`Authentication -> Attack Protection`).
+    3. Perform one live end-to-end checkout with Make.com webhook and Gmail alert matching to verify live UPI notification latency on campus network.
+- **Safety & Prohibition Adherence:**
+  - Zero git pushes executed (`git push` not run).
+  - Zero pull requests created or default branches merged.
+  - Zero deployments promoted.
+  - Zero unreviewed production database changes executed.
