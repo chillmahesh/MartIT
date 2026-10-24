@@ -28,7 +28,8 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M4 | Demo runner procedure | VERIFIED | Safe UI approval steps documented, persisted status verified, access gate confirmed | Complete; proceed to M5 |
 | M5 | Payment latency and duplicate prevention | VERIFIED | Commit 20bb63c; inFlightPaymentChecks concurrency lock, disabled click state, HTTP 409 guard, 86 order tests passed | Complete; proceed to M6 |
 | M6 | Supabase findings review | VERIFIED | Commit 4f3a4ed; Migration 20261024000002, advisor review audit trail, 628 passed tests | Complete; proceed to M7 |
-| M7 | Regression suite and final audit | VERIFIED | Commit d2f92eb; 13 migrations valid, 31 test files (628 passed, 1 skipped), clean build, diff verified | None; all milestones M0–M7 completed |
+| M7 | Regression suite and final audit | VERIFIED | Commit d2f92eb; 13 migrations valid, 31 test files (628 passed, 1 skipped), clean build, diff verified | Complete; proceed to M8 |
+| M8 | Staging readiness & live acceptance checklist | VERIFIED | Adaptive environment notices, mock-vs-live auth boundaries, staged live acceptance checklist, 628 passed tests, build verified | Staging deployment & live payment testing by operator |
 
 ## Milestone Evidence & Audit Trails
 
@@ -228,3 +229,60 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - Zero pull requests created or default branches merged.
   - Zero deployments promoted.
   - Zero unreviewed production database changes executed.
+
+### M8 — Staging Readiness & Live Acceptance Checklist
+- **Date / Session:** 2026-10-24
+- **Branch / Base Commit:** `audit/deep-clean-issue-register` @ `fed07cc`
+- **Goal:** Verify staging readiness, distinguish mock accounts from live Supabase Auth, validate pending forward migrations, check external integrations, and prepare an executable staged live acceptance checklist.
+- **Frontend / Backend Contract Verification:**
+  - **Runner Status Updates:** Frontend calls `adminService.setRunnerStatus(userId, status)` -> `request('admin.runners.setStatus', { userId, status })` -> `POST /admin/runners/setStatus`. Backend `server/src/routes/admin.js` accepts either `req.params.id` or `req.body.userId`, executes atomic RPC `admin_set_runner_status(UUID, VARCHAR)`, and returns `{ ...formatted, runnerStatus, roles }`. Contract is 100% aligned.
+  - **Runner Dashboard Routes:** Frontend routes at `/runner` (`RunnerDashboardPage.jsx`) gated by `<RequireRole role="runner" />` requiring `user.runnerStatus === 'approved'` and `user.roles.includes('runner')`. Express backend mounts all runner endpoints via both REST (`/api/v1/runner/...`) and RPC-style paths (`/runner/orders/assigned`, `/runner/order/accept`, `/runner/order/pickupStore`, `/runner/order/transition`, `/runner/order/verifyOtp`).
+  - **Environment Notice:** `RunnerDashboardPage.jsx` dynamically checks `isMockBackend` and displays truthful notices distinguishing mock testing from live staging.
+- **Mock Demo Users vs. Live Supabase Auth Partition:**
+  - `src/mocks/users.js` defines `SAMPLE_USERS` (`customer@martit.test`, `runner@martit.test`, `applicant@martit.test`, `superadmin@martit.test`) strictly for client-side and Vitest mock environments.
+  - `supabase/seed.sql` populates campus categories, locations, stores, and products; it intentionally does NOT seed `auth.users`.
+  - For live staging/production verification, actual Supabase Auth accounts must be provisioned via GoTrue Auth API or Supabase Dashboard.
+- **Unapplied Forward Migrations Status:**
+  - `supabase/migrations/20261024000001_fix_admin_runner_approval_privilege.sql` (implements atomic RPC `admin_set_runner_status`, updates `auth_is_admin()` and privilege trigger for `service_role`).
+  - `supabase/migrations/20261024000002_add_missing_foreign_key_indexes.sql` (adds 8 missing foreign key indexes preventing table scans).
+  - *Target Environment:* Staging Supabase project `uuuqaeptpripmvavihza`.
+  - *Status:* Both migrations are locally committed, syntactically and structurally validated by `scripts/validate-migrations.mjs`, and covered by `supabase/tests/database_integrity_test.sql`. Neither migration has been applied to live staging or production.
+- **Authorized External Integrations Audit:**
+  - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `MAKE_VERIFICATION_WEBHOOK_URL`, `MAKE_WEBHOOK_SECRET` are not set in the local agent shell.
+  - Staging deployment and database execution must be performed by the authorized operator using the staging checklist below.
+
+#### Staged Live Acceptance Checklist
+
+| Stage | Step | Description | Expected Outcome | Operator Action / Tool |
+|---|---|---|---|---|
+| **1. DB Migration** | 1.1 | Apply forward migration `20261024000001` to staging Supabase instance `uuuqaeptpripmvavihza`. | `admin_set_runner_status()` RPC created; `auth_is_admin()` and trigger updated. | Supabase SQL Editor / CLI |
+| | 1.2 | Apply forward migration `20261024000002` to staging Supabase instance `uuuqaeptpripmvavihza`. | 8 foreign key indexes created with `IF NOT EXISTS`. | Supabase SQL Editor / CLI |
+| | 1.3 | Run `supabase/tests/database_integrity_test.sql` against staging database. | All 13 tests pass with 0 errors. | Supabase SQL Editor |
+| **2. Auth Provisioning** | 2.1 | Sign up or verify staging admin account (e.g. `admin@campus.edu`). | User created in `auth.users`, profile in `profiles`, role `'admin'` in `user_roles`. | Supabase Auth / Dashboard |
+| | 2.2 | Sign up staging customer account (e.g. `customer@campus.edu`). | User created in `auth.users`, profile in `profiles`, role `'customer'` in `user_roles`. | `/signup` or GoTrue API |
+| | 2.3 | Sign up staging runner applicant account (e.g. `applicant@campus.edu`). | User created with role `'customer'`. | `/signup` or GoTrue API |
+| | 2.4 | Submit runner application for applicant account. | Calls `apply_for_runner()`; `profiles.runner_status` becomes `'applicant'`. | `/profile` or POST `/runner/apply` |
+| **3. Admin Approval** | 3.1 | Log in as admin at `/admin/login`. | Navigates to `/admin`. Route guard allows access. | Web Browser |
+| | 3.2 | Open "People & Roles" -> "Applicants" tab. | Applicant `applicant@campus.edu` appears in the list. | Web Browser |
+| | 3.3 | Click "Approve runner" button. | Toast: "Runner approved successfully." RPC executes without `PERMISSION_DENIED` error. | Web Browser |
+| | 3.4 | Verify database state in Supabase. | `profiles.runner_status = 'approved'`, `user_roles` contains `'runner'`. | Supabase Table Editor |
+| **4. Runner Dashboard** | 4.1 | Log in as approved runner at `/login`. | Automatically redirects to `/runner`. Route guard allows access. | Web Browser |
+| | 4.2 | Toggle "Runner Availability" switch to "Online". | Switch turns green ("Online"). Offline warning disappears. | Web Browser |
+| | 4.3 | Check available orders queue. | Unassigned `CONFIRMED` orders are visible in real time. | Web Browser |
+| **5. Customer Checkout** | 5.1 | Log in as customer on mobile/desktop browser. | Navigates to `/app`. | Web Browser |
+| | 5.2 | Add items from Campus Mart to cart and proceed to `/app/payment`. | Dynamic UPI QR displays with payee VPA, order ID, and 2-minute countdown timer. | Web Browser |
+| **6. Make.com Verification** | 6.1 | Transfer exact total amount via UPI, or dispatch test payload from Make.com scenario with `x-make-secret`. | Gmail notification received, Make.com webhook triggers backend `/api/v1/webhooks/make-payment`. | UPI App / Make.com Scenario |
+| | 6.2 | Customer clicks "Confirm Payment" on `/app/payment`. | Backend calls Make.com verification; `handleCheckPayment` receives positive confirmation. | Web Browser |
+| | 6.3 | Order transitions to `CONFIRMED` in PostgreSQL. | Customer view updates to Stage 1 "Payment Confirmed" on 6-stage tracker. | Web Browser / PostgreSQL |
+| **7. Concurrency Lock** | 7.1 | Tap "Confirm Payment" repeatedly during active verification. | Button is disabled with spinner ("Checking payment..."); rapid clicks return HTTP 409 `VERIFICATION_IN_FLIGHT` cleanly without double charge. | Web Browser DevTools |
+| **8. Runner Acceptance** | 8.1 | On `/runner`, approved runner sees new order in "Available Requests". | Order card displays store name, delivery destination, and total items. | Web Browser |
+| | 8.2 | Runner clicks "Accept delivery request". | Order atomically claims `runner_id = <runner-uuid>` and status transitions to `PREPARING`. | Web Browser |
+| | 8.3 | Concurrency check: Second runner attempts to accept same order. | Second runner receives HTTP 409 `ORDER_ALREADY_ASSIGNED`; order disappears from their queue. | Second Browser / Test Client |
+| **9. Store Pickup** | 9.1 | Runner navigates to physical campus store. | Order card displays store pickup checklist. | Web Browser |
+| | 9.2 | Runner clicks "Confirm Store Pickup". | `POST /runner/order/pickupStore` marks fulfillment group `PICKED_UP`. When all stores collected, order status advances to `PICKED_UP`. | Web Browser |
+| **10. Delivery OTP Handover** | 10.1 | Runner clicks "Depart Store / Out for Delivery". | Order transitions to `ON_THE_WAY`. Atomic RPC `transition_order_to_on_the_way` initializes OTP challenge in DB; RAM holds 6-digit code. | Web Browser |
+| | 10.2 | Customer checks `/app/order-confirmation`. | 6-stage tracker advances to Stage 5 "Out for Delivery"; `CustomerDeliveryOtpCard` displays 6-digit OTP with countdown timer. | Web Browser |
+| | 10.3 | Customer tests "Refresh Code" button. | New 6-digit OTP generated and challenge updated in database without order disruption. | Web Browser |
+| **11. Delivery Completion** | 11.1 | Runner arrives at customer delivery spot; customer reads OTP. | Runner inputs 6-digit code on `/runner`. | Web Browser |
+| | 11.2 | Runner clicks "Verify & Complete Delivery". | `POST /runner/order/verifyOtp` calls `verify_delivery_otp()` RPC. SHA-256 hash verified. Order transitions to `DELIVERED`. | Web Browser |
+| | 11.3 | Customer tracking screen updates automatically. | Polling detects `DELIVERED` status; tracker marks Stage 6 "Delivered" and stops polling. | Web Browser |

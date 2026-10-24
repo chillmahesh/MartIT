@@ -20,6 +20,7 @@ import { useRunnerStore } from '@/stores/runnerStore'
 import { useAuthStore } from '@/stores/authStore'
 import { runnerService } from '@/services/runnerService'
 import { ORDER_STATUS } from '@/utils/orderMachine'
+import { isMockBackend } from '@/config/env'
 
 /**
  * RunnerDashboardPage Component
@@ -168,13 +169,22 @@ export default function RunnerDashboardPage() {
         </div>
       </div>
 
-      {/* Mock Data Information Banner */}
-      <div className="flex items-start gap-2.5 rounded-tile border border-info/30 bg-info/10 p-3 text-xs text-info">
-        <Info className="size-4 shrink-0 mt-0.5" aria-hidden="true" />
-        <p>
-          <strong>Mock Environment:</strong> Runner assignment, multi-store pickup, and customer delivery OTP verification are backed by mock server state in this milestone. Driver wallet and earnings will connect in subsequent phases.
-        </p>
-      </div>
+      {/* Environment Notice Banner */}
+      {isMockBackend ? (
+        <div className="flex items-start gap-2.5 rounded-tile border border-info/30 bg-info/10 p-3 text-xs text-info">
+          <Info className="size-4 shrink-0 mt-0.5" aria-hidden="true" />
+          <p>
+            <strong>Mock Environment:</strong> Runner assignment, multi-store pickup, and customer delivery OTP verification are backed by mock server state in this milestone. Driver wallet and earnings will connect in subsequent phases.
+          </p>
+        </div>
+      ) : (
+        <div className="flex items-start gap-2.5 rounded-tile border border-brand/30 bg-brand/10 p-3 text-xs text-brand">
+          <Info className="size-4 shrink-0 mt-0.5" aria-hidden="true" />
+          <p>
+            <strong>Live / Staging Environment:</strong> Connected to authoritative MartIT API. Deliveries, store pickups, and customer handover OTP verification are synchronized with the PostgreSQL database.
+          </p>
+        </div>
+      )}
 
 
       {/* 1. Runner Availability Toggle */}
