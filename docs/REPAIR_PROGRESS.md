@@ -30,7 +30,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M6 | Supabase findings review | VERIFIED | Commit 4f3a4ed; Migration 20261024000002, advisor review audit trail, 628 passed tests | Complete; proceed to M7 |
 | M7 | Regression suite and final audit | VERIFIED | Commit d2f92eb; 13 migrations valid, 31 test files (628 passed, 1 skipped), clean build, diff verified | Complete; proceed to M8 |
 | M8 | Staging readiness & live acceptance checklist | VERIFIED | Commit 7f2b82f; adaptive environment notices, mock-vs-live auth boundaries, staged live acceptance checklist, 628 passed tests, build verified | Staging deployment & live payment testing by operator |
-| M9 | Staging Acceptance Plan & Operational Verification | VERIFIED | docs/STAGING_ACCEPTANCE_PLAN.md created, OTP restart resilience verified, 630 passed tests, clean build | Operator execution of live staging acceptance checklist & deployment |
+| M9 | Staging Acceptance Plan & Operational Verification | VERIFIED | Commit f4d0da7; docs/STAGING_ACCEPTANCE_PLAN.md created, OTP restart resilience verified, 630 passed tests, clean build | Operator execution of live staging acceptance checklist & deployment |
 
 ## Milestone Evidence & Audit Trails
 
@@ -291,6 +291,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 ### M9 — Staging Acceptance Plan & Operational Verification
 - **Date / Session:** 2026-10-24
 - **Branch / Base Commit:** `audit/deep-clean-issue-register` @ `25e9f02`
+- **Commit:** `f4d0da7` (`feat(staging): define staging acceptance plan and verify OTP recovery resilience (Milestone 9)`)
 - **Goal:** Synthesize and execute all safe local tasks for staging acceptance, including forward migration and history audit, admin runner approval authorization verification, staging account provisioning requirements, Make.com webhook contract and environment configuration, OTP durability and backend restart recovery testing, and publication of the authoritative staging execution checklist (`docs/STAGING_ACCEPTANCE_PLAN.md`).
 - **Files Modified / Created:**
   - `docs/STAGING_ACCEPTANCE_PLAN.md`: Created comprehensive operational plan covering sequenced tasks, dependencies, risks, acceptance criteria, role boundaries, 10-stage live acceptance walkthrough, and operator personal action checklist.
