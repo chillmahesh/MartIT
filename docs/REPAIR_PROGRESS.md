@@ -27,7 +27,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M3 | Runner dashboard and availability | VERIFIED | Commit dcb845d; route /runner verified, online guard, atomic acceptance, pickup-store endpoint & 55 runner tests + 84 orders tests | Complete; proceed to M4 |
 | M4 | Demo runner procedure | VERIFIED | Safe UI approval steps documented, persisted status verified, access gate confirmed | Complete; proceed to M5 |
 | M5 | Payment latency and duplicate prevention | VERIFIED | Commit 20bb63c; inFlightPaymentChecks concurrency lock, disabled click state, HTTP 409 guard, 86 order tests passed | Complete; proceed to M6 |
-| M6 | Supabase findings review | VERIFIED | Migration 20261024000002, advisor review audit trail, 628 passed tests | Complete; proceed to M7 |
+| M6 | Supabase findings review | VERIFIED | Commit 4f3a4ed; Migration 20261024000002, advisor review audit trail, 628 passed tests | Complete; proceed to M7 |
 | M7 | Regression suite and final audit | NOT_STARTED | — | Tests/build/lint/migrations; diff review; live-vs-mocked report |
 
 ## Milestone Evidence & Audit Trails
@@ -158,6 +158,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 
 ### M6 — Supabase Security & Database Review
 - **Date / Session:** 2026-10-24
+- **Commit:** `4f3a4ed` (`fix(security): harden supabase security definer grants and add missing foreign key indexes (Milestone 6)`)
 - **Files Modified / Created:**
   - `supabase/migrations/20261024000002_add_missing_foreign_key_indexes.sql`:
     - Created forward migration adding 8 missing foreign key indexes:
