@@ -30,6 +30,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M6 | Supabase findings review | VERIFIED | Commit 4f3a4ed; Migration 20261024000002, advisor review audit trail, 628 passed tests | Complete; proceed to M7 |
 | M7 | Regression suite and final audit | VERIFIED | Commit d2f92eb; 13 migrations valid, 31 test files (628 passed, 1 skipped), clean build, diff verified | Complete; proceed to M8 |
 | M8 | Staging readiness & live acceptance checklist | VERIFIED | Commit 7f2b82f; adaptive environment notices, mock-vs-live auth boundaries, staged live acceptance checklist, 628 passed tests, build verified | Staging deployment & live payment testing by operator |
+| M9 | Staging Acceptance Plan & Operational Verification | VERIFIED | docs/STAGING_ACCEPTANCE_PLAN.md created, OTP restart resilience verified, 630 passed tests, clean build | Operator execution of live staging acceptance checklist & deployment |
 
 ## Milestone Evidence & Audit Trails
 
@@ -286,3 +287,26 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | **11. Delivery Completion** | 11.1 | Runner arrives at customer delivery spot; customer reads OTP. | Runner inputs 6-digit code on `/runner`. | Web Browser |
 | | 11.2 | Runner clicks "Verify & Complete Delivery". | `POST /runner/order/verifyOtp` calls `verify_delivery_otp()` RPC. SHA-256 hash verified. Order transitions to `DELIVERED`. | Web Browser |
 | | 11.3 | Customer tracking screen updates automatically. | Polling detects `DELIVERED` status; tracker marks Stage 6 "Delivered" and stops polling. | Web Browser |
+
+### M9 — Staging Acceptance Plan & Operational Verification
+- **Date / Session:** 2026-10-24
+- **Branch / Base Commit:** `audit/deep-clean-issue-register` @ `25e9f02`
+- **Goal:** Synthesize and execute all safe local tasks for staging acceptance, including forward migration and history audit, admin runner approval authorization verification, staging account provisioning requirements, Make.com webhook contract and environment configuration, OTP durability and backend restart recovery testing, and publication of the authoritative staging execution checklist (`docs/STAGING_ACCEPTANCE_PLAN.md`).
+- **Files Modified / Created:**
+  - `docs/STAGING_ACCEPTANCE_PLAN.md`: Created comprehensive operational plan covering sequenced tasks, dependencies, risks, acceptance criteria, role boundaries, 10-stage live acceptance walkthrough, and operator personal action checklist.
+  - `server/src/__tests__/ordersOtp.test.js`: Added Section 12 test suite verifying OTP resilience after backend server restart (`activeOtpStore` RAM wiped) covering customer reissuance via `reissue_delivery_otp` RPC and runner verification directly against PostgreSQL persistent hash.
+  - `docs/REPAIR_PROGRESS.md`: Updated durable progress ledger with Milestone 9.
+- **Verification Commands & Evidence:**
+  - `npm test -- server/src/__tests__/ordersOtp.test.js`: 34 tests passed (34/34), exit code 0.
+  - Full suite `npm test`: 31 files passed, 630 passed, 1 skipped (631 total), exit code 0.
+  - `node scripts/validate-migrations.mjs`: 13 migration files validated cleanly, exit code 0.
+  - `npm run build`: cleanly compiled client and SSR bundles with prerendered HTML, exit code 0.
+  - `git diff --check`: 0 whitespace issues.
+- **Distinction Between Automated/Mocked Proof and Live Requirements:**
+  - *Automated / Local Proof:* All 630 unit and integration tests passing, including full lifecycle transitions, payment concurrency locks, Make.com webhook fail-closed parsing, and OTP server restart recovery.
+  - *Blocked Live Requirements (User Action Required):*
+    1. Apply unapplied forward migrations (`20261024000001` and `20261024000002`) to Supabase project `uuuqaeptpripmvavihza`.
+    2. Enable Leaked Passwords Protection in Supabase Auth settings.
+    3. Configure `MAKE_WEBHOOK_SECRET` and `MAKE_VERIFICATION_WEBHOOK_URL` in Render service environment.
+    4. Configure `VITE_UPI_PAYEE_VPA` in Vercel project environment.
+    5. Provision 3 staging accounts in GoTrue Auth (admin, runner applicant, customer) and execute the 10-stage live acceptance test.
