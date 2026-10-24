@@ -26,7 +26,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M2 | Customer order-tracking UI | VERIFIED | Commit 32cb379; dynamic state mapping, 6-stage lifecycle tracker, zero contradiction, 78 customer tests passed | Complete; proceed to M3 |
 | M3 | Runner dashboard and availability | VERIFIED | Commit dcb845d; route /runner verified, online guard, atomic acceptance, pickup-store endpoint & 55 runner tests + 84 orders tests | Complete; proceed to M4 |
 | M4 | Demo runner procedure | VERIFIED | Safe UI approval steps documented, persisted status verified, access gate confirmed | Complete; proceed to M5 |
-| M5 | Payment latency and duplicate prevention | NOT_STARTED | — | Measure path; preserve necessary Gmail matching wait |
+| M5 | Payment latency and duplicate prevention | VERIFIED | inFlightPaymentChecks concurrency lock, disabled click state, HTTP 409 guard, 86 order tests passed | Complete; proceed to M6 |
 | M6 | Supabase findings review | NOT_STARTED | — | Correlate advisor findings with code; only justified fixes |
 | M7 | Regression suite and final audit | NOT_STARTED | — | Tests/build/lint/migrations; diff review; live-vs-mocked report |
 
@@ -131,3 +131,26 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - Verified non-admins are strictly forbidden from approving applicants (covered by 35 tests in `authAndPermissions.test.js`).
   - Verified approved runners bypass `ForbiddenPage` and access `/runner` (covered by `runnerModeSwitching.test.jsx`).
   - Verified offline runners are prevented from accepting delivery requests until toggled online.
+
+### M5 — Payment Latency & Duplicate Prevention (Goal E)
+- **Date / Session:** 2026-10-24
+- **Files Modified:**
+  - `server/src/routes/orders.js`:
+    - Implemented concurrency lock `export const inFlightPaymentChecks = new Set()`.
+    - Protected `handleCheckPayment` with concurrency check returning HTTP 409 `{ orderId, status: 'in_flight', code: 'VERIFICATION_IN_FLIGHT' }` when an in-flight check is already running for the given order.
+    - Guaranteed cleanup of in-flight lock via `finally` block even when errors occur or verification is inconclusive.
+    - Preserved required 5-second Gmail push notification indexing wait before querying Make.com (`bypassDelay = req.headers['x-bypass-delay'] === 'true' || process.env.NODE_ENV === 'test'`).
+    - Maintained fast-path returning immediately (status 200 `verified`) for orders already in `PAID` or `CONFIRMED` status.
+  - `src/components/payment/CustomerPaymentView.jsx`:
+    - Immediately locked "Confirm Payment" button (`disabled={isChecking}`, `loading={isChecking}`, spinner icon, text updated to "Checking payment...").
+    - Prevented duplicate clicks in handler: `if (!order?.id || isChecking) return`.
+    - Handled HTTP 409 / `res.status === 'in_flight'` and `VERIFICATION_IN_FLIGHT` cleanly with non-blaming user feedback ("Payment verification is currently in progress. Please wait a moment.").
+  - `server/src/__tests__/orders.test.js`:
+    - Added unit and concurrency tests verifying rapid concurrent check requests return 409 `VERIFICATION_IN_FLIGHT` while the first verification is running.
+    - Verified that lock is released upon completion (verified or inconclusive) allowing subsequent retries to succeed.
+- **Verification Commands & Evidence:**
+    - `npm test -- server/src/__tests__/orders.test.js`: 86 tests passed (86/86), exit code 0.
+    - `npm test -- src/pages/customer/`: 5 test files passed, 78 tests passed (78/78), exit code 0.
+    - `node scripts/validate-migrations.mjs`: 12 migration files validated, exit code 0.
+    - `npm run build`: cleanly passed without error, exit code 0.
+    - `git diff --check`: 0 whitespace issues.

@@ -3,7 +3,7 @@ import request from 'supertest'
 import { createApp } from '../app.js'
 import { createMockSupabaseClient } from './testHelpers.js'
 import { ROLES } from '../utils/permissions.js'
-import { setMakeVerifier } from '../routes/orders.js'
+import { setMakeVerifier, inFlightPaymentChecks } from '../routes/orders.js'
 
 describe('Order History & Detail Endpoints', () => {
   let app
@@ -934,6 +934,123 @@ describe('Payment State Transitions & Hardening', () => {
       expect(res2.body.status).toBe('verified')
       expect(res2.body.paymentStatus).toBe('PAID')
       expect(secondVerifierCalled).toBe(false)
+    })
+
+    it('rejects concurrent in-flight payment checks with 409 VERIFICATION_IN_FLIGHT (Milestone 5 Goal E)', async () => {
+      let resolveMake
+      let makeVerifierEntered
+      const enteredPromise = new Promise((resolve) => {
+        makeVerifierEntered = resolve
+      })
+      const makePromise = new Promise((resolve) => {
+        resolveMake = resolve
+      })
+
+      setMakeVerifier(async () => {
+        makeVerifierEntered()
+        return makePromise
+      })
+
+      // Start the first check request asynchronously by attaching .then() to initiate the HTTP request
+      const req1Promise = request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+        .then((r) => r)
+
+      // Wait until request 1 has acquired the in-flight lock and entered the verifier
+      await enteredPromise
+
+      // Dispatch second concurrent request while first is in-flight
+      const res2 = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+
+      // The second request must be rejected with 409 and code VERIFICATION_IN_FLIGHT
+      expect(res2.status).toBe(409)
+      expect(res2.body.status).toBe('in_flight')
+      expect(res2.body.code).toBe('VERIFICATION_IN_FLIGHT')
+      expect(res2.body.message).toContain('in progress')
+
+      // Complete the first verification
+      resolveMake({
+        success: true,
+        status: 'verified',
+        rawResponse: 'Payment recieved',
+        message: 'Payment received and verified.',
+      })
+
+      const res1 = await req1Promise
+      expect(res1.status).toBe(200)
+      expect(res1.body.status).toBe('verified')
+      expect(res1.body.paymentStatus).toBe('PAID')
+
+      // Verify the in-flight lock was released
+      expect(inFlightPaymentChecks.has('ord_active_win')).toBe(false)
+
+      // Subsequent check hits the idempotent fast-path
+      const res3 = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+      expect(res3.status).toBe(200)
+      expect(res3.body.status).toBe('verified')
+    })
+
+    it('releases in-flight lock when verification is inconclusive or fails, permitting retry (Milestone 5 Goal E)', async () => {
+      let resolveMake
+      let makeVerifierEntered
+      const enteredPromise = new Promise((resolve) => {
+        makeVerifierEntered = resolve
+      })
+      const makePromise = new Promise((resolve) => {
+        resolveMake = resolve
+      })
+
+      setMakeVerifier(async () => {
+        makeVerifierEntered()
+        return makePromise
+      })
+
+      const req1Promise = request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+        .then((r) => r)
+
+      await enteredPromise
+
+      // Concurrent request is locked out
+      const resConcurrent = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+      expect(resConcurrent.status).toBe(409)
+      expect(resConcurrent.body.code).toBe('VERIFICATION_IN_FLIGHT')
+
+      // Complete first verification as inconclusive
+      resolveMake({
+        success: false,
+        status: 'inconclusive',
+        reason: 'NOT_RECEIVED',
+        rawResponse: 'not recieved',
+      })
+
+      const res1 = await req1Promise
+      expect(res1.status).toBe(200)
+      expect(res1.body.status).toBe('inconclusive')
+
+      // Lock must be released
+      expect(inFlightPaymentChecks.has('ord_active_win')).toBe(false)
+
+      // Subsequent retry succeeds without lock rejection
+      setMakeVerifier(async () => ({
+        success: false,
+        status: 'inconclusive',
+        reason: 'NOT_RECEIVED',
+        rawResponse: 'not recieved',
+      }))
+      const resRetry = await request(app)
+        .post('/api/v1/orders/ord_active_win/check-payment')
+        .set('Authorization', 'Bearer tok_alice')
+      expect(resRetry.status).toBe(200)
+      expect(resRetry.body.status).toBe('inconclusive')
     })
   })
 })

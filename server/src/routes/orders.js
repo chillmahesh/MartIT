@@ -400,13 +400,17 @@ async function handleGetOrder(req, res, next) {
   }
 }
 
+export const inFlightPaymentChecks = new Set()
+
 /**
  * Dedicated atomic payment verification check endpoint.
  * Server-authorized mutation: transitions payment state based on verification evidence and timers.
  */
 async function handleCheckPayment(req, res, next) {
+  const orderId = req.params?.id || req.body?.orderId
+  let lockAcquired = false
+
   try {
-    const orderId = req.params?.id || req.body?.orderId
     if (!orderId) {
       throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
     }
@@ -443,9 +447,6 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    const now = Date.now()
-    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
-
     // 2. Terminal state guard: If already EXPIRED, FAILED, REFUNDED, or order CANCELLED, prevent late overwrite
     if (order.status === 'CANCELLED' || ['EXPIRED', 'FAILED', 'REFUNDED'].includes(order.payment_status)) {
       return res.status(200).json({
@@ -456,7 +457,23 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    // 3. Server-authoritative 2-minute timer expiry check
+    // 3. Concurrency guard: prevent concurrent in-flight verification checks for the same order (Goal E)
+    if (inFlightPaymentChecks.has(orderId)) {
+      return res.status(409).json({
+        orderId,
+        status: 'in_flight',
+        code: 'VERIFICATION_IN_FLIGHT',
+        message: 'Payment verification is currently in progress. Please wait a moment.',
+      })
+    }
+
+    inFlightPaymentChecks.add(orderId)
+    lockAcquired = true
+
+    const now = Date.now()
+    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
+
+    // 4. Server-authoritative 2-minute timer expiry check
     if (now >= windowExpiry) {
       await executeAtomicPaymentExpiry(supabase, order.id, false)
 
@@ -563,6 +580,10 @@ async function handleCheckPayment(req, res, next) {
     })
   } catch (err) {
     next(err)
+  } finally {
+    if (lockAcquired && orderId) {
+      inFlightPaymentChecks.delete(orderId)
+    }
   }
 }
 
