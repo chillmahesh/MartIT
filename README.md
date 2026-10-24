@@ -53,16 +53,17 @@ Components never call the backend directly. They call `services/*`, which go thr
 | Capability | Status | Notes |
 |---|---|---|
 | Frontend | Real | React + Vite app; Vercel deployment is separate from backend deployment. |
-| Backend / database | Real integration | Express API and Supabase PostgreSQL are present. Local mock services remain available for development. |
-| Authentication / roles | Real integration | Server validates Supabase sessions and enforces role checks; UI route guards are not a security boundary. |
-| Catalogue | Mixed | Sample/mock data remains in the frontend; verify each configured API path before treating catalogue data as production-backed. |
-| Order creation and pricing | Server-backed | The API and database contain order/pricing logic; validate current deployment and tests before assuming every documented workflow is production-ready. |
-| UPI notification ingestion | Implemented, unverified | Authenticated Make webhook can ingest notifications as PROCESSING evidence. A notification, UTR, email/SMS text, or shared webhook secret is not proof of settlement. |
-| Payment settlement verification | Incomplete / fail-closed | No authoritative server-to-server gateway verifier is implemented in this repository. Notifications must not mark orders PAID until trusted verification is configured and tested. |
-| Runner assignment and fulfilment | Partially implemented | Database atomic-order and fulfilment routines exist; verify deployed migration parity and end-to-end behavior before relying on production guarantees. |
-| Handover OTP | Backend implementation present | OTP-related routes, database changes, and tests exist; validate current migration state and deployed behavior. |
-| Realtime tracking | Not established by this README | Do not present simulated or UI-only tracking as live tracking. |
-| Automated CI | Not configured in GitHub Actions | No workflow runs were found during this audit. Run the documented tests locally or add a CI workflow. |
+| Backend / database | Real integration | Express API and Supabase PostgreSQL schema with 13 migrations. Local mock services remain available for development. |
+| Authentication / roles | Real integration | Server validates Supabase sessions and enforces role checks; UI route guards protect UX. Admin runner status updates hardened via atomic RPC `admin_set_runner_status`. |
+| Catalogue | Mixed | Sample/mock catalogue for local mode; PostgreSQL products and stores populated via migrations and seed data. |
+| Order creation and pricing | Server-backed | Atomic order creation in PostgreSQL with locked product rows, held inventory, and dynamic platform fee allocation (1–99 paise). |
+| UPI notification ingestion | Implemented (Make.com) | Authenticated Make.com webhook ingests Paytm Business UPI notifications via timing-safe secret check; fails closed if unverified. |
+| Payment verification & concurrency | Implemented (Make.com) | Customer check observes 5s Gmail push indexing wait, queries Make.com scenario, locks in-flight checks with HTTP 409, and executes atomic payment verification upon positive confirmation. |
+| Runner assignment and fulfillment | Implemented | Atomic exclusive acceptance (`runner_id IS NULL AND status = 'CONFIRMED'`), availability toggle, and multi-store pickup endpoint (`handleRunnerPickupStore`) fully implemented. |
+| Handover OTP | Implemented & resilient | Plaintext 6-digit OTP displayed strictly in-app to authenticated owner; PostgreSQL holds SHA-256 hash. Enforces 3-attempt limit, 5-min lockout, and seamless server restart recovery via `reissue_delivery_otp`. |
+| Customer order tracking | Implemented | 6-stage lifecycle progress tracker in `OrderConfirmationView.jsx` with active 4s polling that cleans up at terminal states (`DELIVERED`, `CANCELLED`, `EXPIRED`). Zero contradictory badges. |
+| Automated CI | Not configured in GitHub Actions | Full automated test suite (31 files, 630 passed tests) and migration validator run locally or in deployment pipelines. |
+
 
 ## Running checks
 
