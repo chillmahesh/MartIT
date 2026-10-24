@@ -1,6 +1,6 @@
 import { Link, useNavigate } from 'react-router'
 import { DropdownMenu } from 'radix-ui'
-import { Bike, LogOut, MapPin, ShieldCheck, ShoppingBag, UserRound } from 'lucide-react'
+import { Bike, ClipboardList, LogOut, MapPin, ShieldCheck, ShoppingBag, UserRound } from 'lucide-react'
 import { Logo } from '@/components/ui/Logo'
 import { Badge } from '@/components/ui/Badge'
 import { useAuthStore } from '@/stores/authStore'
@@ -40,6 +40,27 @@ export function AppHeader({ variant = 'customer' }) {
               <span className="truncate">{locationName ?? 'Choose a delivery spot'}</span>
             </p>
           </div>
+        )}
+
+        {variant === 'customer' && (
+          <nav aria-label="Customer navigation" className="hidden md:flex items-center gap-1.5 ml-2">
+            <Link
+              to="/app"
+              id="header-nav-shop"
+              className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-surface-2"
+            >
+              <ShoppingBag className="size-3.5 text-ink-subtle" aria-hidden="true" />
+              <span>Shop</span>
+            </Link>
+            <Link
+              to="/app/orders"
+              id="header-nav-orders"
+              className="inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold text-ink transition-colors hover:bg-surface-2"
+            >
+              <ClipboardList className="size-3.5 text-ink-subtle" aria-hidden="true" />
+              <span>My Orders</span>
+            </Link>
+          </nav>
         )}
 
         {/* Mode switcher or runner status in header bar */}
@@ -210,11 +231,25 @@ function AccountMenu({ user, variant }) {
           )}
 
           {variant === 'customer' && (
-            <DropdownMenu.Item asChild>
-              <Link to="/app/profile" className="flex h-10 items-center gap-2.5 rounded-tile px-3 text-sm outline-none data-[highlighted]:bg-surface-2">
-                <UserRound className="size-4" aria-hidden="true" /> Profile
-              </Link>
-            </DropdownMenu.Item>
+            <>
+              <DropdownMenu.Item asChild>
+                <Link
+                  to="/app/orders"
+                  id="menu-nav-orders"
+                  className="flex h-10 items-center gap-2.5 rounded-tile px-3 text-sm outline-none data-[highlighted]:bg-surface-2"
+                >
+                  <ClipboardList className="size-4" aria-hidden="true" /> My Orders
+                </Link>
+              </DropdownMenu.Item>
+              <DropdownMenu.Item asChild>
+                <Link
+                  to="/app/profile"
+                  className="flex h-10 items-center gap-2.5 rounded-tile px-3 text-sm outline-none data-[highlighted]:bg-surface-2"
+                >
+                  <UserRound className="size-4" aria-hidden="true" /> Profile
+                </Link>
+              </DropdownMenu.Item>
+            </>
           )}
           {AREA_LINKS.filter((a) => a.variant !== variant && hasPermission(user, a.permission) && !(isApprovedRunner && (a.variant === 'runner' || a.variant === 'customer'))).map(({ to, label, icon: Icon }) => (
             <DropdownMenu.Item key={to} asChild>
