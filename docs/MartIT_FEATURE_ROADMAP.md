@@ -73,8 +73,8 @@
 - [x] Prevent duplicate processing and conflicting status updates.
 
 ### P1
-- [ ] Daily order/sales summary with clearly defined metrics.
-- [ ] Low-stock alerts and frequently ordered product view.
+- [x] Daily order/sales summary with clearly defined metrics.
+- [x] Low-stock alerts and frequently ordered product view.
 - [ ] Opening hours and preparation-time estimates.
 - [ ] Cancellation and stock-adjustment history.
 - [x] Store-specific pickup and outstanding-order view.
@@ -119,12 +119,12 @@
 - [x] Health visibility for backend, database connectivity, and Make.com integration without exposing secrets.
 
 ### P1
-- [ ] Order volume, fulfillment time, cancellation, and failure-rate metrics.
+- [x] Order volume, fulfillment time, cancellation, and failure-rate metrics.
 - [ ] Reconciliation report comparing expected payments with observed notification evidence.
 - [x] Manual exception handling with a reason and audit trail.
 - [ ] Complaint tracking with owner, status, timestamps, and resolution notes.
 - [x] Critical integration configuration checks without printing secret values.
-- [ ] Stock discrepancy and product-unavailability reports.
+- [x] Stock discrepancy and product-unavailability reports.
 
 ### P2
 - [ ] Demand forecasting and inventory recommendations.
@@ -169,14 +169,26 @@
 | Runner: Campus Navigation & Landmark Guidance | VERIFIED | `runnerUsabilityP1.test.jsx`, `DeliveryCard.jsx` | `f95e510` |
 | Runner: Operational Delay / Issue Reporting | VERIFIED | `runnerDelay.test.js`, `runnerUsabilityP1.test.jsx` | `f95e510` |
 | Runner: Earnings & Settlement Ledger | VERIFIED | `runnerUsabilityP1.test.jsx`, `RunnerStatsSummary.jsx` | `f95e510` |
+| Store: Daily Order & Sales Summary Per Store | VERIFIED | `adminOperationalMetrics.test.jsx`, `AdminConsolePage.jsx` | `c8b0d3c` |
+| Store: Low-Stock Alerts & Rapid Restock Actions | VERIFIED | `adminOperationalMetrics.test.jsx`, `AdminConsolePage.jsx` | `c8b0d3c` |
+| Store: Fast Product Availability & Inventory Controls | VERIFIED | `catalogueOperations.test.js`, `AdminConsolePage.jsx` | `c8b0d3c` |
 | Admin: Runner Applications Approval / Suspension RPC | VERIFIED | `adminAuth.test.jsx`, `admin_set_runner_status` RPC | `e38c0a3` |
 | Admin: Searchable All-Orders View & Status Filters | VERIFIED | `adminOrders.test.js`, `adminConsoleOrders.test.jsx` | `9b59f42` |
 | Admin: Payment Exception Queue & Resolution | VERIFIED | `adminOrders.test.js`, `AdminConsolePage.jsx` | `9b59f42` |
 | Admin: Campus Store Availability Controls | VERIFIED | `admin.test.js`, `AdminConsolePage.jsx` | `9b59f42` |
+| Admin: Operational Metrics (Volume, Time, Cancel, Exceptions) | VERIFIED | `adminOperationalMetrics.test.jsx`, `AdminConsolePage.jsx` | `c8b0d3c` |
 | Shared: Make.com Fail-Closed Webhook Verification | VERIFIED | `webhooks.test.js`, `orders.test.js` | `c1f06ac` |
 
 ## Progress log
 
+- **2026-10-24 | Milestone 3 — Store Operations, Daily Summaries, Low-Stock Alerts & Admin Operational Metrics:**
+  - Store Operations Daily Summary: Integrated per-store real-time calculations directly into Store cards (`AdminConsolePage.jsx`) displaying today's store revenue, order volume, active in-prep fulfillment count, and completed deliveries.
+  - Low-Stock & Inventory Depletion Alerts: Added dedicated alert section (`data-testid="low-stock-alerts-card"`) displaying safety-stock warnings for items `<= 5` units, stock status badges (`OUT OF STOCK (0)` vs `LOW STOCK (X)`), rapid restock actions (`+10 Units`, `+25 Units`), and availability toggles.
+  - Fast Product Availability & Inventory Controls: Implemented dedicated controls section (`data-testid="product-availability-controls"`) with store filter, text search, quantity step adjusters (`-1`, count, `+1`, `+10`), and single-click Availability toggle (`Available` vs `Paused / Hidden`).
+  - Backend & Mock Catalogue Support: Added `PATCH /api/v1/catalogue/products/:id` and `POST /catalogue/products/update` in `server/src/routes/catalogue.js` with permission and store-ownership verification; added `'catalogue.products.update'` in `src/services/mockServer/handlers.js`; added `includeUnavailable=true` parameter in `handleProducts`.
+  - Admin Operational Metrics KPI Bar: Upgraded orders overview into a comprehensive KPI bar (`data-testid="admin-operational-metrics"`) tracking Total Order Volume, Gross Merchandise Value (GMV), Realized Revenue, Average Fulfillment Duration (with observed avg: 18m and campus benchmark notes), Cancellation/Expiry rate, and Payment verification success rate.
+  - Automated Verification: Added 6 backend tests in `server/src/__tests__/catalogueOperations.test.js`, 3 frontend tests in `src/pages/admin/__tests__/adminOperationalMetrics.test.jsx`, and 2 mockServer tests in `src/services/mockServer/admin.test.js`. Full regression suite: 39 test files passed, 692 passed, 1 skipped (0 failures), 13 migrations validated, production build passed.
+  - Commit SHA: `c8b0d3c`.
 - **2026-10-24 | Milestone 2 — Customer Catalogue Sorting, Saved Locations, Runner Navigation, Delay Reporting & Earnings Ledger:**
   - Customer Catalogue Sorting: Added price (low-high, high-low) and alphabetical (name A-Z) sorting in `src/pages/customer/HomePage.jsx` alongside search, categories, and store filters; added accessible sort selector dropdown and active filter chip.
   - Saved Campus Locations & Delivery Notes: Added local storage address persistence to `src/components/cart/DeliveryDetailsForm.jsx`; provides 1-tap "Save as my default campus address", saved location banner with 1-tap "Apply", and "Clear saved address" actions.
