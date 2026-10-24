@@ -223,7 +223,7 @@ export default function RunnerDashboardPage() {
         <button
           type="button"
           onClick={() => setActiveTab('all')}
-          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors shrink-0 ${
             activeTab === 'all'
               ? 'bg-brand text-white shadow-1'
               : 'bg-surface-2 text-ink hover:bg-surface-2/80'
@@ -240,7 +240,7 @@ export default function RunnerDashboardPage() {
         <button
           type="button"
           onClick={() => setActiveTab('available')}
-          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors shrink-0 ${
             activeTab === 'available'
               ? 'bg-brand text-white shadow-1'
               : 'bg-surface-2 text-ink hover:bg-surface-2/80'
@@ -257,7 +257,7 @@ export default function RunnerDashboardPage() {
         <button
           type="button"
           onClick={() => setActiveTab('active')}
-          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors shrink-0 ${
             activeTab === 'active'
               ? 'bg-brand text-white shadow-1'
               : 'bg-surface-2 text-ink hover:bg-surface-2/80'
@@ -274,7 +274,7 @@ export default function RunnerDashboardPage() {
         <button
           type="button"
           onClick={() => setActiveTab('completed')}
-          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors shrink-0 ${
             activeTab === 'completed'
               ? 'bg-brand text-white shadow-1'
               : 'bg-surface-2 text-ink hover:bg-surface-2/80'

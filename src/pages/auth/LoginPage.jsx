@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation, useSearchParams } from 'react-router'
-import { AlertCircle, Bike, CheckCircle2, Mail, Lock, ShieldCheck, ShoppingBasket, RefreshCw } from 'lucide-react'
+import { AlertCircle, Bike, CheckCircle2, Mail, ShieldCheck, ShoppingBasket } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'

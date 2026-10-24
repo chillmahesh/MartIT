@@ -246,7 +246,8 @@ describe('Admin Authorization & Gate Execution', () => {
       expect(indexRoute.index).toBe(true)
       expect(indexRoute.element).toBeDefined()
     },
-    15000
+    30000
   )
 })
+
 

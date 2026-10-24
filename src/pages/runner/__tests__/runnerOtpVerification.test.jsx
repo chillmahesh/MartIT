@@ -1,4 +1,4 @@
-import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import React from 'react'
 import { renderToString } from 'react-dom/server'
 import { createMockServer } from '@/services/mockServer/handlers'

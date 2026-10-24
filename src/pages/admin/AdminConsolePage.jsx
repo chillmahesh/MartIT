@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bike, Search, ShieldCheck, ShoppingBag, UserRound, Users } from 'lucide-react'
+import { Bike, Search, ShieldCheck, UserRound, Users } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'

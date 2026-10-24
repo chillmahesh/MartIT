@@ -6,7 +6,6 @@ import {
   Store,
   ArrowRight,
   Package,
-  ShieldCheck,
   AlertCircle,
   UserCheck,
   Check,

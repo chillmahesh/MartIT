@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
-import { Bike, CheckCircle2, Clock, Mail, Phone, ShoppingBag, User } from 'lucide-react'
+import { Bike, CheckCircle2, Clock, Mail, Phone } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'

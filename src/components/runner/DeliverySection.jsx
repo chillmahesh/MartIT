@@ -36,7 +36,7 @@ export function DeliverySection({
 
       {/* Orders Grid or Empty State */}
       {orders.length > 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 min-w-0">
           {orders.map((order) => (
             <DeliveryCard
               key={order.id}
@@ -48,14 +48,14 @@ export function DeliverySection({
         </div>
       ) : (
         <div
-          className="rounded-card border border-dashed border-line bg-surface/50 p-6 text-center space-y-2"
+          className="rounded-tile border border-dashed border-line bg-surface/40 p-4 sm:p-5 text-center space-y-1.5 max-w-md mx-auto"
           data-testid="section-empty-state"
         >
-          <div className="grid size-10 place-items-center rounded-full bg-surface-2 text-ink-subtle mx-auto">
-            <Icon className="size-5" aria-hidden="true" />
+          <div className="grid size-8 place-items-center rounded-full bg-surface-2 text-ink-subtle mx-auto">
+            <Icon className="size-4" aria-hidden="true" />
           </div>
-          <p className="text-sm font-semibold text-ink">{emptyTitle}</p>
-          <p className="text-xs text-ink-subtle max-w-sm mx-auto">{emptyDescription}</p>
+          <p className="text-xs sm:text-sm font-semibold text-ink">{emptyTitle}</p>
+          <p className="text-[11px] sm:text-xs text-ink-subtle max-w-xs sm:max-w-sm mx-auto">{emptyDescription}</p>
         </div>
       )}
     </section>
