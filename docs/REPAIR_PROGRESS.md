@@ -24,8 +24,8 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M0 | Baseline, routes, and root-cause evidence | VERIFIED | Commit 8b13b9f; baseline tests (613 passed), root causes established | Complete |
 | M1 | Secure runner approval fix | VERIFIED | Migration 20261024000001, admin.js RPC support, 35 auth tests passed | Complete; proceed to M2 |
 | M2 | Customer order-tracking UI | VERIFIED | Commit 32cb379; dynamic state mapping, 6-stage lifecycle tracker, zero contradiction, 78 customer tests passed | Complete; proceed to M3 |
-| M3 | Runner dashboard and availability | VERIFIED | Route /runner verified, online guard, atomic acceptance, pickup-store endpoint & 55 runner tests + 84 orders tests | Complete; proceed to M4 |
-| M4 | Demo runner procedure | NOT_STARTED | — | Identify safe test account or provide secure manual steps |
+| M3 | Runner dashboard and availability | VERIFIED | Commit dcb845d; route /runner verified, online guard, atomic acceptance, pickup-store endpoint & 55 runner tests + 84 orders tests | Complete; proceed to M4 |
+| M4 | Demo runner procedure | VERIFIED | Safe UI approval steps documented, persisted status verified, access gate confirmed | Complete; proceed to M5 |
 | M5 | Payment latency and duplicate prevention | NOT_STARTED | — | Measure path; preserve necessary Gmail matching wait |
 | M6 | Supabase findings review | NOT_STARTED | — | Correlate advisor findings with code; only justified fixes |
 | M7 | Regression suite and final audit | NOT_STARTED | — | Tests/build/lint/migrations; diff review; live-vs-mocked report |
@@ -94,6 +94,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 
 ### M3 — Runner Dashboard and Availability
 - **Date / Session:** 2026-10-24
+- **Commit:** `dcb845d` (`feat(runner): implement store pickup endpoint and verify runner dashboard availability (Milestone 3)`)
 - **Files Modified / Verified:**
   - `src/pages/runner/RunnerDashboardPage.jsx`: Verified `/runner` route implementation with online/offline availability switch, live activity counts, delivery request acceptance, multi-store pickup confirmation, and OTP-verified delivery completion.
   - `server/src/routes/orders.js`:
@@ -107,3 +108,26 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `node scripts/validate-migrations.mjs`: 12 migration files validated, exit code 0.
   - `npm run build`: Clean build passed without errors, exit code 0.
   - `git diff --check`: 0 whitespace issues.
+
+### M4 — Safe Demo Runner Procedure (Goal D)
+- **Date / Session:** 2026-10-24
+- **Demo Runner Accounts Identified:**
+  - **In-Browser / Mock Environment:**
+    - Runner Account: `Meera (sample runner)` (`runner@martit.test`, id: `u_runner_1`, role: `runner`, status: `approved`).
+    - Applicant Account: `Kabir (sample applicant)` (`applicant@martit.test`, id: `u_applicant_1`, role: `customer`, status: `pending`).
+    - Admin Account: `Super Admin (sample)` (`superadmin@martit.test`, id: `u_super_1`, role: `super_admin`).
+  - **Staging / PostgreSQL Environment:**
+    - Any registered applicant (e.g. `applicant@campus.edu` / `usr_applicant`) or newly signed up student applicant.
+- **Exact UI Steps for Admin Approval and Runner Activation:**
+  1. **Admin Login:** Log in as an administrator or super admin at `/admin/login` (or `/login`).
+  2. **Navigate to People & Roles:** Open `/admin` and select the **People & Roles** tab (`/admin/roles`).
+  3. **Locate Applicant:** Under the **Runner Applicants** section, review pending applicants displaying name, email, and application date.
+  4. **Execute Approval:** Click the **Approve** button on the applicant row. This calls `POST /admin/runners/setStatus` with `{ userId, status: 'approved' }`, which executes atomic RPC `admin_set_runner_status(UUID, 'approved')` in PostgreSQL.
+  5. **Confirm State Transition:** Toast confirmation displays "Runner approved successfully." The applicant is removed from pending applications, and active runners count increments from 0 to 1.
+  6. **Runner Authentication:** Log in as the approved runner at `/login`. The system automatically redirects to `/runner`. The `<RequireRole role="runner" />` route guard validates `PERMISSIONS.RUNNER_DELIVER` and admits the runner.
+  7. **Go Online:** On `/runner`, toggle the **Runner Availability** switch to **Online**.
+  8. **Receive Orders:** Available `CONFIRMED` orders now populate the "Available Requests" section for atomic acceptance.
+- **Verification Evidence:**
+  - Verified non-admins are strictly forbidden from approving applicants (covered by 35 tests in `authAndPermissions.test.js`).
+  - Verified approved runners bypass `ForbiddenPage` and access `/runner` (covered by `runnerModeSwitching.test.jsx`).
+  - Verified offline runners are prevented from accepting delivery requests until toggled online.
