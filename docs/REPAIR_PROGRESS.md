@@ -28,7 +28,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M4 | Demo runner procedure | VERIFIED | Safe UI approval steps documented, persisted status verified, access gate confirmed | Complete; proceed to M5 |
 | M5 | Payment latency and duplicate prevention | VERIFIED | Commit 20bb63c; inFlightPaymentChecks concurrency lock, disabled click state, HTTP 409 guard, 86 order tests passed | Complete; proceed to M6 |
 | M6 | Supabase findings review | VERIFIED | Commit 4f3a4ed; Migration 20261024000002, advisor review audit trail, 628 passed tests | Complete; proceed to M7 |
-| M7 | Regression suite and final audit | VERIFIED | 13 migrations valid, 31 test files (628 passed, 1 skipped), clean build, diff verified | None; all milestones M0–M7 completed |
+| M7 | Regression suite and final audit | VERIFIED | Commit d2f92eb; 13 migrations valid, 31 test files (628 passed, 1 skipped), clean build, diff verified | None; all milestones M0–M7 completed |
 
 ## Milestone Evidence & Audit Trails
 
