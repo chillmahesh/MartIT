@@ -6,6 +6,7 @@ import { buildUpiPayload } from '@/utils/upi'
 import { formatINR } from '@/utils/currency'
 import { PAYMENT_STATUS } from '@/utils/paymentMachine'
 import { cn } from '@/utils/cn'
+import { useIsMobilePhone } from '@/utils/deviceDetection'
 
 /**
  * PaymentQr Component — Generates a genuine, scannable UPI QR code.
@@ -17,6 +18,7 @@ import { cn } from '@/utils/cn'
  * 4. Uses configured UPI payee details only (never invents fake credentials).
  * 5. If payee VPA is missing, fails safely and displays a clear configuration requirement.
  * 6. Never claims that scanning a QR confirms payment, nor marks the order as paid.
+ * 7. Mobile deep link button shares the EXACT same authoritative URI as the QR code.
  */
 export function PaymentQr({
   amount,
@@ -26,9 +28,13 @@ export function PaymentQr({
   paymentStatus = PAYMENT_STATUS.PENDING,
   isExpired = false,
   className,
+  isMobile,
 }) {
   const [svgString, setSvgString] = useState('')
   const [qrError, setQrError] = useState(null)
+  const [launchNotice, setLaunchNotice] = useState(false)
+  const detectedIsMobile = useIsMobilePhone()
+  const showMobileUpi = typeof isMobile === 'boolean' ? isMobile : detectedIsMobile
 
   // 1. Guard: Only generate QR when order payment is pending
   const isPending =
@@ -165,8 +171,43 @@ export function PaymentQr({
   return (
     <div
       data-testid="genuine-upi-qr"
-      className={cn('flex flex-col items-center space-y-3 text-center', className)}
+      className={cn('flex flex-col items-center space-y-4 text-center', className)}
     >
+      {/* Mobile-Friendly UPI App Launch (Phones Only) */}
+      {showMobileUpi && upiPayload.uri && (
+        <div className="w-full space-y-2.5" data-testid="mobile-upi-section">
+          <a
+            href={upiPayload.uri}
+            onClick={() => setLaunchNotice(true)}
+            data-testid="pay-with-upi-btn"
+            className="w-full rounded-btn bg-brand text-brand-contrast py-3.5 px-4 font-bold flex items-center justify-center gap-2.5 shadow-2 hover:bg-brand-hover active:scale-[0.99] transition-all text-sm md:text-base cursor-pointer"
+          >
+            <Smartphone className="size-5" aria-hidden="true" />
+            <span>Pay with UPI</span>
+          </a>
+
+          {launchNotice && (
+            <div
+              data-testid="upi-launch-notice"
+              className="rounded-tile border border-brand/30 bg-brand/10 p-3 text-xs text-ink text-left space-y-1"
+            >
+              <p className="font-semibold text-brand">Attempting to open your UPI app...</p>
+              <p className="text-ink-muted text-[11px] leading-relaxed">
+                If no UPI app opens or payment fails to launch, you can scan the QR code below using another device or payment scanner.
+              </p>
+            </div>
+          )}
+
+          <div className="w-full flex items-center gap-2 pt-1 pb-0.5">
+            <div className="h-px bg-line flex-1" />
+            <span className="text-[10px] font-semibold text-ink-subtle uppercase tracking-wider">
+              Or scan QR code
+            </span>
+            <div className="h-px bg-line flex-1" />
+          </div>
+        </div>
+      )}
+
       {/* QR Code Container */}
       <div className="relative rounded-card border-2 border-line bg-white p-3 shadow-2 transition-transform">
         {svgString ? (
@@ -196,23 +237,12 @@ export function PaymentQr({
         </p>
       </div>
 
-      {/* Deep Link Button for Mobile Users */}
-      {upiPayload.uri && (
-        <a
-          href={upiPayload.uri}
-          className="inline-flex items-center gap-1.5 rounded-tile border border-line bg-surface-2 px-3 py-1.5 text-xs font-semibold text-ink hover:bg-surface-3 transition-colors sm:hidden shadow-1"
-        >
-          <Smartphone className="size-3.5" aria-hidden="true" />
-          <span>Tap to Pay with UPI App</span>
-        </a>
-      )}
-
       {/* Non-confirmation safety disclosure */}
       <p className="text-[11px] text-ink-subtle max-w-xs leading-relaxed">
         Scan with Google Pay, PhonePe, Paytm, or any UPI app.
         <br />
         <span className="text-ink-muted font-medium">
-          Scanning alone does not confirm payment.
+          Scanning or tapping Pay does not automatically confirm payment.
         </span>{' '}
         Your order is placed only after server verification is received.
       </p>

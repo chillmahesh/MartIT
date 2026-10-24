@@ -12,6 +12,7 @@ import PaymentPage from '@/pages/customer/PaymentPage'
 import { PAYMENT_STATUS } from '@/utils/paymentMachine'
 import { ORDER_STATUS } from '@/utils/orderMachine'
 import { RESERVATION_STATUS } from '@/services/mockServer/platformFeeAllocator'
+import { isMobilePhone, isTablet } from '@/utils/deviceDetection'
 
 describe('UPI QR Payload & Payee Configuration Rules (Scope B)', () => {
   it('generates the exact UPI URI with authoritative total including platform fee (e.g. ₹157 base + ₹0.01 fee = ₹157.01)', () => {
@@ -167,6 +168,192 @@ describe('UPI QR Payload & Payee Configuration Rules (Scope B)', () => {
     })
     expect(negativeResult.ok).toBe(false)
     expect(negativeResult.error).toBe('INVALID_AMOUNT')
+  })
+})
+
+describe('Mobile-Friendly UPI Checkout & URI Parity Rules', () => {
+  it('guarantees 100% parameter and URI parity between QR code and "Pay with UPI" button', () => {
+    const amount = 85.03
+    const orderId = 'ord_mobile_parity_99'
+    const payeeVpa = 'merchant.martit@oksbi'
+    const payeeName = 'MartIT Store'
+
+    const expectedPayload = buildUpiPayload({
+      payeeVpa,
+      payeeName,
+      amount,
+      orderId,
+    })
+
+    expect(expectedPayload.ok).toBe(true)
+
+    const htmlMobile = renderToString(
+      React.createElement(PaymentQr, {
+        amount,
+        orderId,
+        payeeVpa,
+        payeeName,
+        paymentStatus: PAYMENT_STATUS.PENDING,
+        isExpired: false,
+        isMobile: true,
+      }),
+    )
+
+    // Verify prominent "Pay with UPI" button is rendered
+    expect(htmlMobile).toContain('data-testid="pay-with-upi-btn"')
+    expect(htmlMobile).toContain('Pay with UPI')
+
+    // Extract href from the button
+    const hrefMatch =
+      htmlMobile.match(/data-testid="pay-with-upi-btn"[^>]*href="([^"]+)"/) ||
+      htmlMobile.match(/href="([^"]+)"[^>]*data-testid="pay-with-upi-btn"/)
+    expect(hrefMatch).toBeTruthy()
+    const buttonHref = hrefMatch[1].replace(/&amp;/g, '&')
+
+    // Must be character-for-character identical to the QR's authoritative URI
+    expect(buttonHref).toBe(expectedPayload.uri)
+
+    // Check specific parameter parity
+    expect(buttonHref).toContain(`pa=${encodeURIComponent(payeeVpa)}`)
+    expect(buttonHref).toContain('am=85.03')
+    expect(buttonHref).toContain('cu=INR')
+    expect(buttonHref).toContain(`tr=${orderId}`)
+    expect(buttonHref).toContain('tn=MartIT+Order+ord_mobile_parity_99')
+
+    // Verify that QR code is also simultaneously rendered as fallback
+    expect(htmlMobile).toContain('data-testid="genuine-upi-qr"')
+    expect(htmlMobile).toContain('Or scan QR code')
+  })
+
+  it('mobile phones show prominent "Pay with UPI" button alongside the QR code', () => {
+    const phoneNav = {
+      userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+    }
+    const isPhone = isMobilePhone(phoneNav)
+    expect(isPhone).toBe(true)
+
+    const html = renderToString(
+      React.createElement(PaymentQr, {
+        amount: 60.01,
+        orderId: 'ord_phone_123',
+        isMobile: isPhone,
+      }),
+    )
+
+    expect(html).toContain('data-testid="pay-with-upi-btn"')
+    expect(html).toContain('data-testid="genuine-upi-qr"')
+    expect(html).toContain('Or scan QR code')
+  })
+
+  it('desktops and laptops keep the existing QR-code payment experience unchanged (no mobile button)', () => {
+    const desktopNav = {
+      userAgent:
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      userAgentData: { mobile: false },
+    }
+    const isPhone = isMobilePhone(desktopNav)
+    expect(isPhone).toBe(false)
+
+    const html = renderToString(
+      React.createElement(PaymentQr, {
+        amount: 60.01,
+        orderId: 'ord_desktop_123',
+        isMobile: isPhone,
+      }),
+    )
+
+    expect(html).not.toContain('data-testid="pay-with-upi-btn"')
+    expect(html).not.toContain('data-testid="mobile-upi-section"')
+    expect(html).not.toContain('Or scan QR code')
+    expect(html).toContain('data-testid="genuine-upi-qr"')
+  })
+
+  it('tablets preserve the QR-first experience by default (no mobile button)', () => {
+    const iPadNav = {
+      userAgent: 'Mozilla/5.0 (iPad; CPU OS 16_5 like Mac OS X) AppleWebKit/605.1.15',
+    }
+    const isPhoneIpad = isMobilePhone(iPadNav)
+    expect(isTablet(iPadNav)).toBe(true)
+    expect(isPhoneIpad).toBe(false)
+
+    const htmlIpad = renderToString(
+      React.createElement(PaymentQr, {
+        amount: 60.01,
+        orderId: 'ord_ipad_123',
+        isMobile: isPhoneIpad,
+      }),
+    )
+    expect(htmlIpad).not.toContain('data-testid="pay-with-upi-btn"')
+    expect(htmlIpad).toContain('data-testid="genuine-upi-qr"')
+
+    const androidTabletNav = {
+      userAgent:
+        'Mozilla/5.0 (Linux; Android 13; SM-X800) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+    }
+    const isPhoneAndroidTab = isMobilePhone(androidTabletNav)
+    expect(isTablet(androidTabletNav)).toBe(true)
+    expect(isPhoneAndroidTab).toBe(false)
+
+    const htmlAndroidTab = renderToString(
+      React.createElement(PaymentQr, {
+        amount: 60.01,
+        orderId: 'ord_and_tab_123',
+        isMobile: isPhoneAndroidTab,
+      }),
+    )
+    expect(htmlAndroidTab).not.toContain('data-testid="pay-with-upi-btn"')
+    expect(htmlAndroidTab).toContain('data-testid="genuine-upi-qr"')
+  })
+
+  it('tapping or navigating UPI link never automatically marks order as paid (fail-closed Make.com verification intact)', async () => {
+    const mockServer = createMockServer()
+    const { token } = await mockServer.handle('auth.demoLogin', { role: 'customer' })
+    const createdOrder = await mockServer.handle(
+      'orders.create',
+      {
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_b',
+        lines: [{ productId: 'p_milk_500', quantity: 1 }],
+      },
+      { token },
+    )
+
+    // Initially order is created, payment status is pending
+    expect(createdOrder.paymentStatus).toBe(PAYMENT_STATUS.PENDING)
+    expect(createdOrder.status).toBe(ORDER_STATUS.AWAITING_PAYMENT)
+
+    // User receives UPI URI and opens it in their UPI app
+    const upiResult = buildUpiPayload({
+      payeeVpa: 'omkarrakhonde485@oksbi',
+      amount: createdOrder.pricing.total,
+      orderId: createdOrder.id,
+    })
+    expect(upiResult.ok).toBe(true)
+
+    // Returning from UPI app without server verification leaves order in pending status
+    const fetched = await mockServer.handle('orders.get', { orderId: createdOrder.id }, { token })
+    expect(fetched.paymentStatus).toBe(PAYMENT_STATUS.PENDING)
+    expect(fetched.status).toBe(ORDER_STATUS.AWAITING_PAYMENT)
+
+    // Verification must strictly go through check-payment with Make.com webhook
+    const checkResult = await mockServer.handle('orders.checkPayment', { orderId: createdOrder.id }, { token })
+    expect(checkResult.status).toBe('inconclusive') // Unverified payment fails closed
+    expect(fetched.paymentStatus).toBe(PAYMENT_STATUS.PENDING)
+  })
+
+  it('suppresses mobile UPI button when payee VPA configuration is missing', () => {
+    const html = renderToString(
+      React.createElement(PaymentQr, {
+        amount: 50.01,
+        orderId: 'ord_missing_vpa',
+        payeeVpa: '',
+        isMobile: true,
+      }),
+    )
+
+    expect(html).not.toContain('data-testid="pay-with-upi-btn"')
+    expect(html).not.toContain('data-testid="genuine-upi-qr"')
+    expect(html).toContain('UPI Payee VPA Not Configured')
   })
 })
 
