@@ -1,9 +1,9 @@
 # MartIT — Final Product Plan
 
-**Status:** IMPLEMENTATION COMPLETE — USER ACTIONS REMAIN  
+**Status:** IMPLEMENTATION COMPLETE — VERIFIED & COMMITTED  
 **Current Branch:** `audit/deep-clean-issue-register`  
-**Latest Baseline Commit:** `cb2b871`
-**Automated Verification:** 31 test files passed, 630 passed, 1 skipped (0 failures), 13 migrations validated, clean production build.  
+**Latest Baseline Commit:** `a4cba3a`  
+**Automated Verification:** 31 test files passed, 634 passed, 1 skipped (0 failures), 13 migrations validated, clean production build.  
 
 ---
 
@@ -133,6 +133,14 @@
 
 ## Progress log
 
+- **2026-10-24 | Runner Dashboard Order-Data Inconsistency & Responsive Layout Repair:**
+  - Root Cause Analysis: Traced data flow from database query to card rendering. In `server/src/routes/orders.js` (`handleRunnerAssignedOrders`), the Supabase query selected `order_fulfillment_groups` without joined `order_items`, and returned raw snake_case records without calling `formatCanonicalOrder(o)`. In `DeliveryCard.jsx`, line item count and amounts strictly relied on `order.pricing` and `order.lines`, causing cards to fall back to `₹0 and 0 items` for live orders.
+  - Backend Fix: Updated `handleRunnerAssignedOrders` in `server/src/routes/orders.js` to query nested `order_items (id, product_id, product_name, product_pack, unit_price, quantity, line_subtotal)` inside `order_fulfillment_groups`. Mapped all returned orders through `formatCanonicalOrder(o)`, extracting customer details from location snapshot, resolving pricing defensively, and preserving snake_case database properties.
+  - Frontend Fix: Enhanced `DeliveryCard.jsx` to resolve item lines and pricing defensively across canonical, raw `order_items`, and relational group formats; supported nested snapshot customer details and snake_case `handover_verified_at`. Updated `getOrderStoreIds` and `getOrderPickups` in `runnerOrders.js` to support relational fulfillment groups.
+  - Layout & Overflow Fix: Added `min-w-0`, `truncate`, responsive container wrapping, and responsive OTP action stacking (`flex-col sm:flex-row`) across `DeliveryCard.jsx`, `DeliverySection.jsx`, `RunnerStatsSummary.jsx`, `RunnerAvailabilityToggle.jsx`, and `RunnerDashboardPage.jsx`. Reduced empty state padding to compact, centered cards.
+  - Regression Tests & Verification: Added 4 regression tests in `src/pages/runner/__tests__/runnerDashboard.test.jsx` covering database snake_case orders, zero-fee preservation, long ID overflow protection, and consistent non-zero amounts across PREPARING, ON_THE_WAY, and DELIVERED states. Added canonical pricing assertions in `server/src/__tests__/orders.test.js`.
+  - Verification Evidence: 31 test files passed (634 passed, 1 skipped, 0 failures), 13 migrations valid, clean client & SSR build, clean `git diff --check`.
+  - Commit SHA: `a4cba3a`.
 - **2026-10-24 | Deep Dead-Code Cleanup & Safe Removal:**
   - Established clean baseline across full automated test suite (31 files, 630 passed, 1 skipped), 13 migrations validated, and production client/SSR build.
   - Eliminated 19 unused import and declaration instances across frontend and backend (`server/src/middleware/auth.js`, `server/src/routes/orders.js`, `DeliveryDetailsForm.jsx`, `OrderConfirmationView.jsx`, `CustomerDeliveryOtpCard.jsx`, `supabaseClient.js`, `AdminConsolePage.jsx`, `AdminLoginPage.jsx`, `LoginPage.jsx`, `ResetPasswordPage.jsx`, `SignupPage.jsx`, `CartPage.jsx`, `HomePage.jsx`, `ProfilePage.jsx`, `checkoutDetails.test.jsx`, `customerPaymentFlow.test.js`, `flatDeliveryFeePolicy.test.jsx`, `runnerDashboard.test.jsx`, `runnerOtpVerification.test.jsx`).
