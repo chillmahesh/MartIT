@@ -43,12 +43,30 @@
 
 #### Unapplied Forward Migrations:
 1. `supabase/migrations/20261024000001_fix_admin_runner_approval_privilege.sql`:
-   - Fixes `trg_prevent_profile_escalation` so `service_role`, `postgres`, and authenticated admins are recognized by `auth_is_admin()`.
-   - Creates atomic stored procedure `public.admin_set_runner_status(UUID, VARCHAR)`.
-   - Sets `search_path = public, pg_temp` and revokes execution from `PUBLIC` and `anon`.
+   - **Prerequisites:**
+     - `public.profiles` table exists (created in `20261010000001`).
+     - `public.user_roles` table exists with unique constraint on `(user_id, role)` (created in `20261010000001`).
+     - `public.runner_status_enum` exists (`'applicant'`, `'approved'`, `'suspended'`) (created in `20261022000001`).
+     - Supabase Auth extension functions (`auth.role()`, `auth.uid()`) available in PostgreSQL.
+   - **Risks & Mitigations:**
+     - *Risk:* If historical migration `20261022000001` was skipped on staging, casting `p_status::public.runner_status_enum` will fail.
+     - *Mitigation:* Migration uses existing enum; verify enum exists via `SELECT typname FROM pg_type WHERE typname = 'runner_status_enum';` before applying.
+     - *Risk:* Privilege escalation trigger replacement.
+     - *Mitigation:* The trigger guard explicitly restricts non-admins to `NULL -> 'applicant'` self-updates only. Non-admins cannot set `'approved'` or `'suspended'`.
+   - **Actions:**
+     - Fixes `trg_prevent_profile_escalation` so `service_role`, `postgres`, and authenticated admins are recognized by `auth_is_admin()`.
+     - Creates atomic stored procedure `public.admin_set_runner_status(UUID, VARCHAR)`.
+     - Sets `search_path = public, pg_temp` and revokes execution from `PUBLIC` and `anon`.
+
 2. `supabase/migrations/20261024000002_add_missing_foreign_key_indexes.sql`:
-   - Adds 8 missing foreign key indexes (`idx_stores_owner`, `idx_orders_delivery_location`, `idx_orders_fee_paise`, `idx_order_items_store`, `idx_order_items_product`, `idx_inventory_reservations_store`, `idx_inventory_reservations_product`, `idx_platform_fee_reservations_order`).
-   - Uses `CREATE INDEX IF NOT EXISTS` to ensure idempotency and non-blocking application.
+   - **Prerequisites:**
+     - Referenced tables exist: `stores`, `orders`, `order_items`, `inventory_reservations`, `platform_fee_reservations`.
+     - Foreign key columns exist.
+   - **Risks & Mitigations:**
+     - *Risk:* Lock contention on active high-volume tables.
+     - *Mitigation:* Uses `CREATE INDEX IF NOT EXISTS`. Tables are small/staging-scale; index creation is instantaneous and non-destructive.
+   - **Actions:**
+     - Adds 8 missing foreign key indexes (`idx_stores_owner`, `idx_orders_delivery_location`, `idx_orders_fee_paise`, `idx_order_items_store`, `idx_order_items_product`, `idx_inventory_reservations_store`, `idx_inventory_reservations_product`, `idx_platform_fee_reservations_order`).
 
 #### Audit Branch Migration History:
 - `20261022120000_restrict_rls_auto_enable_execute.sql` (Restricts `rls_auto_enable` execution).
@@ -90,10 +108,18 @@ Mock users (`src/mocks/users.js`) exist only for local Vitest/mock execution. Li
 
 ### Task ST-04: Make.com Webhook Contract & Server Configuration
 
-#### Server Environment Variables (Render):
-- `MAKE_WEBHOOK_SECRET`: High-entropy shared secret (minimum 16 characters).
-- `MAKE_VERIFICATION_WEBHOOK_URL`: Make.com webhook scenario endpoint.
-- `VITE_UPI_PAYEE_VPA`: Merchant UPI VPA (configured on Vercel frontend).
+#### Complete Server Environment Variable Requirements (Render):
+The production schema in `server/src/config/env.js` enforces the following environment variables:
+- `PORT`: (Number) Bound by Render; defaults to `10000`.
+- `NODE_ENV`: (Literal) Must be `production`.
+- `SUPABASE_URL`: (HTTPS URL) Supabase project URL (`https://uuuqaeptpripmvavihza.supabase.co`). Must not be a placeholder.
+- `SUPABASE_ANON_KEY`: (String, min 20 chars) Public anon key. Must not be a placeholder.
+- `SUPABASE_SERVICE_ROLE_KEY`: (String, min 20 chars) Backend service role key. Must differ from `SUPABASE_ANON_KEY`.
+- `FRONTEND_ORIGINS`: (Comma-separated HTTPS URLs) Allowed CORS origins (e.g. `https://martit.vercel.app` or staging URL). No wildcards or localhost allowed in production.
+- `MAKE_WEBHOOK_SECRET`: (String, min 16 chars) High-entropy shared secret for incoming webhook authentication.
+- `MAKE_VERIFICATION_WEBHOOK_URL`: (HTTPS URL) Make.com scenario webhook endpoint for outgoing payment verification queries.
+- `FEATURE_MULTI_STORE_CHECKOUT`: (Boolean) Default `false`.
+- `ROUTING_MODE`: (String) Default `'walking'`.
 
 #### Webhook Ingestion Contract (`POST /api/v1/webhooks/make-payment`):
 - **Header:** `x-make-secret: <secret>` (or `x-webhook-secret`, or `Authorization: Bearer <secret>`). Evaluated via constant-time SHA-256 HMAC digest comparison (`crypto.timingSafeEqual`).
@@ -133,6 +159,26 @@ Mock users (`src/mocks/users.js`) exist only for local Vitest/mock execution. Li
 2. **Foreign Key Performance:** Migration `20261024000002` prevents lock contention and full-table scans during cascade deletes and order creation.
 3. **Double Verification Prevention:** In-flight lock Set + frontend button disabling prevents racing webhook calls and concurrent checkout submissions.
 4. **Information Disclosure Prevention:** Plaintext OTP and OTP hash are strictly stripped from all general order detail and list endpoints (`handleGetOrder`, `handleListOrders`, `handleRunnerListOrders`).
+
+---
+
+### 3.1 Mocked Checks vs. Genuine Live Evidence Ledger
+
+| Dimension / Flow | Verification Type | Status | Evidence Source | Notes / Caveats |
+|---|---|---|---|---|
+| **Runner Status Privilege Escalation** | Automated Unit / Contract Test | VERIFIED | `authAndPermissions.test.js` (35 tests) | Simulated via mock Supabase client; verifies RPC logic and SQL contract. Live Postgres execution pending migration. |
+| **Admin Runner Approval RPC** | Automated Unit / Static Check | VERIFIED | `admin.js`, migration `20261024000001` | Migration syntax validated with 0 errors; endpoint contract aligned with frontend `adminService`. |
+| **Customer 6-Stage Tracking Stepper** | Automated UI Component Test | VERIFIED | `orderTrackingUI.test.jsx` (7 tests) | Proves contradiction elimination and dynamic state progression across all 6 stages. |
+| **Runner Availability & Exclusive Claim** | Automated Endpoint Test | VERIFIED | `orders.test.js`, `runnerDashboard.test.jsx` | Atomic claim `WHERE runner_id IS NULL AND status = 'CONFIRMED'` tested with simulated concurrency. |
+| **Runner Multi-Store Pickup** | Automated Integration Test | VERIFIED | `orders.test.js` (`handleRunnerPickupStore`) | Asserts fulfillment group state tracking and auto-transition to `PICKED_UP`. |
+| **In-Flight Payment Concurrency Lock** | Automated Concurrency Test | VERIFIED | `orders.test.js` (in-flight Set tests) | Rapid concurrent calls return HTTP 409 `VERIFICATION_IN_FLIGHT`. |
+| **Make.com Webhook Ingestion Contract** | Automated Contract Test | VERIFIED | `webhooks.test.js` (45 tests) | Timing-safe HMAC check and fail-closed behavior verified under mock conditions. |
+| **Delivery OTP Handover & Verification** | Automated End-to-End Test | VERIFIED | `ordersOtp.test.js` (34 tests) | SHA-256 hash matching, rate limits, lockouts, and server restart recovery verified. |
+| **Database Migrations on Staging DB** | External Manual SQL | UNVERIFIED | Not yet applied to `uuuqaeptpripmvavihza` | Requires operator execution in Supabase Dashboard SQL Editor. |
+| **Hosted Backend Deployment on Render** | Remote Service Probe | PARTIALLY VERIFIED | Render live at `0ac83ac` (bound port 10000) | Audit branch commits not yet promoted to Render. |
+| **Live External Make.com Telemetry** | External Integration | UNVERIFIED | Prior live probe returned `WEBHOOK_UNCONFIGURED` | Requires `MAKE_WEBHOOK_SECRET` configuration on Render and active Gmail trigger. |
+| **Real Staging Customer/Runner Accounts** | GoTrue Auth API | UNVERIFIED | Sample accounts in `users.js` are mock-only | Real accounts must be provisioned in Supabase GoTrue Auth for staging. |
+| **Live UPI Bank Settlement** | External Banking Network | UNVERIFIED | None | Requires live payment of ₹10–₹15 by operator during staged acceptance test. |
 
 ---
 
