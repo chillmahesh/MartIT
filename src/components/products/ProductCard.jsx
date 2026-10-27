@@ -18,7 +18,8 @@ import { spring } from '@/utils/motion'
  * non-blocking store metadata, and integrated add-to-cart quantity stepper connected to useCartStore.
  */
 export function ProductCard({ product, className }) {
-  const { id, name, pack, price, mrp, stock, art, categoryId, storeId } = product
+  const { id, name, pack, price, mrp, stock, art, categoryId, storeId, imageUrl } = product
+  const [imageError, setImageError] = useState(false)
   const quantity = useCartStore((s) => s.lines.find((l) => l.productId === id)?.quantity ?? 0)
   const setQuantity = useCartStore((s) => s.setQuantity)
   const replaceCart = useCartStore((s) => s.replaceCart)
@@ -94,7 +95,15 @@ export function ProductCard({ product, className }) {
         style={{ '--tint': tint }}
         className="relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-[14px] bg-[color-mix(in_oklab,var(--tint)_55%,var(--surface))] dark:bg-[color-mix(in_oklab,var(--tint)_12%,var(--surface))] p-3"
       >
-        {Art ? (
+        {imageUrl && !imageError ? (
+          <img
+            src={imageUrl}
+            alt={name}
+            onError={() => setImageError(true)}
+            className="size-full object-contain drop-shadow-sm transition-transform duration-500 ease-spring group-hover:scale-105"
+            loading="lazy"
+          />
+        ) : Art ? (
           <Art className="size-20 sm:size-24 transition-transform duration-500 ease-spring group-hover:scale-110 group-hover:-rotate-3" />
         ) : (
           <ShoppingBasket className="size-14 text-ink-subtle/50 transition-transform duration-300 group-hover:scale-105" aria-hidden="true" />
