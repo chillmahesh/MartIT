@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
-import { AlertCircle, Bike, CheckCircle2, Mail, Phone, ShoppingBag, User } from 'lucide-react'
+import { AlertCircle, Bike, CheckCircle2, Lock, Mail, Phone, ShoppingBag, User } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
@@ -362,6 +362,17 @@ export default function SignupPage() {
         >
           Create account
         </Button>
+
+        <p className="mt-3 text-xs text-center text-ink-subtle leading-relaxed">
+          By creating an account, you agree to MartIT&apos;s{' '}
+          <Link to="/terms-and-conditions" target="_blank" className="font-medium text-ink underline hover:text-brand">
+            Terms &amp; Conditions
+          </Link>{' '}
+          and acknowledge our{' '}
+          <Link to="/privacy-policy" target="_blank" className="font-medium text-ink underline hover:text-brand">
+            Privacy Policy
+          </Link>.
+        </p>
       </form>
 
       <p className="mt-8 text-sm text-ink-muted">

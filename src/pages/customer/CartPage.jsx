@@ -27,6 +27,7 @@ import {
   OTHER_LOCATION_VALUE,
 } from '@/utils/checkoutValidation'
 import { Button } from '@/components/ui/Button'
+import { Badge } from '@/components/ui/Badge'
 import { Price } from '@/components/ui/Price'
 import { formatINR } from '@/utils/currency'
 import { formatDistanceKm } from '@/utils/distance'
@@ -36,6 +37,7 @@ import {
   FLAT_DELIVERY_FEE_LABEL,
   PRICING_VERSION,
 } from '@/config/fees'
+import { cn } from '@/utils/cn'
 
 export default function CartPage() {
   const navigate = useNavigate()
@@ -562,8 +564,15 @@ export default function CartPage() {
                 : `Continue to Payment • ${formatINR(estimatedBaseAmount)}`}
             </Button>
 
-            <p className="text-[11px] text-center text-ink-subtle">
-              Payment is made upon order placement. You will review authoritative order details in the next step.
+            <p className="text-[11px] text-center text-ink-subtle leading-normal">
+              Payment is made upon order placement. By proceeding, you agree to MartIT&apos;s{' '}
+              <Link to="/terms-and-conditions" target="_blank" className="underline hover:text-ink">
+                Terms
+              </Link>{' '}
+              &amp;{' '}
+              <Link to="/privacy-policy" target="_blank" className="underline hover:text-ink">
+                Privacy Policy
+              </Link>.
             </p>
           </div>
         </div>

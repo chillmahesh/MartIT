@@ -47,7 +47,7 @@ export function CartLineItem({
     )
   }
 
-  const { id, name, pack, price, mrp, stock, art, categoryId } = product
+  const { id, name, pack, price, mrp, stock, art, categoryId, imageUrl } = product
   const category = SAMPLE_CATEGORIES.find((c) => c.id === categoryId)
   const Art = (art && ITEM_ILLUSTRATIONS[art]) || (category?.art && ITEM_ILLUSTRATIONS[category.art]) || null
   const tint = category?.tint || '#dbeafe'
@@ -70,7 +70,17 @@ export function CartLineItem({
           style={{ '--tint': tint }}
           className="relative grid size-14 sm:size-16 shrink-0 place-items-center overflow-hidden rounded-[12px] bg-[color-mix(in_oklab,var(--tint)_55%,var(--surface))] dark:bg-[color-mix(in_oklab,var(--tint)_12%,var(--surface))] p-2"
         >
-          {Art ? (
+          {imageUrl ? (
+            <img
+              src={imageUrl}
+              alt={name}
+              className="size-full object-contain"
+              loading="lazy"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none'
+              }}
+            />
+          ) : Art ? (
             <Art className="size-10 sm:size-12 object-contain" />
           ) : (
             <ShoppingBasket className="size-7 text-ink-subtle/50" aria-hidden="true" />

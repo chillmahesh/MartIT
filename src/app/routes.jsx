@@ -25,6 +25,8 @@ const RunnerDashboardPage = lazy(() => import('@/pages/runner/RunnerDashboardPag
 const AdminConsolePage = lazy(() => import('@/pages/admin/AdminConsolePage'))
 const AdminLoginPage = lazy(() => import('@/pages/admin/AdminLoginPage'))
 const StyleguidePage = lazy(() => import('@/pages/dev/StyleguidePage'))
+const TermsPage = lazy(() => import('@/pages/legal/TermsPage'))
+const PrivacyPage = lazy(() => import('@/pages/legal/PrivacyPage'))
 
 function Root() {
   return (
@@ -45,6 +47,10 @@ export const routes = [
         element: <MarketingLayout />,
         children: [
           { index: true, element: <LandingPage /> },
+          { path: 'terms-and-conditions', element: <TermsPage /> },
+          { path: 'privacy-policy', element: <PrivacyPage /> },
+          { path: 'terms', element: <TermsPage /> },
+          { path: 'privacy', element: <PrivacyPage /> },
           { path: 'styleguide', element: <StyleguidePage /> },
         ],
       },
