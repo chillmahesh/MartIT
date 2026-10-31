@@ -4,6 +4,33 @@ import { ApiError } from '../utils/errors.js'
 
 export const catalogueRouter = Router()
 
+const STATIC_PRODUCT_IMAGE_MAP = {
+  p_milk_500: '/products/p_milk_500.png',
+  p_eggs: '/products/p_eggs.jpg',
+  p_bread: '/products/p_bread.jpg',
+  p_maggi: '/products/p_maggi.jpg',
+  p_banana: '/products/p_banana.webp',
+  p_apple: '/products/p_apple.jpg',
+  p_soda: '/products/p_soda.webp',
+  p_soap: '/products/p_soap.jpg',
+  p_spray: '/products/p_spray.webp',
+  p_notebook: '/products/p_notebook.png',
+  p_cup_noodles_veg: '/products/p_cup_noodles_veg.jpg',
+  p_potato_chips: '/products/p_potato_chips.jpg',
+  p_mango_juice: '/products/p_mango_juice.jpg',
+  p_butter_cookies: '/products/p_butter_cookies.webp',
+  p_ballpen_pack: '/products/p_ballpen_pack.jpg',
+  p_sticky_notes: '/products/p_sticky_notes.jpg',
+  p_toothpaste: '/products/p_toothpaste.jpg',
+  p_pocket_tissues: '/products/p_pocket_tissues.jpg',
+  p_nc_maggi: '/products/p_nc_maggi.jpg',
+  p_nc_soda: '/products/p_nc_soda.webp',
+  p_nc_bread: '/products/p_nc_bread.jpg',
+  p_cold_coffee: '/products/p_cold_coffee.webp',
+  p_nc_paneer_roll: '/products/p_nc_paneer_roll.png',
+  p_stat_notebook: '/products/p_stat_notebook.png',
+}
+
 async function handleProducts(req, res, next) {
   try {
     const storeId = req.query.storeId || req.body?.storeId
@@ -35,7 +62,7 @@ async function handleProducts(req, res, next) {
       mrp: Number(p.mrp),
       stock: p.stock,
       isAvailable: p.is_available,
-      imageUrl: p.image_url,
+      imageUrl: p.image_url || STATIC_PRODUCT_IMAGE_MAP[p.id] || null,
     }))
 
     res.status(200).json(formatted)

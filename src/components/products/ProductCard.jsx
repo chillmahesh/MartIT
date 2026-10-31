@@ -12,13 +12,15 @@ import { SAMPLE_CATEGORIES } from '@/mocks/categories'
 import { SAMPLE_STORES } from '@/mocks/campus'
 import { cn } from '@/utils/cn'
 import { spring } from '@/utils/motion'
+import { resolveProductImageUrl } from '@/utils/productImages'
 
 /**
  * ProductCard with illustration, pack details, stock badges, price with MRP strikethrough,
  * non-blocking store metadata, and integrated add-to-cart quantity stepper connected to useCartStore.
  */
 export function ProductCard({ product, className }) {
-  const { id, name, pack, price, mrp, stock, art, categoryId, storeId, imageUrl } = product
+  const { id, name, pack, price, mrp, stock, art, categoryId, storeId } = product
+  const displayImageUrl = resolveProductImageUrl(product)
   const [imageError, setImageError] = useState(false)
   const quantity = useCartStore((s) => s.lines.find((l) => l.productId === id)?.quantity ?? 0)
   const setQuantity = useCartStore((s) => s.setQuantity)
@@ -95,9 +97,9 @@ export function ProductCard({ product, className }) {
         style={{ '--tint': tint }}
         className="relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-[14px] bg-[color-mix(in_oklab,var(--tint)_55%,var(--surface))] dark:bg-[color-mix(in_oklab,var(--tint)_12%,var(--surface))] p-3"
       >
-        {imageUrl && !imageError ? (
+        {displayImageUrl && !imageError ? (
           <img
-            src={imageUrl}
+            src={displayImageUrl}
             alt={name}
             onError={() => setImageError(true)}
             className="size-full object-contain drop-shadow-sm transition-transform duration-500 ease-spring group-hover:scale-105"

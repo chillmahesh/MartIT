@@ -235,6 +235,40 @@ describe('Product Card Store Metadata & Stock Safeguards', () => {
     expect(html).toContain('3')
     expect(html).toContain('left')
   })
+
+  it('renders real product image when imageUrl is present', () => {
+    const product = SAMPLE_PRODUCTS.find((p) => p.id === 'p_milk_500')
+    const html = renderCard(product)
+    expect(html).toContain('src="/products/p_milk_500.png"')
+    expect(html).toContain('alt="Toned Milk"')
+  })
+
+  it('gracefully falls back to static product image when imageUrl is null from remote database', () => {
+    const remoteProduct = {
+      ...SAMPLE_PRODUCTS.find((p) => p.id === 'p_bread'),
+      imageUrl: null, // As returned by production Supabase currently
+    }
+    const html = renderCard(remoteProduct)
+    expect(html).toContain('src="/products/p_bread.jpg"')
+    expect(html).toContain('alt="Whole Wheat Bread"')
+  })
+
+  it('falls back to category vector illustration if neither imageUrl nor static asset exists', () => {
+    const unknownProduct = {
+      id: 'p_unknown_custom',
+      storeId: 'store_campus_mart',
+      categoryId: 'dairy',
+      name: 'Custom Unmapped Item',
+      pack: '1 pc',
+      price: 10,
+      mrp: 10,
+      stock: 5,
+      imageUrl: null,
+    }
+    const html = renderCard(unknownProduct)
+    expect(html).not.toContain('<img')
+    expect(html).toContain('<svg')
+  })
 })
 
 describe('HomePage Product-First Shopping Experience', () => {
