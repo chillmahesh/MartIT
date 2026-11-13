@@ -3,7 +3,7 @@ import { Eye, EyeOff } from 'lucide-react'
 import { cn } from '@/utils/cn'
 
 export const inputClass = cn(
-  'h-12 w-full rounded-tile border border-line-strong bg-surface px-4 text-[15px] text-ink',
+  'h-12 w-full rounded-tile border border-line-strong bg-surface px-4 text-[15px] text-ink min-w-0',
   'placeholder:text-ink-subtle transition-[border-color,box-shadow] duration-200',
   'hover:border-ink-subtle focus:border-brand focus:outline-none focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--brand)_22%,transparent)]',
   'aria-invalid:border-danger aria-invalid:focus:shadow-[0_0_0_3px_color-mix(in_oklab,var(--danger)_22%,transparent)]',
