@@ -14,6 +14,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { env, isMockBackend } from '@/config/env'
 import { getSupabaseClient } from '@/config/supabaseClient'
 import { homePathFor, hasPermission, PERMISSIONS, ROLES } from '@/utils/permissions'
+import { validateEmail } from '@/utils/validators'
 
 /** Only allow same-site relative redirects (prevents open-redirects via ?next=). */
 function safeNext(next) {
@@ -33,6 +34,8 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [fieldErrors, setFieldErrors] = useState({})
+  const [touched, setTouched] = useState({})
   const [submitting, setSubmitting] = useState(false)
   const [googleSubmitting, setGoogleSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
@@ -65,19 +68,15 @@ export default function LoginPage() {
   const handleForgotSubmit = async (e) => {
     e.preventDefault()
     setForgotError(null)
-    const clean = forgotEmail.trim()
-    if (!clean) {
-      setForgotError('Please enter your email address.')
-      return
-    }
-    if (!clean.includes('@')) {
-      setForgotError('Please enter a valid email address.')
+    const emailRes = validateEmail(forgotEmail, { required: true, label: 'Campus email' })
+    if (!emailRes.isValid) {
+      setForgotError(emailRes.error)
       return
     }
 
     setForgotSubmitting(true)
     try {
-      await forgotPassword(clean)
+      await forgotPassword(emailRes.value)
       setForgotSuccess(true)
       toast.success('Password recovery email sent!')
     } catch (err) {
@@ -119,24 +118,43 @@ export default function LoginPage() {
     navigate(safeNext(params.get('next')) ?? homePathFor(authenticatedUser), { replace: true })
   }
 
+  const handleEmailBlur = () => {
+    setTouched((prev) => ({ ...prev, email: true }))
+    const res = validateEmail(email, { required: true, label: 'Email' })
+    setFieldErrors((prev) => ({ ...prev, email: res.error }))
+  }
+
+  const handlePasswordBlur = () => {
+    setTouched((prev) => ({ ...prev, password: true }))
+    if (!password) {
+      setFieldErrors((prev) => ({ ...prev, password: 'Please enter your password.' }))
+    } else {
+      setFieldErrors((prev) => ({ ...prev, password: null }))
+    }
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     setFormError(null)
     setHydrationError(null)
 
-    const cleanEmail = email.trim()
-    if (!cleanEmail) {
-      setFormError('Please enter your email address.')
-      return
-    }
-    if (!password) {
-      setFormError('Please enter your password.')
+    setTouched({ email: true, password: true })
+    const emailRes = validateEmail(email, { required: true, label: 'Email' })
+    const passwordError = !password ? 'Please enter your password.' : null
+
+    const errors = {}
+    if (!emailRes.isValid) errors.email = emailRes.error
+    if (passwordError) errors.password = passwordError
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors)
+      setFormError(errors.email || errors.password)
       return
     }
 
     setSubmitting(true)
     try {
-      const user = await login(cleanEmail, password)
+      const user = await login(emailRes.value, password)
       toast.success(`Welcome back, ${user.name}!`)
       handlePostLoginRouting(user)
     } catch (err) {
@@ -377,14 +395,22 @@ export default function LoginPage() {
 
       {/* Standard Email/Password Form */}
       <form onSubmit={handleSubmit} className="grid gap-4" noValidate>
-        <Field label="Email" error={undefined}>
+        <Field label="Email" error={touched.email ? fieldErrors.email : undefined}>
           <Input
             type="email"
             name="email"
             autoComplete="username"
             required
+            maxLength={255}
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => {
+              setEmail(e.target.value)
+              if (touched.email) {
+                const res = validateEmail(e.target.value, { required: true, label: 'Email' })
+                setFieldErrors((prev) => ({ ...prev, email: res.error }))
+              }
+            }}
+            onBlur={handleEmailBlur}
             placeholder="you@campus.edu"
             icon={Mail}
             disabled={submitting}
@@ -409,11 +435,25 @@ export default function LoginPage() {
             name="password"
             autoComplete="current-password"
             required
+            maxLength={72}
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => {
+              setPassword(e.target.value)
+              if (touched.password) {
+                setFieldErrors((prev) => ({ ...prev, password: !e.target.value ? 'Please enter your password.' : null }))
+              }
+            }}
+            onBlur={handlePasswordBlur}
             placeholder="Enter your password"
             disabled={submitting}
+            aria-invalid={touched.password && fieldErrors.password ? true : undefined}
           />
+          {touched.password && fieldErrors.password && (
+            <p role="alert" className="flex items-center gap-1.5 text-[13px] font-medium text-danger">
+              <AlertCircle className="size-3.5 shrink-0" aria-hidden="true" />
+              <span>{fieldErrors.password}</span>
+            </p>
+          )}
         </div>
 
         <Button

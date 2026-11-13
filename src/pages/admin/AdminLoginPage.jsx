@@ -11,6 +11,7 @@ import { toast } from '@/components/ui/Toaster'
 import { useAuthStore } from '@/stores/authStore'
 import { isMockBackend } from '@/config/env'
 import { hasPermission, PERMISSIONS } from '@/utils/permissions'
+import { validateEmail } from '@/utils/validators'
 
 /** Only allow same-site relative redirects (prevents open-redirects via ?next=). */
 function safeNext(next) {
@@ -41,9 +42,9 @@ export default function AdminLoginPage() {
     e.preventDefault()
     setFormError(null)
 
-    const cleanEmail = email.trim()
-    if (!cleanEmail) {
-      setFormError('Please enter your administrator email.')
+    const emailRes = validateEmail(email, { required: true, label: 'Administrator email' })
+    if (!emailRes.isValid) {
+      setFormError(emailRes.error)
       return
     }
     if (!password) {
@@ -53,7 +54,7 @@ export default function AdminLoginPage() {
 
     setSubmitting(true)
     try {
-      const user = await login(cleanEmail, password)
+      const user = await login(emailRes.value, password)
 
       // Strict client-side gate: verify authoritative database-backed role
       if (!hasPermission(user, PERMISSIONS.ADMIN_ACCESS)) {
@@ -228,7 +229,9 @@ export default function AdminLoginPage() {
         <Field label="Administrator Email" hint="Enter your verified admin campus email">
           <Input
             type="email"
+            inputMode="email"
             autoComplete="email"
+            maxLength={255}
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="admin@campus.edu"
@@ -241,6 +244,7 @@ export default function AdminLoginPage() {
         <Field label="Password" hint="Minimum 8 characters">
           <PasswordInput
             autoComplete="current-password"
+            maxLength={72}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="Enter your password"

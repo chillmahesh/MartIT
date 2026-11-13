@@ -12,6 +12,11 @@ import { useAuthStore } from '@/stores/authStore'
 import { isMockBackend } from '@/config/env'
 import { parseRecoveryUrlParams, clearRecoveryUrlParams } from '@/utils/recovery'
 import { authService } from '@/services/authService'
+import {
+  validateEmail,
+  validatePassword,
+  validatePasswordConfirmation,
+} from '@/utils/validators'
 
 export default function ResetPasswordPage() {
   const navigate = useNavigate()
@@ -50,14 +55,17 @@ export default function ResetPasswordPage() {
   // Form state
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [fieldErrors, setFieldErrors] = useState({})
+  const [touched, setTouched] = useState({})
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
 
   // Request new link state
   const [requestLinkEmail, setRequestLinkEmail] = useState('')
+  const [requestLinkTouched, setRequestLinkTouched] = useState(false)
+  const [requestLinkError, setRequestLinkError] = useState(null)
   const [requestLinkSubmitting, setRequestLinkSubmitting] = useState(false)
   const [requestLinkSuccess, setRequestLinkSuccess] = useState(false)
-  const [requestLinkError, setRequestLinkError] = useState(null)
   const [showRequestForm, setShowRequestForm] = useState(false)
 
   useEffect(() => {
@@ -129,21 +137,28 @@ export default function ResetPasswordPage() {
     }
   }, [isPasswordRecovery])
 
+  const validatePasswordFields = (pwd, confirmPwd) => {
+    const errors = {}
+    const pwdRes = validatePassword(pwd, { minLength: 6, maxLength: 72 })
+    if (!pwdRes.valid) {
+      errors.password = pwdRes.error
+    }
+    const confirmRes = validatePasswordConfirmation(pwd, confirmPwd)
+    if (!confirmRes.valid) {
+      errors.confirmPassword = confirmRes.error
+    }
+    return errors
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     setFormError(null)
 
-    // Validation
-    if (!password) {
-      setFormError('Please enter a new password.')
-      return
-    }
-    if (password.length < 6) {
-      setFormError('Password must be at least 6 characters long.')
-      return
-    }
-    if (password !== confirmPassword) {
-      setFormError('Passwords do not match. Please verify and re-enter.')
+    setTouched({ password: true, confirmPassword: true })
+    const errors = validatePasswordFields(password, confirmPassword)
+    setFieldErrors(errors)
+    if (Object.keys(errors).length > 0) {
+      setFormError(errors.password || errors.confirmPassword)
       return
     }
 
@@ -182,16 +197,18 @@ export default function ResetPasswordPage() {
 
   const handleRequestNewLink = async (e) => {
     e.preventDefault()
+    setRequestLinkTouched(true)
     setRequestLinkError(null)
-    const cleanEmail = requestLinkEmail.trim()
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setRequestLinkError('Please enter a valid campus email address.')
+
+    const emailRes = validateEmail(requestLinkEmail)
+    if (!emailRes.valid) {
+      setRequestLinkError(emailRes.error || 'Please enter a valid campus email address.')
       return
     }
 
     setRequestLinkSubmitting(true)
     try {
-      await forgotPassword(cleanEmail)
+      await forgotPassword(emailRes.normalized)
       setRequestLinkSuccess(true)
       toast.success('New password reset link sent!')
     } catch (err) {
@@ -288,14 +305,26 @@ export default function ResetPasswordPage() {
                       {requestLinkError}
                     </div>
                   )}
-                  <Field label="Campus Email" error={undefined}>
+                  <Field label="Campus Email" error={requestLinkTouched ? requestLinkError : undefined}>
                     <Input
                       type="email"
                       value={requestLinkEmail}
-                      onChange={(e) => setRequestLinkEmail(e.target.value)}
+                      onChange={(e) => {
+                        setRequestLinkEmail(e.target.value)
+                        if (requestLinkTouched) {
+                          const res = validateEmail(e.target.value)
+                          setRequestLinkError(res.valid ? null : res.error)
+                        }
+                      }}
+                      onBlur={() => {
+                        setRequestLinkTouched(true)
+                        const res = validateEmail(requestLinkEmail)
+                        setRequestLinkError(res.valid ? null : res.error)
+                      }}
                       placeholder="you@campus.edu"
                       icon={Mail}
                       required
+                      maxLength={255}
                       disabled={requestLinkSubmitting}
                     />
                   </Field>
@@ -377,12 +406,32 @@ export default function ResetPasswordPage() {
               name="newPassword"
               autoComplete="new-password"
               required
+              maxLength={72}
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => {
+                setPassword(e.target.value)
+                if (touched.password) {
+                  const errs = validatePasswordFields(e.target.value, confirmPassword)
+                  setFieldErrors(errs)
+                }
+              }}
+              onBlur={() => {
+                setTouched((t) => ({ ...t, password: true }))
+                const errs = validatePasswordFields(password, confirmPassword)
+                setFieldErrors(errs)
+              }}
+              aria-invalid={touched.password && !!fieldErrors.password}
+              aria-describedby={touched.password && fieldErrors.password ? 'reset-new-password-error' : undefined}
               placeholder="Enter new password (min. 6 characters)"
               disabled={submitting}
             />
-            <p className="text-xs text-ink-subtle">Must be at least 6 characters long.</p>
+            {touched.password && fieldErrors.password ? (
+              <p id="reset-new-password-error" className="text-xs text-danger">
+                {fieldErrors.password}
+              </p>
+            ) : (
+              <p className="text-xs text-ink-subtle">Must be at least 6 characters long.</p>
+            )}
           </div>
 
           <div className="grid gap-1.5">
@@ -394,11 +443,30 @@ export default function ResetPasswordPage() {
               name="confirmPassword"
               autoComplete="new-password"
               required
+              maxLength={72}
               value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
+              onChange={(e) => {
+                setConfirmPassword(e.target.value)
+                if (touched.confirmPassword) {
+                  const errs = validatePasswordFields(password, e.target.value)
+                  setFieldErrors(errs)
+                }
+              }}
+              onBlur={() => {
+                setTouched((t) => ({ ...t, confirmPassword: true }))
+                const errs = validatePasswordFields(password, confirmPassword)
+                setFieldErrors(errs)
+              }}
+              aria-invalid={touched.confirmPassword && !!fieldErrors.confirmPassword}
+              aria-describedby={touched.confirmPassword && fieldErrors.confirmPassword ? 'reset-confirm-password-error' : undefined}
               placeholder="Re-enter new password"
               disabled={submitting}
             />
+            {touched.confirmPassword && fieldErrors.confirmPassword && (
+              <p id="reset-confirm-password-error" className="text-xs text-danger">
+                {fieldErrors.confirmPassword}
+              </p>
+            )}
           </div>
 
           <Button

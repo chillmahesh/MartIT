@@ -297,4 +297,52 @@ describe('Password Recovery UI (ResetPasswordPage)', () => {
     // Initially checks session or displays recovery state
     expect(html).toContain('Password Recovery')
   })
+
+  it('renders SignupPage with responsive mobile constraints and maxLength attributes', () => {
+    const html = renderToString(
+      React.createElement(
+        MemoryRouter,
+        null,
+        React.createElement(SignupPage, null)
+      )
+    )
+
+    // Name field constraints
+    expect(html).toContain('maxLength="120"')
+    // Email field constraints
+    expect(html).toContain('maxLength="255"')
+    // Phone field constraints (16 chars allows formatted "+91 98765 43210")
+    expect(html).toContain('maxLength="16"')
+    expect(html).toContain('inputMode="tel"')
+    // Password constraints
+    expect(html).toContain('maxLength="72"')
+  })
+
+  it('renders LoginPage with maxLength constraints to prevent overlong inputs', () => {
+    const html = renderToString(
+      React.createElement(
+        MemoryRouter,
+        null,
+        React.createElement(LoginPage, null)
+      )
+    )
+
+    expect(html).toContain('maxLength="255"')
+    expect(html).toContain('maxLength="72"')
+  })
+
+  it('renders ResetPasswordPage with maxLength constraints on passwords', async () => {
+    const ResetPasswordPage = (await import('../ResetPasswordPage')).default
+    useAuthStore.setState({ isPasswordRecovery: true })
+
+    const html = renderToString(
+      React.createElement(
+        MemoryRouter,
+        null,
+        React.createElement(ResetPasswordPage, null)
+      )
+    )
+
+    expect(html).toContain('maxLength="72"')
+  })
 })
