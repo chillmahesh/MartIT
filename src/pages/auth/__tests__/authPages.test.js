@@ -29,6 +29,7 @@ describe('Auth UI Components (LoginPage & SignupPage)', () => {
     )
 
     expect(html).toContain('Log in')
+    expect(html).toContain('Sign in with Google')
     expect(html).toContain('Demo Mock Mode')
     expect(html).toContain('Sample customer')
     expect(html).toContain('Sample runner')
@@ -65,6 +66,7 @@ describe('Auth UI Components (LoginPage & SignupPage)', () => {
     )
 
     expect(html).toContain('Create an account')
+    expect(html).toContain('Sign up with Google')
     expect(html).toContain('Full Name')
     expect(html).toContain('Campus Email')
     expect(html).toContain('Phone Number')
@@ -162,6 +164,57 @@ describe('Auth UI Components (LoginPage & SignupPage)', () => {
     expect(targetPathForAuthed(runnerOnly, null)).toBe('/runner')
     expect(targetPathForAuthed(customerOnly, null)).toBe('/app')
     expect(targetPathForAuthed(unapprovedRunner, null)).toBe('/app')
+  })
+
+  it('calls supabase.auth.signInWithOAuth with google provider and redirectTo origin in authService', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const mockSupabase = {
+      auth: {
+        signInWithOAuth: vi.fn().mockResolvedValue({
+          data: { provider: 'google', url: 'https://supabase.co/oauth' },
+          error: null,
+        }),
+      },
+    }
+    const supabaseModule = await import('@/config/supabaseClient')
+    vi.spyOn(supabaseModule, 'getSupabaseClient').mockReturnValue(mockSupabase)
+
+    const { authService } = await import('@/services/authService')
+    const result = await authService.signInWithGoogle({
+      redirectTo: 'http://localhost:5173',
+      data: { role: 'customer' },
+    })
+
+    expect(mockSupabase.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: 'google',
+      options: {
+        redirectTo: 'http://localhost:5173',
+        data: { role: 'customer' },
+      },
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it('handles and logs error when supabase.auth.signInWithOAuth fails', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const mockSupabase = {
+      auth: {
+        signInWithOAuth: vi.fn().mockResolvedValue({
+          data: null,
+          error: { code: 'OAUTH_FAILED', message: 'Popup blocked by browser' },
+        }),
+      },
+    }
+    const supabaseModule = await import('@/config/supabaseClient')
+    vi.spyOn(supabaseModule, 'getSupabaseClient').mockReturnValue(mockSupabase)
+
+    const { authService } = await import('@/services/authService')
+    await expect(authService.signInWithGoogle()).rejects.toMatchObject({
+      code: 'OAUTH_FAILED',
+      message: 'Popup blocked by browser',
+    })
+    expect(consoleErrorSpy).toHaveBeenCalledWith('Google sign-in failed:', 'Popup blocked by browser')
   })
 })
 

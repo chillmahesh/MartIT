@@ -5,10 +5,12 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Field } from '@/components/ui/Field'
+import { GoogleIcon } from '@/components/ui/GoogleIcon'
 import { Input, PasswordInput } from '@/components/ui/Input'
 import { toast } from '@/components/ui/Toaster'
 import { useAuthStore } from '@/stores/authStore'
 import { isMockBackend } from '@/config/env'
+import { getSupabaseClient } from '@/config/supabaseClient'
 import { homePathFor } from '@/utils/permissions'
 import { cn } from '@/utils/cn'
 
@@ -19,6 +21,7 @@ function safeNext(next) {
 
 export default function SignupPage() {
   const signup = useAuthStore((s) => s.signup)
+  const demoLogin = useAuthStore((s) => s.demoLogin)
   const configError = useAuthStore((s) => s.configError) || useAuthStore.getState().configError
   const navigate = useNavigate()
   const [params] = useSearchParams()
@@ -31,6 +34,7 @@ export default function SignupPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
 
   const [submitting, setSubmitting] = useState(false)
+  const [googleSubmitting, setGoogleSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
   const [confirmationNotice, setConfirmationNotice] = useState(null)
 
@@ -94,6 +98,49 @@ export default function SignupPage() {
       setFormError(err.message || 'Failed to create account. Please try again.')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleGoogleSignUp = async () => {
+    setFormError(null)
+    setGoogleSubmitting(true)
+
+    try {
+      if (isMockMode) {
+        const result = await demoLogin(role === 'runner' ? 'runner' : 'customer')
+        if (role === 'runner') {
+          toast.success(`Runner account created! Welcome, ${result.name}! Review is pending.`)
+        } else {
+          toast.success(`Account created! Welcome, ${result.name}!`)
+        }
+        navigate(safeNext(params.get('next')) ?? homePathFor(result), { replace: true })
+        return
+      }
+
+      const supabase = getSupabaseClient()
+      if (!supabase) {
+        throw new Error('Supabase client is not configured.')
+      }
+
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+          data: {
+            role,
+          },
+        },
+      })
+
+      if (error) {
+        console.error('Google sign-in failed:', error.message)
+        setFormError(error.message || 'Google sign-in failed. Please try again.')
+      }
+    } catch (err) {
+      console.error('Google sign-in failed:', err.message)
+      setFormError(err.message || 'Google sign-in failed. Please try again.')
+    } finally {
+      setGoogleSubmitting(false)
     }
   }
 
@@ -285,6 +332,33 @@ export default function SignupPage() {
             </p>
           </div>
         )}
+
+        {/* Google Sign-up Button */}
+        <div className="pt-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="lg"
+            block
+            loading={googleSubmitting}
+            disabled={Boolean(hasConfigError) || submitting}
+            onClick={handleGoogleSignUp}
+            className="font-medium"
+          >
+            <GoogleIcon className="size-5 shrink-0" />
+            <span>Sign up with Google</span>
+          </Button>
+        </div>
+
+        {/* Divider */}
+        <div className="relative my-2 flex items-center justify-center">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-line" />
+          </div>
+          <div className="relative bg-bg px-3 text-xs font-semibold uppercase tracking-wider text-ink-subtle">
+            or register with email
+          </div>
+        </div>
 
         <Field label="Full Name">
           <Input

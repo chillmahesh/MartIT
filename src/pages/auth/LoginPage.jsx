@@ -6,11 +6,13 @@ import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Dialog, DialogContent } from '@/components/ui/Dialog'
 import { Field } from '@/components/ui/Field'
+import { GoogleIcon } from '@/components/ui/GoogleIcon'
 import { Input, PasswordInput } from '@/components/ui/Input'
 import { Spinner } from '@/components/ui/Spinner'
 import { toast } from '@/components/ui/Toaster'
 import { useAuthStore } from '@/stores/authStore'
 import { env, isMockBackend } from '@/config/env'
+import { getSupabaseClient } from '@/config/supabaseClient'
 import { homePathFor, hasPermission, PERMISSIONS, ROLES } from '@/utils/permissions'
 
 /** Only allow same-site relative redirects (prevents open-redirects via ?next=). */
@@ -32,6 +34,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [googleSubmitting, setGoogleSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
   const [hydrationError, setHydrationError] = useState(null)
   const [retryingHydration, setRetryingHydration] = useState(false)
@@ -144,6 +147,43 @@ export default function LoginPage() {
       }
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleGoogleSignIn = async () => {
+    setFormError(null)
+    setHydrationError(null)
+    setGoogleSubmitting(true)
+
+    try {
+      if (isMockMode) {
+        const user = await demoLogin('customer')
+        toast.success(`Welcome back, ${user.name}!`)
+        handlePostLoginRouting(user)
+        return
+      }
+
+      const supabase = getSupabaseClient()
+      if (!supabase) {
+        throw new Error('Supabase client is not configured.')
+      }
+
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        },
+      })
+
+      if (error) {
+        console.error('Google sign-in failed:', error.message)
+        setFormError(error.message || 'Google sign-in failed. Please try again.')
+      }
+    } catch (err) {
+      console.error('Google sign-in failed:', err.message)
+      setFormError(err.message || 'Google sign-in failed. Please try again.')
+    } finally {
+      setGoogleSubmitting(false)
     }
   }
 
@@ -308,8 +348,35 @@ export default function LoginPage() {
         </div>
       )}
 
+      {/* Google Sign-in Button */}
+      <div className="mt-8">
+        <Button
+          type="button"
+          variant="secondary"
+          size="lg"
+          block
+          loading={googleSubmitting}
+          disabled={Boolean(hasConfigError) || submitting}
+          onClick={handleGoogleSignIn}
+          className="font-medium"
+        >
+          <GoogleIcon className="size-5 shrink-0" />
+          <span>Sign in with Google</span>
+        </Button>
+      </div>
+
+      {/* Divider */}
+      <div className="relative my-6 flex items-center justify-center">
+        <div className="absolute inset-0 flex items-center">
+          <div className="w-full border-t border-line" />
+        </div>
+        <div className="relative bg-bg px-3 text-xs font-semibold uppercase tracking-wider text-ink-subtle">
+          or continue with email
+        </div>
+      </div>
+
       {/* Standard Email/Password Form */}
-      <form onSubmit={handleSubmit} className="mt-8 grid gap-4" noValidate>
+      <form onSubmit={handleSubmit} className="grid gap-4" noValidate>
         <Field label="Email" error={undefined}>
           <Input
             type="email"

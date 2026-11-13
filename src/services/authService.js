@@ -58,6 +58,45 @@ export const authService = {
   },
 
   /**
+   * Google OAuth sign-in.
+   * In mock mode: delegates to sample customer or runner login.
+   * In remote mode: authenticates via Supabase Auth signInWithOAuth with redirectTo.
+   */
+  async signInWithGoogle(options = {}) {
+    if (isMockBackend) {
+      return request('auth.demoLogin', { role: options.role || 'customer' })
+    }
+
+    const supabase = getSupabaseClient()
+    if (!supabase) {
+      throw new ApiError('CONFIG_ERROR', 'Supabase client is not configured.')
+    }
+
+    const origin =
+      typeof window !== 'undefined' && window.location?.origin
+        ? window.location.origin
+        : 'https://martit.vercel.app'
+
+    const redirectTo = options.redirectTo || origin
+
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo,
+        ...(options.data ? { data: options.data } : {}),
+        ...(options.queryParams ? { queryParams: options.queryParams } : {}),
+      },
+    })
+
+    if (error) {
+      console.error('Google sign-in failed:', error.message)
+      throw new ApiError(error.code || 'OAUTH_ERROR', error.message, error.status || 400)
+    }
+
+    return { ok: true, data }
+  },
+
+  /**
    * Email/password sign-up.
    * Supports customer and runner role selection.
    * Strictly enforces that administrative roles cannot be requested via public signup.

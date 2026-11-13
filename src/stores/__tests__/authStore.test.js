@@ -706,4 +706,37 @@ describe('Signup & Role Selection Enforcement in Auth Store', () => {
     expect(user.roles).toContain('runner')
     expect(user.runnerStatus).toBeNull()
   })
+
+  it('delegates signInWithGoogle to authService in remote mode', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const googleSpy = vi.spyOn(authService, 'signInWithGoogle').mockResolvedValue({
+      ok: true,
+      data: { provider: 'google', url: 'https://accounts.google.com/o/oauth2/v2/auth?...' },
+    })
+
+    const res = await useAuthStore.getState().signInWithGoogle({ redirectTo: 'http://localhost:5173' })
+
+    expect(googleSpy).toHaveBeenCalledWith({ redirectTo: 'http://localhost:5173' })
+    expect(res.ok).toBe(true)
+  })
+
+  it('signs in demo customer via signInWithGoogle in mock mode', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(true)
+    const mockUser = {
+      id: 'usr_demo_cust',
+      name: 'Alice Customer',
+      email: 'customer@campus.edu',
+      roles: ['customer'],
+    }
+    vi.spyOn(authService, 'signInWithGoogle').mockResolvedValue({
+      token: 'tok_demo_google',
+      user: mockUser,
+    })
+
+    const user = await useAuthStore.getState().signInWithGoogle({ role: 'customer' })
+
+    expect(user).toEqual(mockUser)
+    expect(useAuthStore.getState().token).toBe('tok_demo_google')
+    expect(useAuthStore.getState().user).toEqual(mockUser)
+  })
 })

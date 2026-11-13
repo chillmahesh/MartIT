@@ -224,6 +224,20 @@ export const useAuthStore = create(
       },
 
       /**
+       * Initiates Google OAuth sign-in flow.
+       * In mock mode: signs in using demo customer/runner profile.
+       * In remote mode: triggers Supabase OAuth redirect.
+       */
+      async signInWithGoogle(options = {}) {
+        if (isMockBackend) {
+          const res = await authService.signInWithGoogle(options)
+          set({ token: res.token, user: res.user, session: null })
+          return res.user
+        }
+        return authService.signInWithGoogle(options)
+      },
+
+      /**
        * Retries fetching profile from backend for an authenticated Supabase session.
        */
       async hydrateProfile() {
