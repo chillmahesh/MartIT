@@ -4,6 +4,12 @@ import { authenticate } from '../middleware/auth.js'
 import { getSupabaseAdmin } from '../config/supabase.js'
 import { ApiError } from '../utils/errors.js'
 import { ROLES } from '../utils/permissions.js'
+import {
+  validateName,
+  validateEmail,
+  validateIndianPhone,
+  validatePassword,
+} from '../utils/validators.js'
 
 export const authRouter = Router()
 
@@ -34,16 +40,24 @@ async function handleSignup(req, res, next) {
   try {
     const { email, password, name, phone, role } = req.body || {}
 
-    if (!name || typeof name !== 'string' || name.trim().length < 2) {
-      throw ApiError.badRequest('Please enter your full name (minimum 2 characters).', 'INVALID_NAME')
+    const nameRes = validateName(name, { required: true, minLength: 2, maxLength: 120, label: 'Full name' })
+    if (!nameRes.isValid) {
+      throw ApiError.badRequest(nameRes.error, 'INVALID_NAME')
     }
 
-    if (!email || typeof email !== 'string' || !email.includes('@')) {
-      throw ApiError.badRequest('Please enter a valid campus or personal email address.', 'INVALID_EMAIL')
+    const emailRes = validateEmail(email, { required: true, label: 'Campus or personal email' })
+    if (!emailRes.isValid) {
+      throw ApiError.badRequest(emailRes.error, 'INVALID_EMAIL')
     }
 
-    if (!password || typeof password !== 'string' || password.length < 8) {
-      throw ApiError.badRequest('Password must be at least 8 characters long.', 'INVALID_PASSWORD')
+    const passwordRes = validatePassword(password, { minLength: 8, maxLength: 72, label: 'Password' })
+    if (!passwordRes.isValid) {
+      throw ApiError.badRequest(passwordRes.error, 'INVALID_PASSWORD')
+    }
+
+    const phoneRes = validateIndianPhone(phone, { required: false, label: 'Phone number' })
+    if (!phoneRes.isValid) {
+      throw ApiError.badRequest(phoneRes.error, 'INVALID_PHONE')
     }
 
     // Role validation & privilege escalation defense
@@ -61,9 +75,9 @@ async function handleSignup(req, res, next) {
     }
 
     const supabase = getSupabaseAdmin()
-    const cleanEmail = email.trim().toLowerCase()
-    const cleanName = name.trim()
-    const cleanPhone = phone && typeof phone === 'string' ? phone.trim() : null
+    const cleanEmail = emailRes.normalized
+    const cleanName = nameRes.value
+    const cleanPhone = phoneRes.normalized || null
 
     // Check for duplicate email
     const { data: existingProfile } = await supabase

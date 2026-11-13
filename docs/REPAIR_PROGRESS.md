@@ -32,6 +32,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M8 | Staging readiness & live acceptance checklist | VERIFIED | Commit 7f2b82f; adaptive environment notices, mock-vs-live auth boundaries, staged live acceptance checklist, 628 passed tests, build verified | Staging deployment & live payment testing by operator |
 | M9 | Staging Acceptance Plan & Operational Verification | VERIFIED | Commit f4d0da7; docs/STAGING_ACCEPTANCE_PLAN.md created, OTP restart resilience verified, 630 passed tests, clean build | Operator execution of live staging acceptance checklist & deployment |
 | M10 | Final Product Plan execution & verification | VERIFIED | Commit cb2b871; docs/FINAL_PRODUCT_PLAN.md executed, README.md updated, 630 tests passed, build verified | Operator live staging acceptance on external infrastructure |
+| M11 | Form validation, input constraints & responsive UX fix | VERIFIED | Commits c57477e, ab9e24c, 09e1eb4; Complete client/server input validation, 10-digit Indian phone constraints, RFC email normalization, Unicode names, checkout/admin/runner bounds, 41 test files (730 passed, 1 skipped) | Complete |
 
 ## Milestone Evidence & Audit Trails
 
@@ -338,3 +339,42 @@ This is the durable execution ledger. Update it throughout implementation. Never
     3. Configure `MAKE_VERIFICATION_WEBHOOK_URL` in Render service environment.
     4. Configure `VITE_UPI_PAYEE_VPA` in Vercel project environment.
     5. Provision 3 staging accounts in GoTrue Auth (admin, runner applicant, customer) and execute the 10-stage live acceptance walkthrough.
+
+### M11 — Form Validation, Input Constraints & Responsive UX Fix
+- **Date / Session:** 2026-11-14
+- **Branch / Base Commit:** `audit/deep-clean-issue-register` @ `3931414`
+- **Milestone Commits:**
+  - `c57477e`: `feat(validation): add client and server validation utilities with responsive UI wrappers (Milestone A)`
+  - `ab9e24c`: `feat(auth): enforce input validation, field constraints, and inline errors on registration, login, and password reset (Milestone B)`
+  - `09e1eb4`: `feat(checkout): add input bounds and responsive constraints for checkout, runner notes, and admin search (Milestone C)`
+  - Final Milestone D commit: `feat(api): harden backend and mock server payload validation for auth and orders (Milestone D)`
+- **Goal:** Fix form validation and input usability throughout MartIT. Eliminate defects where the account registration form accepted excessively long phone numbers (20+ digits) and invalid email text without meaningful validation. Ensure robust client and server validation, responsive inputs, and input constraints across registration, login, reset password, checkout, delivery details, runner controls, and admin search.
+- **Implemented Fixes & Protections:**
+  1. **Shared Validation Utilities (`src/utils/validators.js` & `server/src/utils/validators.js`):**
+     - **Phone Numbers:** Validates 10-digit Indian mobile numbers starting with 6, 7, 8, or 9. Handles optional `+91`, `91`, or `0` prefix. Rejects non-digits, too-short numbers, and overlong inputs without silent truncation. Allows empty string when optional (e.g. signup) but enforces strictly when required (checkout).
+     - **Names:** Enforces 2–120 characters matching Postgres `VARCHAR(120)`. Allows legitimate Indian Unicode scripts (Devanagari, Tamil, Bengali), spaces, hyphens, and typographic/curly apostrophes (`' `, `’`). Rejects blank or non-letter inputs.
+     - **Emails:** RFC-compliant syntax validation with 255 character limit, username max 64 chars, and mandatory domain extension (min 2 chars). Rejects internal spaces and malformed text. Normalizes casing and whitespace.
+     - **Passwords:** Minimum 8 characters on registration, maximum 72 characters (Bcrypt safe boundary). Confirmation matching verification.
+  2. **Responsive UI & Container Bounds:**
+     - `src/components/ui/Input.jsx`: Added `min-w-0` to default input class to prevent overflow in CSS flex/grid containers.
+     - `src/components/ui/Field.jsx`: Added `min-w-0` and `break-words` on error containers so long validation messages wrap cleanly on narrow screens (320px–375px).
+  3. **Auth & Registration Forms:**
+     - `src/pages/auth/SignupPage.jsx`: Inline field-level validation on blur and change once touched; HTML `type="tel"`, `inputMode="tel"`, `maxLength={16}` for phone, `maxLength={255}` for email, `maxLength={120}` for full name, `maxLength={72}` for password and confirm password. Prevents submission while errors exist.
+     - `src/pages/auth/LoginPage.jsx`: Email syntax check on blur and submit, inline error messages, `maxLength={255}` for email, `maxLength={72}` for password, and `maxLength={255}` for forgot password email.
+     - `src/pages/auth/ResetPasswordPage.jsx`: Validates password length and confirmation match with inline field errors, `maxLength={72}` on password inputs, `maxLength={255}` on recovery email request input.
+     - `src/pages/admin/AdminLoginPage.jsx`: Administrator email validation and length constraints (`maxLength={255}`).
+  4. **Checkout, Runner & Admin Controls:**
+     - `src/components/cart/DeliveryDetailsForm.jsx` & `src/utils/checkoutValidation.js`: Bound customer name to 120 chars, phone to 16 chars with `inputMode="tel"`, custom location address to 200 chars, and delivery instructions to 500 chars.
+     - `src/components/runner/DeliveryCard.jsx`: Handover OTP constrained to exactly 6 numeric digits with `inputMode="numeric"`, `pattern="[0-9]*"`, and `maxLength={6}`. Additional delay notes constrained to `maxLength={250}` with responsive `min-w-0`.
+     - `src/components/products/CatalogueSearch.jsx`: Search input constrained to `maxLength={100}` with `min-w-0`.
+     - `src/pages/admin/AdminConsolePage.jsx`: User search, order search, and product search constrained to `maxLength={100}`.
+  5. **Backend & Mock Server Payload Enforcement:**
+     - `server/src/routes/auth.js`: `handleSignup` validates name, email, phone, and password using server validators, returning `400 INVALID_NAME`, `400 INVALID_EMAIL`, `400 INVALID_PHONE`, or `400 INVALID_PASSWORD`.
+     - `server/src/routes/orders.js`: `handleCreateOrder` validates `customerDetails` (recipient name 2-120 chars, 10-digit Indian phone, destination <= 200 chars, notes <= 500 chars).
+     - `src/services/mockServer/handlers.js`: Synchronized mock `auth.signup` and `orders.create` to enforce identical validation rules.
+- **Verification Commands & Evidence:**
+  - `npm test`: 41 test files passed, 730 passed, 1 skipped (731 total), exit code 0.
+  - `npm run test:server`: 17 test files passed, 369 passed, 1 skipped, exit code 0.
+  - `npm run test:all`: 41 test files + 13 migration checks validated, exit code 0.
+  - `npm run build`: Client, SSR, and pre-rendering completed with 0 errors, exit code 0.
+  - `git diff --check`: 0 whitespace issues.

@@ -508,6 +508,74 @@ describe('Public Registration & Role Assignment Enforcement', () => {
     expect(res3.body.code).toBe('INVALID_PASSWORD')
   })
 
+  it('rejects overlong name, email with spaces, and invalid phone number on signup', async () => {
+    // Overlong name > 120 characters
+    const resOverlongName = await request(app)
+      .post('/api/v1/auth/signup')
+      .send({
+        email: 'valid2@campus.edu',
+        password: 'password123',
+        name: 'A'.repeat(121),
+        role: 'customer',
+      })
+    expect(resOverlongName.status).toBe(400)
+    expect(resOverlongName.body.code).toBe('INVALID_NAME')
+
+    // Email with internal spaces
+    const resEmailSpace = await request(app)
+      .post('/api/v1/auth/signup')
+      .send({
+        email: 'user name@campus.edu',
+        password: 'password123',
+        name: 'Valid Name',
+        role: 'customer',
+      })
+    expect(resEmailSpace.status).toBe(400)
+    expect(resEmailSpace.body.code).toBe('INVALID_EMAIL')
+
+    // Phone with > 10 digits
+    const resPhoneLong = await request(app)
+      .post('/api/v1/auth/signup')
+      .send({
+        email: 'valid3@campus.edu',
+        password: 'password123',
+        name: 'Valid Name',
+        phone: '987654321012345',
+        role: 'customer',
+      })
+    expect(resPhoneLong.status).toBe(400)
+    expect(resPhoneLong.body.code).toBe('INVALID_PHONE')
+
+    // Phone with invalid starting digit (e.g. starts with 1)
+    const resPhoneInvalidStart = await request(app)
+      .post('/api/v1/auth/signup')
+      .send({
+        email: 'valid4@campus.edu',
+        password: 'password123',
+        name: 'Valid Name',
+        phone: '1234567890',
+        role: 'customer',
+      })
+    expect(resPhoneInvalidStart.status).toBe(400)
+    expect(resPhoneInvalidStart.body.code).toBe('INVALID_PHONE')
+  })
+
+  it('accepts valid 10-digit Indian mobile number and Unicode Indian names on signup', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/signup')
+      .send({
+        email: 'aarav.sharma@campus.edu',
+        password: 'securePassword123',
+        name: 'आरव शर्मा',
+        phone: '+91 98765 43210',
+        role: 'customer',
+      })
+
+    expect(res.status).toBe(201)
+    expect(res.body.user.name).toBe('आरव शर्मा')
+    expect(res.body.user.phone).toBe('+919876543210')
+  })
+
   it('also supports RPC POST /auth/signup endpoint', async () => {
     const res = await request(app)
       .post('/auth/signup')

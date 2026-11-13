@@ -1409,6 +1409,77 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
     expect(mockState.orders.length).toBe(initialOrdersCount)
   })
 
+  it('15. rejects invalid customerDetails (overlong name, invalid phone, excessive notes) with 400', async () => {
+    // Overlong name > 120 chars
+    const resName = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+        customerDetails: { fullName: 'A'.repeat(121) },
+      })
+    expect(resName.status).toBe(400)
+    expect(resName.body.code).toBe('INVALID_CUSTOMER_NAME')
+
+    // Invalid phone number
+    const resPhone = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+        customerDetails: { phoneNumber: '987654321012345' },
+      })
+    expect(resPhone.status).toBe(400)
+    expect(resPhone.body.code).toBe('INVALID_CUSTOMER_PHONE')
+
+    // Overlong destination > 200 chars
+    const resCustom = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+        customerDetails: { customLocation: 'C'.repeat(201) },
+      })
+    expect(resCustom.status).toBe(400)
+    expect(resCustom.body.code).toBe('INVALID_LOCATION_DETAILS')
+
+    // Overlong delivery notes > 500 chars
+    const resNotes = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+        customerDetails: { deliveryInstructions: 'D'.repeat(501) },
+      })
+    expect(resNotes.status).toBe(400)
+    expect(resNotes.body.code).toBe('INVALID_DELIVERY_NOTES')
+
+    // Accepts valid customer details with legitimate Unicode name and valid 10-digit Indian phone
+    const resValid = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [{ productId: 'p_milk', quantity: 1 }],
+        customerDetails: {
+          fullName: 'आरव शर्मा',
+          phoneNumber: '+91 98765 43210',
+          deliveryInstructions: 'Ring doorbell twice',
+        },
+      })
+    expect(resValid.status).toBe(201)
+    expect(resValid.body.customerDetails.fullName).toBe('आरव शर्मा')
+  })
+
   it('16. handles concurrent order creation without allocating the same fee slot twice', async () => {
     // Clear reservations and set up only 2 available slots: 15 paise and 25 paise
     mockState.platform_fee_reservations = [

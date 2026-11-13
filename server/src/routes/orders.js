@@ -11,6 +11,10 @@ import {
   PRICING_VERSION,
 } from '../../../src/config/fees.js'
 import { parseCoordinate, straightLineKm } from '../../../src/utils/distance.js'
+import {
+  validateName,
+  validateIndianPhone,
+} from '../utils/validators.js'
 
 export const ordersRouter = Router()
 
@@ -1730,6 +1734,34 @@ async function handleCreateOrder(req, res, next) {
       throw ApiError.unprocessable('Your cart is empty.', 'EMPTY_CART')
     }
 
+    // Customer details validation
+    let sanitizedCustomerDetails = null
+    if (customerDetails && typeof customerDetails === 'object') {
+      const { fullName, name, phoneNumber, mobileNumber, phone, customLocation, deliveryInstructions, instructions } = customerDetails
+      const recipientName = fullName || name
+      if (recipientName !== undefined && recipientName !== null && String(recipientName).trim() !== '') {
+        const nameRes = validateName(recipientName, { required: false, minLength: 2, maxLength: 120, label: 'Recipient name' })
+        if (!nameRes.isValid) {
+          throw ApiError.badRequest(nameRes.error, 'INVALID_CUSTOMER_NAME')
+        }
+      }
+      const rawPhone = phoneNumber || mobileNumber || phone
+      if (rawPhone !== undefined && rawPhone !== null && String(rawPhone).trim() !== '') {
+        const phoneRes = validateIndianPhone(rawPhone, { required: false, label: 'Delivery phone number' })
+        if (!phoneRes.isValid) {
+          throw ApiError.badRequest(phoneRes.error, 'INVALID_CUSTOMER_PHONE')
+        }
+      }
+      if (customLocation && typeof customLocation === 'string' && customLocation.length > 200) {
+        throw ApiError.badRequest('Custom delivery destination cannot exceed 200 characters.', 'INVALID_LOCATION_DETAILS')
+      }
+      const notes = deliveryInstructions || instructions
+      if (notes && typeof notes === 'string' && notes.length > 500) {
+        throw ApiError.badRequest('Delivery instructions cannot exceed 500 characters.', 'INVALID_DELIVERY_NOTES')
+      }
+      sanitizedCustomerDetails = customerDetails
+    }
+
     // Line item consolidation & format check
     const lineMap = new Map()
     for (const item of lines) {
@@ -1881,7 +1913,7 @@ async function handleCreateOrder(req, res, next) {
       p_customer_id: req.user.id,
       p_store_id: store.id,
       p_location_id: location.id,
-      p_customer_details: customerDetails || null,
+      p_customer_details: sanitizedCustomerDetails || null,
       p_items: atomicItemsPayload,
       p_delivery_fee: deliveryFee,
       p_fee_policy_version: PRICING_VERSION,

@@ -16,6 +16,12 @@ import { ApiError } from './errors'
 import { getDistanceKm } from './routing'
 import { DISTANCE_METHOD, straightLineKm, parseCoordinate } from '@/utils/distance'
 import { PERMISSIONS, ROLES, hasPermission } from '@/utils/permissions'
+import {
+  validateName,
+  validateEmail,
+  validateIndianPhone,
+  validatePassword,
+} from '@/utils/validators'
 
 const publicUser = (u) => ({
   id: u.id,
@@ -114,14 +120,24 @@ export function createMockServer({ routingProvider = null } = {}) {
       return { token, user: publicUser(user) }
     },
     'auth.signup': ({ email, password, name, phone, role = 'customer' }) => {
-      if (!name || typeof name !== 'string' || name.trim().length < 2) {
-        throw new ApiError('INVALID_NAME', 'Please enter your full name (minimum 2 characters).', 400)
+      const nameRes = validateName(name, { required: true, minLength: 2, maxLength: 120, label: 'Full name' })
+      if (!nameRes.isValid) {
+        throw new ApiError('INVALID_NAME', nameRes.error, 400)
       }
-      if (!email || typeof email !== 'string' || !email.includes('@')) {
-        throw new ApiError('INVALID_EMAIL', 'Please enter a valid campus or personal email address.', 400)
+
+      const emailRes = validateEmail(email, { required: true, label: 'Campus or personal email' })
+      if (!emailRes.isValid) {
+        throw new ApiError('INVALID_EMAIL', emailRes.error, 400)
       }
-      if (!password || typeof password !== 'string' || password.length < 8) {
-        throw new ApiError('INVALID_PASSWORD', 'Password must be at least 8 characters long.', 400)
+
+      const passwordRes = validatePassword(password, { minLength: 8, maxLength: 72, label: 'Password' })
+      if (!passwordRes.isValid) {
+        throw new ApiError('INVALID_PASSWORD', passwordRes.error, 400)
+      }
+
+      const phoneRes = validateIndianPhone(phone, { required: false, label: 'Phone number' })
+      if (!phoneRes.isValid) {
+        throw new ApiError('INVALID_PHONE', phoneRes.error, 400)
       }
 
       if (!role || typeof role !== 'string') {
@@ -137,7 +153,7 @@ export function createMockServer({ routingProvider = null } = {}) {
         throw new ApiError('INVALID_ROLE', 'Valid role selection (customer or runner) is required.', 400)
       }
 
-      const existing = db.users.find((u) => u.email.toLowerCase() === email.trim().toLowerCase())
+      const existing = db.users.find((u) => u.email.toLowerCase() === emailRes.normalized)
       if (existing) {
         throw new ApiError('DUPLICATE_EMAIL', 'An account with this email already exists. Please log in instead.', 409)
       }
@@ -147,9 +163,9 @@ export function createMockServer({ routingProvider = null } = {}) {
       const runnerStatus = isRunner ? 'applicant' : null
       const newUser = {
         id,
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        phone: phone && typeof phone === 'string' ? phone.trim() : null,
+        name: nameRes.value,
+        email: emailRes.normalized,
+        phone: phoneRes.normalized || null,
         roles: [ROLES.CUSTOMER],
         runnerStatus,
         defaultLocationId: null,
@@ -349,6 +365,33 @@ export function createMockServer({ routingProvider = null } = {}) {
         throw new ApiError('EMPTY_CART', 'Your cart is empty.', 422)
       }
 
+      let sanitizedCustomerDetails = null
+      if (customerDetails && typeof customerDetails === 'object') {
+        const { fullName, name, phoneNumber, mobileNumber, phone, customLocation, deliveryInstructions, instructions } = customerDetails
+        const recipientName = fullName || name
+        if (recipientName !== undefined && recipientName !== null && String(recipientName).trim() !== '') {
+          const nameRes = validateName(recipientName, { required: false, minLength: 2, maxLength: 120, label: 'Recipient name' })
+          if (!nameRes.isValid) {
+            throw new ApiError('INVALID_CUSTOMER_NAME', nameRes.error, 400)
+          }
+        }
+        const rawPhone = phoneNumber || mobileNumber || phone
+        if (rawPhone !== undefined && rawPhone !== null && String(rawPhone).trim() !== '') {
+          const phoneRes = validateIndianPhone(rawPhone, { required: false, label: 'Delivery phone number' })
+          if (!phoneRes.isValid) {
+            throw new ApiError('INVALID_CUSTOMER_PHONE', phoneRes.error, 400)
+          }
+        }
+        if (customLocation && typeof customLocation === 'string' && customLocation.length > 200) {
+          throw new ApiError('INVALID_LOCATION_DETAILS', 'Custom delivery destination cannot exceed 200 characters.', 400)
+        }
+        const notes = deliveryInstructions || instructions
+        if (notes && typeof notes === 'string' && notes.length > 500) {
+          throw new ApiError('INVALID_DELIVERY_NOTES', 'Delivery instructions cannot exceed 500 characters.', 400)
+        }
+        sanitizedCustomerDetails = customerDetails
+      }
+
       const pricedLines = lines.map(({ productId, quantity }) => {
         const product = db.products.find((p) => p.id === productId && p.storeId === storeId)
         if (!product) throw new ApiError('PRODUCT_UNAVAILABLE', 'An item in your cart is no longer available.', 409, { productId })
@@ -382,7 +425,7 @@ export function createMockServer({ routingProvider = null } = {}) {
           storeId,
           locationId,
           lines: pricedLines,
-          customerDetails: customerDetails || null,
+          customerDetails: sanitizedCustomerDetails || null,
           pricing: {
             itemSubtotal: totals.itemSubtotal,
             deliveryFee: totals.deliveryFee,
