@@ -209,6 +209,7 @@ export function DeliveryDetailsForm({
               icon={User}
               placeholder="e.g. Aarav Patel"
               autoComplete="name"
+              maxLength={120}
               value={details.fullName || ''}
               onChange={(e) => onChange('fullName', e.target.value)}
               disabled={disabled}
@@ -228,6 +229,8 @@ export function DeliveryDetailsForm({
               data-testid="checkout-phone-number"
               name="mobileNumber"
               type="tel"
+              inputMode="tel"
+              maxLength={16}
               icon={Phone}
               placeholder="e.g. 9876543210"
               autoComplete="tel"
@@ -461,6 +464,7 @@ export function DeliveryDetailsForm({
               name="customLocation"
               type="text"
               icon={Building}
+              maxLength={200}
               placeholder="e.g. Science Block, Old Workshop, Mechanical Dept"
               value={details.customLocation || ''}
               onChange={(e) => onChange('customLocation', e.target.value)}
@@ -482,6 +486,7 @@ export function DeliveryDetailsForm({
             name="deliveryInstructions"
             type="text"
             icon={Compass}
+            maxLength={500}
             placeholder="e.g. Hostel 3, 2nd floor, Room 204, near the entrance"
             value={details.deliveryInstructions || ''}
             onChange={(e) => onChange('deliveryInstructions', e.target.value)}

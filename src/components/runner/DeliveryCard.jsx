@@ -741,10 +741,11 @@ export function DeliveryCard({ order, onAction, isOnline = true, currentRunnerId
                 id={`delay-note-${order.id}`}
                 data-testid={`delay-note-input-${order.id}`}
                 value={delayNote}
+                maxLength={250}
                 onChange={(e) => setDelayNote(e.target.value)}
                 rows={3}
                 placeholder="e.g. Waiting at hostel gate, caller dialed twice..."
-                className="w-full rounded-tile border border-line bg-surface p-2.5 text-xs text-ink focus:border-brand focus:outline-none"
+                className="w-full rounded-tile border border-line bg-surface p-2.5 text-xs text-ink focus:border-brand focus:outline-none min-w-0"
               />
             </div>
           </div>

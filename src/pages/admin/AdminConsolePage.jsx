@@ -544,6 +544,7 @@ export default function AdminConsolePage({ initialTab = 'people' } = {}) {
                 placeholder="Search by name or email..."
                 icon={Search}
                 size="sm"
+                maxLength={100}
               />
             </div>
           </div>
@@ -825,6 +826,7 @@ export default function AdminConsolePage({ initialTab = 'people' } = {}) {
                   placeholder="Order ID, Customer, Phone..."
                   icon={Search}
                   size="sm"
+                  maxLength={100}
                 />
               </div>
             </div>
@@ -1284,6 +1286,7 @@ export default function AdminConsolePage({ initialTab = 'people' } = {}) {
                     placeholder="Search product, pack, category..."
                     icon={Search}
                     size="sm"
+                    maxLength={100}
                     data-testid="product-search-input"
                   />
                 </div>
