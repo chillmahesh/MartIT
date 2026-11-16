@@ -423,7 +423,21 @@ describe('Theme Transition System — Sun to Moon Animated Eclipse', () => {
       expect(html).toContain('data-direction="to-dark"')
       expect(html).toContain('id="lightToDarkGroup"')
       expect(html).toContain('id="sunRays"')
+      expect(html).toContain('filter="url(#martitWarmGlow)"')
+      expect(html).toContain('filterUnits="userSpaceOnUse"')
       expect(html).toContain('id="martitSunGlow"')
+
+      // Verify all 4 cardinal spokes are present
+      expect(html).toContain('x1="50" y1="24" x2="50" y2="10"') // 12 o'clock
+      expect(html).toContain('x1="76" y1="50" x2="90" y2="50"') // 3 o'clock
+      expect(html).toContain('x1="50" y1="76" x2="50" y2="90"') // 6 o'clock
+      expect(html).toContain('x1="24" y1="50" x2="10" y2="50"') // 9 o'clock
+
+      // Verify all 4 diagonal spokes are present
+      expect(html).toContain('x1="68.38" y1="31.62" x2="78.28" y2="21.72"') // 1:30
+      expect(html).toContain('x1="68.38" y1="68.38" x2="78.28" y2="78.28"') // 4:30
+      expect(html).toContain('x1="31.62" y1="68.38" x2="21.72" y2="78.28"') // 7:30
+      expect(html).toContain('x1="31.62" y1="31.62" x2="21.72" y2="21.72"') // 10:30
     })
 
     it('renders full-screen overlay with moon disk and sun sweep clipPath in to-light mode', () => {

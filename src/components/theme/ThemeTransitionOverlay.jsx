@@ -236,7 +236,7 @@ export function ThemeTransitionOverlay({
             </radialGradient>
 
             {/* Restrained subtle glow filter */}
-            <filter id="martitWarmGlow" x="-30%" y="-30%" width="160%" height="160%">
+            <filter id="martitWarmGlow" x="-20%" y="-20%" width="140%" height="140%" filterUnits="userSpaceOnUse">
               <feGaussianBlur in="SourceGraphic" stdDeviation="1.0" result="blur" />
               <feMerge>
                 <feMergeNode in="blur" />
@@ -259,7 +259,7 @@ export function ThemeTransitionOverlay({
               <circle cx="50" cy="50" r="23" fill="url(#martitSunGlow)" />
 
               {/* Sun Rays: 8 spokes extinguish sequentially as sweep passes their angle */}
-              <g id="sunRays">
+              <g id="sunRays" filter="url(#martitWarmGlow)">
                 {SUN_RAYS.map((ray) => {
                   let rayOpacity = 1
                   if (ray.deg === 0) {
@@ -281,7 +281,6 @@ export function ThemeTransitionOverlay({
                       strokeWidth="3.6"
                       strokeLinecap="round"
                       opacity={rayOpacity}
-                      filter="url(#martitWarmGlow)"
                       style={{ opacity: rayOpacity }}
                     />
                   )
@@ -354,19 +353,20 @@ export function ThemeTransitionOverlay({
                 <circle cx="50" cy="50" r="23" fill="url(#martitSunGlow)" />
 
                 {/* All 8 glowing rays */}
-                {SUN_RAYS.map((ray) => (
-                  <line
-                    key={ray.deg}
-                    x1={ray.x1}
-                    y1={ray.y1}
-                    x2={ray.x2}
-                    y2={ray.y2}
-                    stroke="#FEF08A"
-                    strokeWidth="3.6"
-                    strokeLinecap="round"
-                    filter="url(#martitWarmGlow)"
-                  />
-                ))}
+                <g id="sunRaysDarkToLight" filter="url(#martitWarmGlow)">
+                  {SUN_RAYS.map((ray) => (
+                    <line
+                      key={ray.deg}
+                      x1={ray.x1}
+                      y1={ray.y1}
+                      x2={ray.x2}
+                      y2={ray.y2}
+                      stroke="#FEF08A"
+                      strokeWidth="3.6"
+                      strokeLinecap="round"
+                    />
+                  ))}
+                </g>
 
                 {/* Sun Central Body */}
                 <circle

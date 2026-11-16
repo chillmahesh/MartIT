@@ -542,6 +542,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
        - Full-screen overlay markup in both directions.
   6. Spokes & Speed Refinements:
      - Completely redesigned and rewrote the sun spokes so that all 8 spokes (12:00, 1:30, 3:00, 4:30, 6:00, 7:30, 9:00, 10:30) are bold, crisp, and prominent.
+     - Resolved SVG filter zero-dimension bounding-box collapse bug: vertical lines (`x1 === x2`, width 0) and horizontal lines (`y1 === y2`, height 0) were previously hidden by browsers when `filterUnits="objectBoundingBox"` was evaluated per line. Fixed by specifying `filterUnits="userSpaceOnUse"` and applying `filter="url(#martitWarmGlow)"` to the parent `<g id="sunRays">` container.
      - Spoke length extended to a uniform 14.0 units (inner radius 26.0, outer radius 40.0, strokeWidth 3.6 with rounded caps).
      - Sun circular body calibrated to radius 19.0 (strokeWidth 3.2, outer edge 20.6), providing a clean 5.4-unit visual margin with guaranteed zero collision.
      - Calibrated subtle glow filter (`stdDeviation="1.0"`) and radial aura (`r="23"`) so diagonal rays are never washed out or blurred into background haze.
@@ -630,6 +631,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
        - Full-screen overlay markup in both directions.
   6. Spokes & Speed Refinements:
      - Completely redesigned and rewrote the sun spokes so that all 8 spokes (12:00, 1:30, 3:00, 4:30, 6:00, 7:30, 9:00, 10:30) are bold, crisp, and prominent.
+     - Resolved SVG filter zero-dimension bounding-box collapse bug: vertical lines (`x1 === x2`, width 0) and horizontal lines (`y1 === y2`, height 0) were previously hidden by browsers when `filterUnits="objectBoundingBox"` was evaluated per line. Fixed by specifying `filterUnits="userSpaceOnUse"` and applying `filter="url(#martitWarmGlow)"` to the parent `<g id="sunRays">` container.
      - Spoke length extended to a uniform 14.0 units (inner radius 26.0, outer radius 40.0, strokeWidth 3.6 with rounded caps).
      - Sun circular body calibrated to radius 19.0 (strokeWidth 3.2, outer edge 20.6), providing a clean 5.4-unit visual margin with guaranteed zero collision.
      - Calibrated subtle glow filter (`stdDeviation="1.0"`) and radial aura (`r="23"`) so diagonal rays are never washed out or blurred into background haze.
