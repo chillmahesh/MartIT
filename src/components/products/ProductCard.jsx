@@ -1,11 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { m } from 'motion/react'
-import { Minus, Plus, ShoppingBasket, AlertTriangle } from 'lucide-react'
+import { Minus, Plus, ShoppingBasket } from 'lucide-react'
 import { Price } from '@/components/ui/Price'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
-import { Dialog, DialogContent } from '@/components/ui/Dialog'
-import { useCartStore, selectCartStoreId } from '@/stores/cartStore'
+import { useCartStore } from '@/stores/cartStore'
 import { useStores } from '@/hooks/useCatalogue'
 import { ITEM_ILLUSTRATIONS } from '@/components/marketing/Illustrations'
 import { SAMPLE_CATEGORIES } from '@/mocks/categories'
@@ -21,16 +20,11 @@ export function ProductCard({ product, className }) {
   const { id, name, pack, price, mrp, stock, art, categoryId, storeId } = product
   const quantity = useCartStore((s) => s.lines.find((l) => l.productId === id)?.quantity ?? 0)
   const setQuantity = useCartStore((s) => s.setQuantity)
-  const replaceCart = useCartStore((s) => s.replaceCart)
-  const cartStoreId = useCartStore(selectCartStoreId)
-  const cartLines = useCartStore((s) => s.lines)
 
   const { data: stores = [] } = useStores()
   const productStore = stores.find((s) => s.id === storeId) || SAMPLE_STORES.find((s) => s.id === storeId)
   const storeName = productStore?.name?.replace(/\s*\(sample store\)/i, '') || ''
   const isStoreClosed = productStore ? !productStore.isOpen : false
-
-  const [showSwitchStoreDialog, setShowSwitchStoreDialog] = useState(false)
 
   const isOutOfStock = typeof stock === 'number' && stock <= 0
   const isLowStock = typeof stock === 'number' && stock > 0 && stock <= 5
@@ -40,43 +34,24 @@ export function ProductCard({ product, className }) {
     return SAMPLE_CATEGORIES.find((c) => c.id === categoryId)
   }, [categoryId])
 
-  const currentStoreName =
-    stores.find((s) => s.id === cartStoreId)?.name ||
-    SAMPLE_STORES.find((s) => s.id === cartStoreId)?.name ||
-    'another store'
-  const newStoreName = productStore?.name || 'this store'
-
   const Art = (art && ITEM_ILLUSTRATIONS[art]) || (category?.art && ITEM_ILLUSTRATIONS[category.art]) || null
   const tint = category?.tint || '#dbeafe'
 
   const handleAdd = (e) => {
     e.stopPropagation()
     if (isOutOfStock || isStoreClosed) return
-    if (cartStoreId && storeId && cartStoreId !== storeId && cartLines.length > 0) {
-      setShowSwitchStoreDialog(true)
-      return
-    }
     setQuantity(id, 1, storeId)
   }
 
   const handleIncrement = (e) => {
     e.stopPropagation()
     if (isMaxQuantity || isStoreClosed) return
-    if (cartStoreId && storeId && cartStoreId !== storeId && cartLines.length > 0) {
-      setShowSwitchStoreDialog(true)
-      return
-    }
     setQuantity(id, quantity + 1, storeId)
   }
 
   const handleDecrement = (e) => {
     e.stopPropagation()
     setQuantity(id, Math.max(0, quantity - 1), storeId)
-  }
-
-  const handleConfirmStoreSwitch = () => {
-    replaceCart(id, 1, storeId)
-    setShowSwitchStoreDialog(false)
   }
 
   return (
@@ -210,40 +185,6 @@ export function ProductCard({ product, className }) {
           )}
         </div>
       </div>
-
-      {/* Switch Store Confirmation Dialog */}
-      <Dialog open={showSwitchStoreDialog} onOpenChange={setShowSwitchStoreDialog}>
-        <DialogContent
-          title="Start a new cart?"
-          description="Your cart can only contain items from one store at a time."
-        >
-          <div className="space-y-4">
-            <div className="flex items-start gap-3 rounded-card bg-amber-500/10 border border-amber-500/30 p-3 text-sm text-ink">
-              <AlertTriangle className="size-5 shrink-0 text-amber-500 mt-0.5" aria-hidden="true" />
-              <p>
-                Your cart currently contains items from <strong>{currentStoreName}</strong>. Adding items from <strong>{newStoreName}</strong> will clear your current cart.
-              </p>
-            </div>
-
-            <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 pt-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => setShowSwitchStoreDialog(false)}
-              >
-                Keep current cart
-              </Button>
-              <Button
-                variant="primary"
-                size="sm"
-                onClick={handleConfirmStoreSwitch}
-              >
-                Clear cart & add item
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

@@ -7,6 +7,7 @@ import { CustomCursor } from '@/components/layout/CustomCursor'
 import { useAuthStore } from '@/stores/authStore'
 import { authService } from '@/services/authService'
 import { toast } from '@/components/ui/Toaster'
+import { MultiStoreWarningModal } from '@/components/cart/MultiStoreWarningModal'
 import { targetPathForAuthed } from '@/app/RouteGuards'
 import { whenIdle } from '@/utils/idle'
 
@@ -95,6 +96,7 @@ export function Providers({ children }) {
         <SmoothScroll>
           <SessionCheck />
           {children}
+          <MultiStoreWarningModal />
           <DeferredToaster />
           <CustomCursor />
         </SmoothScroll>

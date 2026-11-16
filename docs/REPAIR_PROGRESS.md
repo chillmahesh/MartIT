@@ -33,9 +33,9 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M9 | Staging Acceptance Plan & Operational Verification | VERIFIED | Commit f4d0da7; docs/STAGING_ACCEPTANCE_PLAN.md created, OTP restart resilience verified, 630 passed tests, clean build | Operator execution of live staging acceptance checklist & deployment |
 | M10 | Final Product Plan execution & verification | VERIFIED | Commit cb2b871; docs/FINAL_PRODUCT_PLAN.md executed, README.md updated, 630 tests passed, build verified | Operator live staging acceptance on external infrastructure |
 | M11 | Form validation, input constraints & responsive UX fix | VERIFIED | Commits c57477e, ab9e24c, 09e1eb4; Complete client/server input validation, 10-digit Indian phone constraints, RFC email normalization, Unicode names, checkout/admin/runner bounds, 41 test files (730 passed, 1 skipped) | Complete |
-| M12.1 | Multi-store pricing & surcharge configuration | VERIFIED | In progress commit; MULTI_STORE_SURCHARGE, calculateAdditionalStoreSurcharge, calculateDeliveryFee breakdown, 42 deliveryFee tests passed | Proceed to M12.2 |
-| M12.2 | Multi-store cart store & customer warning UI | IN_PROGRESS | Cart state refactor, distinct store grouping, persistent indicator & first-add warning modal | In progress |
-| M12.3 | Multi-store server & mock order creation | NOT_STARTED | Authoritative backend multi-store product lookup, atomic order creation, fulfillment groups | Pending |
+| M12.1 | Multi-store pricing & surcharge configuration | VERIFIED | Commit eaa729b; MULTI_STORE_SURCHARGE, calculateAdditionalStoreSurcharge, calculateDeliveryFee breakdown, 42 deliveryFee tests passed | Complete; proceed to M12.2 |
+| M12.2 | Multi-store cart store & customer warning UI | VERIFIED | In progress commit; Cart lines storeId tracking, multi-store transition detection, first-add warning modal, CartPage store grouping, persistent indicator & 117 customer/product tests passed | Proceed to M12.3 |
+| M12.3 | Multi-store server & mock order creation | IN_PROGRESS | Authoritative backend multi-store product lookup, atomic order creation, fulfillment groups | In progress |
 | M12.4 | Combined payment & multi-store runner tracking | NOT_STARTED | Single payment flow, multi-store pickup sequence & completion | Pending |
 
 ## Milestone Evidence & Audit Trails
@@ -393,3 +393,31 @@ This is the durable execution ledger. Update it throughout implementation. Never
 - **Verification Commands & Evidence:**
   - `npx vitest run src/utils/__tests__/deliveryFee.test.js`: 42 tests passed, exit code 0.
   - `npx vitest run src/utils/__tests__/ src/pages/customer/__tests__/flatDeliveryFeePolicy.test.jsx`: 7 test files, 124 passed, exit code 0.
+
+### M12.2 — Multi-Store Cart Store & Customer Warning UI
+- **Date / Session:** 2026-11-16
+- **Changes Implemented:**
+  1. `src/stores/cartStore.js`:
+     - Extended cart line items to retain store identity: `{ productId, quantity, storeId }`.
+     - Preserved backward compatibility for older persisted single-store carts via fallback store ID extraction and product catalogue lookup.
+     - Implemented single-store to multi-store transition detection: triggers `showMultiStoreWarning: true` and initializes `warningDismissed: false` on the first multi-store addition.
+     - Automatically resets `warningDismissed` if cart store count drops back to $\le 1$ store, ensuring subsequent multi-store transitions re-trigger notice.
+     - Added selectors: `selectDistinctStoreIds`, `selectIsMultiStore`, `selectMultiStoreCount`, and `selectCartLinesByStore`.
+  2. `src/components/products/ProductCard.jsx`:
+     - Removed restrictive single-store switch dialog and cart-clearing behavior. Customers can add items from different stores directly.
+  3. `src/components/cart/MultiStoreWarningModal.jsx`:
+     - Created accessible modal dialog using Radix UI describing multi-store surcharges, separate runner pickups, delivery fee combination, and single payment attempt.
+     - Mounted inside `src/app/providers.jsx` to be active across all customer shopping views.
+  4. `src/pages/customer/CartPage.jsx`:
+     - Added distinct store grouping: groups cart items by store with individual store headers and item subtotals.
+     - Added persistent multi-store indicator banner displaying distinct store count, campus store names, and additional surcharge summary.
+     - Rendered granular delivery fee breakdown in the order summary (Base Delivery Fee + Additional Store Surcharge = Total Delivery Fee).
+     - Passed `storeIds` array and per-line `storeId`s to `orderService.create`.
+  5. Tests:
+     - Created `src/pages/customer/__tests__/multiStoreCart.test.jsx` (5 tests covering store transitions, warning triggers, pricing helpers, and grouped cart UI).
+     - Updated `src/components/products/__tests__/catalogue.test.js` and `src/pages/customer/__tests__/checkoutFlow.test.js` to assert `{ productId, quantity, storeId }` lines.
+- **Verification Commands & Evidence:**
+  - `npx vitest run src/pages/customer/__tests__/multiStoreCart.test.jsx`: 5 tests passed, exit code 0.
+  - `npx vitest run src/components/products/__tests__/catalogue.test.js`: 21 tests passed, exit code 0.
+  - `npx vitest run src/pages/customer/__tests__/checkoutFlow.test.js`: 22 tests passed, exit code 0.
+  - `npx vitest run src/components/products/__tests__/ src/pages/customer/__tests__/`: 8 test files, 117 tests passed, exit code 0.

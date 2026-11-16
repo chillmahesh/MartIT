@@ -13,7 +13,14 @@ import {
   Trash2,
 } from 'lucide-react'
 import { useAuthStore } from '@/stores/authStore'
-import { useCartStore, selectCartStoreId, selectCartCount } from '@/stores/cartStore'
+import {
+  useCartStore,
+  selectCartStoreId,
+  selectCartCount,
+  selectDistinctStoreIds,
+  selectIsMultiStore,
+  selectMultiStoreCount,
+} from '@/stores/cartStore'
 import { useStores, useProducts } from '@/hooks/useCatalogue'
 import { useLocations } from '@/hooks/useLocations'
 import { useDeliveryQuote } from '@/hooks/useDeliveryQuote'
@@ -28,12 +35,17 @@ import {
 } from '@/utils/checkoutValidation'
 import { Button } from '@/components/ui/Button'
 import { Price } from '@/components/ui/Price'
+import { Badge } from '@/components/ui/Badge'
 import { formatINR } from '@/utils/currency'
 import { formatDistanceKm } from '@/utils/distance'
+import { calculateAdditionalStoreSurcharge } from '@/utils/deliveryFee'
 import { SAMPLE_PRODUCTS } from '@/mocks/catalogue'
+import { SAMPLE_STORES } from '@/mocks/campus'
 import {
   FLAT_DELIVERY_FEE,
   FLAT_DELIVERY_FEE_LABEL,
+  MULTI_STORE_SURCHARGE,
+  MULTI_STORE_SURCHARGE_LABEL,
   PRICING_VERSION,
 } from '@/config/fees'
 
@@ -53,9 +65,34 @@ export default function CartPage() {
 
   // Stores & Products
   const { data: stores = [], isLoading: isLoadingStores } = useStores()
-  const effectiveStoreId = cartStoreId || stores[0]?.id || 'store_campus_mart'
+  const distinctStoreIds = useCartStore(selectDistinctStoreIds)
+  const isMultiStore = distinctStoreIds.length > 1
+  const storeCount = distinctStoreIds.length
+  const effectiveStoreId = cartStoreId || distinctStoreIds[0] || stores[0]?.id || 'store_campus_mart'
   const store = stores.find((s) => s.id === effectiveStoreId) || stores[0]
+
+  // Multi-store resolution & closed-store checks
+  const cartStores = useMemo(() => {
+    return distinctStoreIds.map((sid) => {
+      return (
+        stores.find((s) => s.id === sid) ||
+        SAMPLE_STORES.find((s) => s.id === sid) ||
+        { id: sid, name: 'Campus Store', isOpen: true }
+      )
+    })
+  }, [distinctStoreIds, stores])
+
+  const closedStores = useMemo(() => {
+    return cartStores.filter((s) => !s.isOpen)
+  }, [cartStores])
+
+  const anyStoreClosed = closedStores.length > 0
   const isStoreClosed = store ? !store.isOpen : false
+
+  // Surcharge for extra distinct stores: A = max(0, N - 1) * S
+  const additionalStoreSurcharge = useMemo(() => {
+    return calculateAdditionalStoreSurcharge(storeCount, MULTI_STORE_SURCHARGE)
+  }, [storeCount])
 
   const { data: products = SAMPLE_PRODUCTS, isLoading: isLoadingProducts } = useProducts()
   const { data: locations = [] } = useLocations()
@@ -120,6 +157,37 @@ export default function CartPage() {
     }, 0)
   }, [cartItemsWithProduct])
 
+  // Group cart lines by store for multi-store layout
+  const cartItemsByStore = useMemo(() => {
+    const map = new Map()
+    for (const sid of distinctStoreIds) {
+      const storeObj =
+        stores.find((s) => s.id === sid) ||
+        SAMPLE_STORES.find((s) => s.id === sid) ||
+        { id: sid, name: 'Campus Store', isOpen: true }
+      map.set(sid, {
+        store: storeObj,
+        items: [],
+        subtotal: 0,
+      })
+    }
+    for (const item of cartItemsWithProduct) {
+      const itemStoreId = item.line.storeId || item.product?.storeId || effectiveStoreId
+      let group = map.get(itemStoreId)
+      if (!group) {
+        const storeObj =
+          stores.find((s) => s.id === itemStoreId) ||
+          SAMPLE_STORES.find((s) => s.id === itemStoreId) ||
+          { id: itemStoreId, name: 'Campus Store', isOpen: true }
+        group = { store: storeObj, items: [], subtotal: 0 }
+        map.set(itemStoreId, group)
+      }
+      group.items.push(item)
+      group.subtotal += (item.product?.price ?? 0) * item.line.quantity
+    }
+    return Array.from(map.values())
+  }, [distinctStoreIds, cartItemsWithProduct, effectiveStoreId, stores])
+
   const isOutOfDeliveryArea =
     isQuoteError &&
     (quoteError?.code === 'OUT_OF_SERVICE_AREA' || quoteError?.code === 'MAX_DISTANCE_EXCEEDED')
@@ -128,12 +196,14 @@ export default function CartPage() {
     isQuoteError &&
     (quoteError?.code === 'INVALID_COORDINATES' || quoteError?.code === 'INVALID_DISTANCE')
 
-  // Estimated base amount before checkout platform fee (Flat ₹10 delivery policy)
+  // Estimated base amount before checkout platform fee (Flat ₹10 delivery policy + additional store surcharge)
+  const isBlocked = isOutOfDeliveryArea || isLocationNotFound || isCoordinateError
+  const baseDeliveryFee = (selectedLocationId && !isBlocked) ? (quote?.deliveryFee ?? FLAT_DELIVERY_FEE) : 0
+  const totalDeliveryFee = (selectedLocationId && !isBlocked) ? (baseDeliveryFee + additionalStoreSurcharge) : 0
+
   const estimatedBaseAmount = useMemo(() => {
-    const isBlocked = isOutOfDeliveryArea || isLocationNotFound || isCoordinateError
-    const deliveryFee = (selectedLocationId && !isBlocked) ? (quote?.deliveryFee ?? FLAT_DELIVERY_FEE) : 0
-    return Math.round(itemSubtotal + deliveryFee)
-  }, [itemSubtotal, quote?.deliveryFee, selectedLocationId, isOutOfDeliveryArea, isLocationNotFound, isCoordinateError])
+    return Math.round(itemSubtotal + totalDeliveryFee)
+  }, [itemSubtotal, totalDeliveryFee])
 
   // Validation checks
   const hasUnavailableItems = cartItemsWithProduct.some(({ product }) => !product)
@@ -143,7 +213,7 @@ export default function CartPage() {
 
   const canSubmitOrder =
     lines.length > 0 &&
-    !isStoreClosed &&
+    !anyStoreClosed &&
     Boolean(selectedLocationId) &&
     !isOutOfDeliveryArea &&
     !isLocationNotFound &&
@@ -154,12 +224,14 @@ export default function CartPage() {
 
   const handleUpdateQuantity = (productId, newQuantity) => {
     setSubmissionError(null)
-    setQuantity(productId, newQuantity, effectiveStoreId)
+    const existingLine = lines.find((l) => l.productId === productId)
+    setQuantity(productId, newQuantity, existingLine?.storeId || effectiveStoreId)
   }
 
   const handleRemoveItem = (productId) => {
     setSubmissionError(null)
-    setQuantity(productId, 0, effectiveStoreId)
+    const existingLine = lines.find((l) => l.productId === productId)
+    setQuantity(productId, 0, existingLine?.storeId || effectiveStoreId)
   }
 
   const handleClearCart = () => {
@@ -225,8 +297,13 @@ export default function CartPage() {
 
       const orderPayload = {
         storeId: effectiveStoreId,
+        storeIds: distinctStoreIds,
         locationId: selectedLocationId,
-        lines: lines.map((l) => ({ productId: l.productId, quantity: l.quantity })),
+        lines: lines.map((l) => ({
+          productId: l.productId,
+          quantity: l.quantity,
+          storeId: l.storeId || effectiveStoreId,
+        })),
         customerDetails: validation.data,
       }
 
@@ -314,8 +391,12 @@ export default function CartPage() {
               Your Cart
             </h1>
             <p className="text-xs sm:text-sm text-ink-subtle">
-              {cartCount} item{cartCount === 1 ? '' : 's'} from{' '}
-              <strong className="text-ink font-semibold">{store ? store.name : 'Store'}</strong>
+              {cartCount} item{cartCount === 1 ? '' : 's'}
+              {isMultiStore ? (
+                <span> across <strong className="text-ink font-semibold">{storeCount} campus stores</strong></span>
+              ) : (
+                <span> from <strong className="text-ink font-semibold">{store ? store.name : 'Store'}</strong></span>
+              )}
             </p>
           </div>
         </div>
@@ -332,16 +413,35 @@ export default function CartPage() {
         </button>
       </div>
 
+      {/* Multi-Store Persistent Indicator Banner */}
+      {isMultiStore && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-card border border-brand/30 bg-brand-soft/40 p-4 text-ink">
+          <div className="flex items-start gap-3">
+            <Store className="size-5 shrink-0 text-brand mt-0.5" aria-hidden="true" />
+            <div className="text-sm">
+              <div className="flex items-center gap-2">
+                <strong className="font-semibold text-ink">{`Multi-Store Order (${storeCount} Stores)`}</strong>
+                <Badge variant="brand" size="xs">Combined Delivery</Badge>
+              </div>
+              <p className="text-ink-muted text-xs mt-0.5">
+                Items will be collected from {cartStores.map((s) => s.name?.replace(/\s*\(sample store\)/i, '')).join(', ')}.
+                {additionalStoreSurcharge > 0 && ` An additional surcharge of ${formatINR(additionalStoreSurcharge)} is included.`}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Store Closed Warning */}
-      {isStoreClosed && (
+      {anyStoreClosed && (
         <div className="flex items-start gap-3 rounded-card border border-amber-500/40 bg-amber-500/10 p-4 text-ink">
           <Clock className="size-5 shrink-0 text-amber-500 mt-0.5" aria-hidden="true" />
           <div className="text-sm">
             <strong className="font-semibold text-ink">
-              {store ? store.name : 'This store'} is closed right now.
+              {closedStores.map((s) => s.name?.replace(/\s*\(sample store\)/i, '')).join(', ')} {closedStores.length === 1 ? 'is' : 'are'} closed right now.
             </strong>
             <p className="text-ink-muted text-xs mt-0.5">
-              You can review or adjust your items, but orders cannot be placed until the store re-opens.
+              You can review or adjust your items, but orders cannot be placed until all stores in your cart re-open.
             </p>
           </div>
         </div>
@@ -363,23 +463,59 @@ export default function CartPage() {
         {/* Left: Cart Product Lines & Delivery Location */}
         <div className="lg:col-span-7 space-y-6">
           {/* Product Lines Section */}
-          <section aria-label="Cart items" className="space-y-3">
-            <h2 className="text-xs font-bold uppercase tracking-wider text-ink-subtle">
-              Items from {store ? store.name : 'Store'}
-            </h2>
+          <section aria-label="Cart items" className="space-y-4">
+            {isMultiStore ? (
+              cartItemsByStore.map((group) => (
+                <div key={group.store.id} className="rounded-card border border-line bg-surface p-4 sm:p-5 shadow-1 space-y-3">
+                  <div className="flex items-center justify-between border-b border-line/60 pb-2.5">
+                    <div className="flex items-center gap-2">
+                      <Store className="size-4 text-brand shrink-0" aria-hidden="true" />
+                      <h2 className="text-sm font-bold text-ink">
+                        {group.store.name?.replace(/\s*\(sample store\)/i, '')}
+                      </h2>
+                      {!group.store.isOpen && (
+                        <Badge variant="danger" size="xs">Closed</Badge>
+                      )}
+                    </div>
+                    <span className="text-xs font-semibold text-ink-muted">
+                      {group.items.length} item{group.items.length === 1 ? '' : 's'} • {formatINR(group.subtotal)}
+                    </span>
+                  </div>
 
-            <div className="space-y-2.5">
-              {cartItemsWithProduct.map(({ line, product }) => (
-                <CartLineItem
-                  key={line.productId}
-                  line={line}
-                  product={product}
-                  onUpdateQuantity={handleUpdateQuantity}
-                  onRemove={handleRemoveItem}
-                  disabled={isSubmitting}
-                />
-              ))}
-            </div>
+                  <div className="space-y-2.5">
+                    {group.items.map(({ line, product }) => (
+                      <CartLineItem
+                        key={line.productId}
+                        line={line}
+                        product={product}
+                        onUpdateQuantity={handleUpdateQuantity}
+                        onRemove={handleRemoveItem}
+                        disabled={isSubmitting}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="space-y-3">
+                <h2 className="text-xs font-bold uppercase tracking-wider text-ink-subtle">
+                  Items from {store ? store.name : 'Store'}
+                </h2>
+
+                <div className="space-y-2.5">
+                  {cartItemsWithProduct.map(({ line, product }) => (
+                    <CartLineItem
+                      key={line.productId}
+                      line={line}
+                      product={product}
+                      onUpdateQuantity={handleUpdateQuantity}
+                      onRemove={handleRemoveItem}
+                      disabled={isSubmitting}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
 
           {/* Delivery Details Form */}
@@ -465,13 +601,23 @@ export default function CartPage() {
                   </p>
                 </div>
               ) : (
-                <div className="space-y-1 text-ink">
+                <div className="space-y-1.5 text-ink">
                   <div className="flex justify-between items-center">
-                    <span className="text-ink-muted">Delivery Fee:</span>
+                    <span className="text-ink-muted">Base Delivery Fee:</span>
                     <span className="font-semibold tabular text-brand">
-                      {formatINR(quote?.deliveryFee ?? FLAT_DELIVERY_FEE)} (Flat fee)
+                      {formatINR(baseDeliveryFee)} (Flat fee)
                     </span>
                   </div>
+                  {isMultiStore && (
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-ink-muted">
+                        Additional Store Surcharge ({storeCount - 1} extra store{storeCount - 1 > 1 ? 's' : ''}):
+                      </span>
+                      <span className="font-semibold tabular text-ink">
+                        +{formatINR(additionalStoreSurcharge)}
+                      </span>
+                    </div>
+                  )}
                   {quote?.distanceKm ? (
                     <div className="flex justify-between items-center text-ink-subtle">
                       <span className="text-ink-muted">Distance:</span>
@@ -480,7 +626,13 @@ export default function CartPage() {
                       </span>
                     </div>
                   ) : null}
-                  <div className="flex justify-between items-center">
+                  <div className="flex justify-between items-center pt-1 border-t border-line/40">
+                    <span className="font-semibold text-ink">Total Delivery Fee:</span>
+                    <span className="font-bold tabular text-brand">
+                      {formatINR(totalDeliveryFee)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center text-[11px] text-ink-subtle">
                     <span className="text-ink-muted">Policy:</span>
                     <span className="font-medium text-ink-subtle">{quote?.feeLabel || FLAT_DELIVERY_FEE_LABEL}</span>
                   </div>
@@ -498,7 +650,11 @@ export default function CartPage() {
               <div className="flex justify-between text-ink-muted">
                 <div>
                   <span>Delivery Fee</span>
-                  {quote?.distanceKm ? (
+                  {isMultiStore ? (
+                    <span className="text-[11px] text-ink-subtle block">
+                      {`Base ${formatINR(baseDeliveryFee)} + Surcharge ${formatINR(additionalStoreSurcharge)}`}
+                    </span>
+                  ) : quote?.distanceKm ? (
                     <span className="text-[11px] text-ink-subtle block">
                       {`(${formatDistanceKm(quote.distanceKm)} km ${quote.distanceMethod === 'straight_line' ? 'straight-line distance' : 'route distance'})`}
                     </span>
@@ -508,7 +664,7 @@ export default function CartPage() {
                   {isOutOfDeliveryArea
                     ? 'Blocked'
                     : selectedLocationId
-                      ? formatINR(quote?.deliveryFee ?? FLAT_DELIVERY_FEE)
+                      ? formatINR(totalDeliveryFee)
                       : 'Select location'}
                 </span>
               </div>

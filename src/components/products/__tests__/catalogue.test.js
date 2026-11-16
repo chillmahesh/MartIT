@@ -153,7 +153,7 @@ describe('Product-First Cart Operations & Store Identity', () => {
     store.setQuantity('p_nc_maggi', 1, 'store_night_canteen')
 
     const state = useCartStore.getState()
-    expect(state.lines).toEqual([{ productId: 'p_nc_maggi', quantity: 1 }])
+    expect(state.lines).toEqual([{ productId: 'p_nc_maggi', quantity: 1, storeId: 'store_night_canteen' }])
     expect(state.storeId).toBe('store_night_canteen')
     expect(selectCartStoreId(state)).toBe('store_night_canteen')
   })
@@ -178,7 +178,7 @@ describe('Product-First Cart Operations & Store Identity', () => {
 
     const updated = useCartStore.getState()
     expect(updated.storeId).toBe('store_night_canteen')
-    expect(updated.lines).toEqual([{ productId: 'p_nc_soda', quantity: 2 }])
+    expect(updated.lines).toEqual([{ productId: 'p_nc_soda', quantity: 2, storeId: 'store_night_canteen' }])
   })
 })
 
