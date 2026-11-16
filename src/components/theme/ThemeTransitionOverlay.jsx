@@ -1,15 +1,24 @@
 import { useEffect, useRef, useState } from 'react'
 import { useThemeStore } from '@/stores/themeStore'
 
+/**
+ * 8 evenly spaced sun spokes positioned at:
+ * 12 o'clock, 1:30, 3 o'clock, 4:30, 6 o'clock, 7:30, 9 o'clock, 10:30.
+ *
+ * Polar coordinates from center (50, 50):
+ * - Sun outline: radius 20, strokeWidth 3.5 (outer bound ~21.75)
+ * - Spoke inner radius: 30 (clear 8.25 unit margin, ensuring zero collision)
+ * - Spoke outer radius: 39.5 (uniform 9.5 unit spoke length)
+ */
 export const SUN_RAYS = [
-  { deg: 0,   x1: 78,   y1: 50,   x2: 86,   y2: 50 },
-  { deg: 45,  x1: 69.8, y1: 69.8, x2: 75.5, y2: 75.5 },
-  { deg: 90,  x1: 50,   y1: 78,   x2: 50,   y2: 86 },
-  { deg: 135, x1: 30.2, y1: 69.8, x2: 24.5, y2: 75.5 },
-  { deg: 180, x1: 22,   y1: 50,   x2: 14,   y2: 50 },
-  { deg: 225, x1: 30.2, y1: 30.2, x2: 24.5, y2: 24.5 },
-  { deg: 270, x1: 50,   y1: 22,   x2: 50,   y2: 14 },
-  { deg: 315, x1: 69.8, y1: 30.2, x2: 75.5, y2: 24.5 },
+  { label: '3 o\'clock',  deg: 0,   x1: 80,    y1: 50,    x2: 89.5,  y2: 50 },
+  { label: '4:30',        deg: 45,  x1: 71.21, y1: 71.21, x2: 77.93, y2: 77.93 },
+  { label: '6 o\'clock',  deg: 90,  x1: 50,    y1: 80,    x2: 50,    y2: 89.5 },
+  { label: '7:30',        deg: 135, x1: 28.79, y1: 71.21, x2: 22.07, y2: 77.93 },
+  { label: '9 o\'clock',  deg: 180, x1: 20,    y1: 50,    x2: 10.5,  y2: 50 },
+  { label: '10:30',       deg: 225, x1: 28.79, y1: 28.79, x2: 22.07, y2: 22.07 },
+  { label: '12 o\'clock', deg: 270, x1: 50,    y1: 20,    x2: 50,    y2: 10.5 },
+  { label: '1:30',        deg: 315, x1: 71.21, y1: 28.79, x2: 77.93, y2: 22.07 },
 ]
 
 /**
@@ -32,10 +41,11 @@ export function easeInOutCubic(t) {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
 }
 
-const INTRO_MS = 140
-const SWEEP_MS = 680
-const OUTRO_MS = 200
-const TOTAL_MS = INTRO_MS + SWEEP_MS + OUTRO_MS // 1020ms
+// Playback speed scaled to 0.75x (duration multiplied by 1.3333)
+export const INTRO_MS = 187 // 140 * 1.3333
+export const SWEEP_MS = 907 // 680 * 1.3333
+export const OUTRO_MS = 267 // 200 * 1.3333
+export const TOTAL_MS = INTRO_MS + SWEEP_MS + OUTRO_MS // 1361ms (~1.36s)
 
 export function ThemeTransitionOverlay({
   forceActive,
@@ -153,7 +163,7 @@ export function ThemeTransitionOverlay({
         commitTheme(targetTheme)
       }
       finishTransition()
-    }, TOTAL_MS + 250)
+    }, TOTAL_MS + 333)
 
     return () => {
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current)
@@ -177,12 +187,12 @@ export function ThemeTransitionOverlay({
 
   // Leading edge coordinates for the clockwise sweep
   const rad = (sweepAngle * Math.PI) / 180
-  const leadingEdgeRadius = isToDark ? 24.5 : 38
+  const leadingEdgeRadius = isToDark ? 22.5 : 41.5
   const leadingX = +(50 + leadingEdgeRadius * Math.cos(rad)).toFixed(2)
   const leadingY = +(50 + leadingEdgeRadius * Math.sin(rad)).toFixed(2)
 
   // Sector paths
-  const darkMoonCoverSector = getSectorPath(50, 50, 24.5, sweepAngle)
+  const darkMoonCoverSector = getSectorPath(50, 50, 22.5, sweepAngle)
   const sunRevealSector = getSectorPath(50, 50, 48, sweepAngle)
 
   return (
@@ -245,7 +255,7 @@ export function ThemeTransitionOverlay({
             /* ========================================================================= */
             <g id="lightToDarkGroup">
               {/* Sun radial aura */}
-              <circle cx="50" cy="50" r="30" fill="url(#martitSunGlow)" />
+              <circle cx="50" cy="50" r="28" fill="url(#martitSunGlow)" />
 
               {/* Sun Rays: extinguish sequentially as sweep passes their angle */}
               <g id="sunRays">
@@ -280,11 +290,11 @@ export function ThemeTransitionOverlay({
               <circle
                 cx="50"
                 cy="50"
-                r="22"
+                r="20"
                 stroke="#FEF08A"
                 strokeWidth="3.5"
                 fill="#FEF08A"
-                fillOpacity="0.18"
+                fillOpacity="0.16"
                 filter="url(#martitWarmGlow)"
               />
 
@@ -311,10 +321,10 @@ export function ThemeTransitionOverlay({
 
               {/* Totality lunar details (soft craters visible as eclipse completes) */}
               <g opacity={Math.min(1, Math.max(0, (sweepAngle - 280) / 70))}>
-                <circle cx="43" cy="44" r="3.2" fill="#14241b" opacity="0.65" />
-                <circle cx="56" cy="42" r="2.2" fill="#14241b" opacity="0.55" />
-                <circle cx="48" cy="57" r="3.8" fill="#14241b" opacity="0.65" />
-                <circle cx="50" cy="50" r="22" stroke="#223b2d" strokeWidth="1.2" fill="none" />
+                <circle cx="44" cy="45" r="2.8" fill="#14241b" opacity="0.65" />
+                <circle cx="55" cy="44" r="2.0" fill="#14241b" opacity="0.55" />
+                <circle cx="48" cy="55" r="3.2" fill="#14241b" opacity="0.65" />
+                <circle cx="50" cy="50" r="20" stroke="#223b2d" strokeWidth="1.2" fill="none" />
               </g>
             </g>
           ) : (
@@ -326,20 +336,20 @@ export function ThemeTransitionOverlay({
               <circle
                 cx="50"
                 cy="50"
-                r="22"
+                r="20"
                 fill="#0b1410"
                 stroke="#1f3629"
                 strokeWidth="1.6"
               />
               {/* Moon Base Craters */}
-              <circle cx="43" cy="44" r="3.2" fill="#14241b" opacity="0.6" />
-              <circle cx="56" cy="42" r="2.2" fill="#14241b" opacity="0.5" />
-              <circle cx="48" cy="57" r="3.8" fill="#14241b" opacity="0.6" />
+              <circle cx="44" cy="45" r="2.8" fill="#14241b" opacity="0.6" />
+              <circle cx="55" cy="44" r="2.0" fill="#14241b" opacity="0.5" />
+              <circle cx="48" cy="55" r="3.2" fill="#14241b" opacity="0.6" />
 
               {/* Sun Group: revealed through 360-degree sector clipPath starting at 3 o'clock */}
               <g clipPath="url(#sunSweepClip)">
                 {/* Sun radial aura */}
-                <circle cx="50" cy="50" r="30" fill="url(#martitSunGlow)" />
+                <circle cx="50" cy="50" r="28" fill="url(#martitSunGlow)" />
 
                 {/* All 8 glowing rays */}
                 {SUN_RAYS.map((ray) => (
@@ -360,11 +370,11 @@ export function ThemeTransitionOverlay({
                 <circle
                   cx="50"
                   cy="50"
-                  r="22"
+                  r="20"
                   stroke="#FEF08A"
                   strokeWidth="3.5"
                   fill="#FEF08A"
-                  fillOpacity="0.18"
+                  fillOpacity="0.16"
                   filter="url(#martitWarmGlow)"
                 />
               </g>

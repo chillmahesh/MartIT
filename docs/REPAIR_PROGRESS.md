@@ -39,7 +39,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M12.4 | Combined payment & multi-store runner tracking | VERIFIED | Commit ab76194; Single UPI payment view with multi-store fee breakdown, OrderConfirmation multi-store pickup checklist, multi-store runner pickup completion, 42 test files (750 passed) & clean build | Complete |
 | M12.5 | Cart selector stability & React Error #185 fix | VERIFIED | Commit ed8b799; Fixed unstable Zustand selectors with useShallow and memoized store selectors, eliminated infinite re-render loop on /app/cart, 44 test files (770 passed, 1 skipped) | Complete |
 | M12.6 | Authoritative ₹10 multi-store surcharge & pricing consistency | VERIFIED | Commit 7f5c3d9; Authoritative ₹10 surcharge default, fees.js, env.js, server orders.js, OrdersPage, AdminConsole, 48 deliveryFee + 95 orders tests, 44 test files (782 passed, 1 skipped) | Complete |
-| M13 | Animated Sun-to-Moon theme transition | VERIFIED | Commit a94fabd; Clockwise 360° eclipse sweep starting at 3 o'clock, zero-flash veil, reduced-motion bypass, rapid click protection, 45 test files (807 passed) | Complete |
+| M13 | Animated Sun-to-Moon theme transition | VERIFIED | Commit a94fabd; Clockwise 360° eclipse sweep starting at 3 o'clock, 8 evenly spaced spokes, 0.75x speed refinement, 45 test files (809 passed) | Complete |
 
 ## Milestone Evidence & Audit Trails
 
@@ -529,18 +529,24 @@ This is the durable execution ledger. Update it throughout implementation. Never
   4. `src/app/providers.jsx`:
      - Mounted `<ThemeTransitionOverlay />` inside the application's global provider hierarchy.
   5. `src/components/theme/__tests__/themeTransition.test.jsx`:
-     - 25 comprehensive unit and integration tests covering:
+     - 27 comprehensive unit and integration tests covering:
        - 3 o'clock starting position $(cx + r, cy)$ and clockwise 360° sweep geometry.
-       - Ray coordinates and 45-degree interval placement.
+       - 8 evenly spaced spokes at 12 o'clock, 1:30, 3 o'clock, 4:30, 6 o'clock, 7:30, 9 o'clock, 10:30.
+       - Uniform spoke length and zero collision with sun circular outline.
+       - Scaled durations reflecting 0.75x playback speed (1.3333x duration scaling).
        - `easeInOutCubic` monotonicity and bounds.
        - Store state transitions, rapid click protection, totality commit, and finish lifecycle.
        - Reverse `to-light` transition.
        - `prefers-reduced-motion` instant bypass.
        - `ThemeToggle` accessibility attributes (`aria-label`, `disabled`, `aria-busy`).
        - Full-screen overlay markup in both directions.
+  6. Spokes & Speed Refinements:
+     - Updated Sun SVG with 8 evenly spaced spokes at the 8 standard clock positions.
+     - Scaled inner spoke radius to 30 with outer radius 39.5, leaving an 8.25-unit gap from the sun circle to prevent diagonal collision.
+     - Adjusted transition durations by multiplying by 1.3333 (0.75x playback speed): INTRO 187ms, SWEEP 907ms, OUTRO 267ms (TOTAL 1361ms).
 - **Verification Commands & Evidence:**
-  - `npx vitest run src/components/theme/__tests__/themeTransition.test.jsx`: 25 tests passed, exit code 0.
-  - `npm test`: 45 test files, 807 passed, 1 skipped (808 total), exit code 0.
+  - `npx vitest run src/components/theme/__tests__/themeTransition.test.jsx`: 27 tests passed, exit code 0.
+  - `npm test`: 45 test files, 809 passed, 1 skipped (810 total), exit code 0.
   - `npm run test:server`: 17 test files, 380 passed, 1 skipped, exit code 0.
   - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
   - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
@@ -609,18 +615,24 @@ This is the durable execution ledger. Update it throughout implementation. Never
   4. `src/app/providers.jsx`:
      - Mounted `<ThemeTransitionOverlay />` inside the application's global provider hierarchy.
   5. `src/components/theme/__tests__/themeTransition.test.jsx`:
-     - 25 comprehensive unit and integration tests covering:
+     - 27 comprehensive unit and integration tests covering:
        - 3 o'clock starting position $(cx + r, cy)$ and clockwise 360° sweep geometry.
-       - Ray coordinates and 45-degree interval placement.
+       - 8 evenly spaced spokes at 12 o'clock, 1:30, 3 o'clock, 4:30, 6 o'clock, 7:30, 9 o'clock, 10:30.
+       - Uniform spoke length and zero collision with sun circular outline.
+       - Scaled durations reflecting 0.75x playback speed (1.3333x duration scaling).
        - `easeInOutCubic` monotonicity and bounds.
        - Store state transitions, rapid click protection, totality commit, and finish lifecycle.
        - Reverse `to-light` transition.
        - `prefers-reduced-motion` instant bypass.
        - `ThemeToggle` accessibility attributes (`aria-label`, `disabled`, `aria-busy`).
        - Full-screen overlay markup in both directions.
+  6. Spokes & Speed Refinements:
+     - Updated Sun SVG with 8 evenly spaced spokes at the 8 standard clock positions.
+     - Scaled inner spoke radius to 30 with outer radius 39.5, leaving an 8.25-unit gap from the sun circle to prevent diagonal collision.
+     - Adjusted transition durations by multiplying by 1.3333 (0.75x playback speed): INTRO 187ms, SWEEP 907ms, OUTRO 267ms (TOTAL 1361ms).
 - **Verification Commands & Evidence:**
-  - `npx vitest run src/components/theme/__tests__/themeTransition.test.jsx`: 25 tests passed, exit code 0.
-  - `npm test`: 45 test files, 807 passed, 1 skipped (808 total), exit code 0.
+  - `npx vitest run src/components/theme/__tests__/themeTransition.test.jsx`: 27 tests passed, exit code 0.
+  - `npm test`: 45 test files, 809 passed, 1 skipped (810 total), exit code 0.
   - `npm run test:server`: 17 test files, 380 passed, 1 skipped, exit code 0.
   - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
   - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.

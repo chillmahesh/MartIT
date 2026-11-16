@@ -8,6 +8,10 @@ import {
   getSectorPath,
   easeInOutCubic,
   SUN_RAYS,
+  INTRO_MS,
+  SWEEP_MS,
+  OUTRO_MS,
+  TOTAL_MS,
 } from '@/components/theme/ThemeTransitionOverlay'
 import { ThemeToggle } from '@/components/layout/ThemeToggle'
 import { safeStorage } from '@/utils/storage'
@@ -126,51 +130,85 @@ describe('Theme Transition System — Sun to Moon Animated Eclipse', () => {
     })
   })
 
-  describe('2. Sun Rays Array & Art Direction Specifications', () => {
-    it('defines 8 evenly spaced rays at 45 degree intervals', () => {
+  describe('2. Sun Rays Array & 8 Spokes Specifications', () => {
+    it('defines exactly 8 evenly spaced rays at 45 degree intervals', () => {
       expect(SUN_RAYS).toHaveLength(8)
       const degrees = SUN_RAYS.map((r) => r.deg)
       expect(degrees).toEqual([0, 45, 90, 135, 180, 225, 270, 315])
     })
 
-    it('places the 0° ray at the 3 o\'clock position (y = 50, x > 50)', () => {
-      const ray0 = SUN_RAYS.find((r) => r.deg === 0)
-      expect(ray0).toBeDefined()
-      expect(ray0.y1).toBe(50)
-      expect(ray0.y2).toBe(50)
-      expect(ray0.x1).toBeGreaterThan(50)
-      expect(ray0.x2).toBeGreaterThan(ray0.x1)
+    it('positions spokes at the 8 required clock positions', () => {
+      const labels = SUN_RAYS.map((r) => r.label)
+      expect(labels).toContain('12 o\'clock')
+      expect(labels).toContain('1:30')
+      expect(labels).toContain('3 o\'clock')
+      expect(labels).toContain('4:30')
+      expect(labels).toContain('6 o\'clock')
+      expect(labels).toContain('7:30')
+      expect(labels).toContain('9 o\'clock')
+      expect(labels).toContain('10:30')
     })
 
-    it('places the 90° ray at the 6 o\'clock position (x = 50, y > 50)', () => {
-      const ray90 = SUN_RAYS.find((r) => r.deg === 90)
-      expect(ray90).toBeDefined()
-      expect(ray90.x1).toBe(50)
-      expect(ray90.x2).toBe(50)
-      expect(ray90.y1).toBeGreaterThan(50)
-      expect(ray90.y2).toBeGreaterThan(ray90.y1)
+    it('places 12 o\'clock straight up and 6 o\'clock straight down', () => {
+      const ray12 = SUN_RAYS.find((r) => r.label === '12 o\'clock')
+      expect(ray12).toBeDefined()
+      expect(ray12.x1).toBe(50)
+      expect(ray12.x2).toBe(50)
+      expect(ray12.y1).toBeLessThan(50)
+      expect(ray12.y2).toBeLessThan(ray12.y1)
+
+      const ray6 = SUN_RAYS.find((r) => r.label === '6 o\'clock')
+      expect(ray6).toBeDefined()
+      expect(ray6.x1).toBe(50)
+      expect(ray6.x2).toBe(50)
+      expect(ray6.y1).toBeGreaterThan(50)
+      expect(ray6.y2).toBeGreaterThan(ray6.y1)
     })
 
-    it('places the 180° ray at the 9 o\'clock position (y = 50, x < 50)', () => {
-      const ray180 = SUN_RAYS.find((r) => r.deg === 180)
-      expect(ray180).toBeDefined()
-      expect(ray180.y1).toBe(50)
-      expect(ray180.y2).toBe(50)
-      expect(ray180.x1).toBeLessThan(50)
-      expect(ray180.x2).toBeLessThan(ray180.x1)
+    it('places 3 o\'clock straight right and 9 o\'clock straight left', () => {
+      const ray3 = SUN_RAYS.find((r) => r.label === '3 o\'clock')
+      expect(ray3).toBeDefined()
+      expect(ray3.y1).toBe(50)
+      expect(ray3.y2).toBe(50)
+      expect(ray3.x1).toBeGreaterThan(50)
+      expect(ray3.x2).toBeGreaterThan(ray3.x1)
+
+      const ray9 = SUN_RAYS.find((r) => r.label === '9 o\'clock')
+      expect(ray9).toBeDefined()
+      expect(ray9.y1).toBe(50)
+      expect(ray9.y2).toBe(50)
+      expect(ray9.x1).toBeLessThan(50)
+      expect(ray9.x2).toBeLessThan(ray9.x1)
     })
 
-    it('places the 270° ray at the 12 o\'clock position (x = 50, y < 50)', () => {
-      const ray270 = SUN_RAYS.find((r) => r.deg === 270)
-      expect(ray270).toBeDefined()
-      expect(ray270.x1).toBe(50)
-      expect(ray270.x2).toBe(50)
-      expect(ray270.y1).toBeLessThan(50)
-      expect(ray270.y2).toBeLessThan(ray270.y1)
+    it('maintains uniform spoke length and prevents collision with sun outline', () => {
+      // Sun outline radius = 20, strokeWidth = 3.5 -> outer edge is 21.75
+      const sunOuterRadius = 21.75
+
+      SUN_RAYS.forEach((ray) => {
+        const length = Math.hypot(ray.x2 - ray.x1, ray.y2 - ray.y1)
+        // Consistent ray length ~9.5 units
+        expect(length).toBeCloseTo(9.5, 1)
+
+        // Distance from center to ray start must be at least 30 (giving >8 units clearance)
+        const startDist = Math.hypot(ray.x1 - 50, ray.y1 - 50)
+        expect(startDist).toBeCloseTo(30, 1)
+        expect(startDist).toBeGreaterThan(sunOuterRadius + 5)
+      })
+    })
+
+    it('ensures diagonal spokes (1:30, 4:30, 7:30, 10:30) are clearly spaced and do not collide', () => {
+      const diagonals = ['1:30', '4:30', '7:30', '10:30']
+      diagonals.forEach((label) => {
+        const ray = SUN_RAYS.find((r) => r.label === label)
+        expect(ray).toBeDefined()
+        const startDist = Math.hypot(ray.x1 - 50, ray.y1 - 50)
+        expect(startDist).toBeGreaterThan(25) // Well clear of the sun circle (radius 20)
+      })
     })
   })
 
-  describe('3. Easing Function (easeInOutCubic)', () => {
+  describe('3. Easing Function & 0.75x Animation Speed Refinement', () => {
     it('starts at 0 and ends at 1 with symmetry at 0.5', () => {
       expect(easeInOutCubic(0)).toBe(0)
       expect(easeInOutCubic(1)).toBe(1)
@@ -184,6 +222,16 @@ describe('Theme Transition System — Sun to Moon Animated Eclipse', () => {
         expect(value).toBeGreaterThanOrEqual(previous)
         previous = value
       }
+    })
+
+    it('multiplies durations by 1.3333 (0.75x playback speed) consistently across phases', () => {
+      // Baseline durations before 0.75x speed refinement:
+      // INTRO: 140ms, SWEEP: 680ms, OUTRO: 200ms, TOTAL: 1020ms
+      expect(INTRO_MS).toBe(Math.round(140 * 1.3333))
+      expect(SWEEP_MS).toBe(Math.round(680 * 1.3333))
+      expect(OUTRO_MS).toBe(Math.round(200 * 1.3333))
+      expect(TOTAL_MS).toBe(INTRO_MS + SWEEP_MS + OUTRO_MS)
+      expect(TOTAL_MS).toBeGreaterThan(1300)
     })
   })
 
