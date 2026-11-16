@@ -17,6 +17,27 @@ export const FLAT_DELIVERY_FEE = 10
 export const FLAT_DELIVERY_FEE_LABEL = 'Flat campus delivery'
 
 /**
+ * Multi-store delivery surcharge policy.
+ * Each additional distinct store in the cart incurs a fixed surcharge S.
+ * Formula:
+ *   N = number of distinct stores
+ *   S = MULTI_STORE_SURCHARGE (configured via env, default ₹0)
+ *   Additional surcharge A = max(0, N - 1) * S
+ *   Total delivery fee D = B + A (where B is base delivery fee)
+ * Defaults to ₹0 unless explicitly configured via environment variable.
+ */
+const envMultiStoreSurcharge =
+  (typeof process !== 'undefined' && process.env?.MULTI_STORE_SURCHARGE) ||
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_MULTI_STORE_SURCHARGE)
+
+export const MULTI_STORE_SURCHARGE =
+  Number.isFinite(Number(envMultiStoreSurcharge)) && Number(envMultiStoreSurcharge) >= 0
+    ? Number(envMultiStoreSurcharge)
+    : 0
+
+export const MULTI_STORE_SURCHARGE_LABEL = 'Additional store surcharge'
+
+/**
  * Maximum delivery radius. Beyond this, checkout is blocked.
  * Supported campus delivery-area restrictions still apply.
  */

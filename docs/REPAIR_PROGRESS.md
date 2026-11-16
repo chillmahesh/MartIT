@@ -33,6 +33,10 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M9 | Staging Acceptance Plan & Operational Verification | VERIFIED | Commit f4d0da7; docs/STAGING_ACCEPTANCE_PLAN.md created, OTP restart resilience verified, 630 passed tests, clean build | Operator execution of live staging acceptance checklist & deployment |
 | M10 | Final Product Plan execution & verification | VERIFIED | Commit cb2b871; docs/FINAL_PRODUCT_PLAN.md executed, README.md updated, 630 tests passed, build verified | Operator live staging acceptance on external infrastructure |
 | M11 | Form validation, input constraints & responsive UX fix | VERIFIED | Commits c57477e, ab9e24c, 09e1eb4; Complete client/server input validation, 10-digit Indian phone constraints, RFC email normalization, Unicode names, checkout/admin/runner bounds, 41 test files (730 passed, 1 skipped) | Complete |
+| M12.1 | Multi-store pricing & surcharge configuration | VERIFIED | In progress commit; MULTI_STORE_SURCHARGE, calculateAdditionalStoreSurcharge, calculateDeliveryFee breakdown, 42 deliveryFee tests passed | Proceed to M12.2 |
+| M12.2 | Multi-store cart store & customer warning UI | IN_PROGRESS | Cart state refactor, distinct store grouping, persistent indicator & first-add warning modal | In progress |
+| M12.3 | Multi-store server & mock order creation | NOT_STARTED | Authoritative backend multi-store product lookup, atomic order creation, fulfillment groups | Pending |
+| M12.4 | Combined payment & multi-store runner tracking | NOT_STARTED | Single payment flow, multi-store pickup sequence & completion | Pending |
 
 ## Milestone Evidence & Audit Trails
 
@@ -378,3 +382,14 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `npm run test:all`: 41 test files + 13 migration checks validated, exit code 0.
   - `npm run build`: Client, SSR, and pre-rendering completed with 0 errors, exit code 0.
   - `git diff --check`: 0 whitespace issues.
+
+### M12.1 — Multi-Store Pricing & Surcharge Configuration
+- **Date / Session:** 2026-11-16
+- **Changes Implemented:**
+  1. `src/config/fees.js`: Added `MULTI_STORE_SURCHARGE` with safe default of ₹0, configurable via `process.env.MULTI_STORE_SURCHARGE` or `import.meta.env.VITE_MULTI_STORE_SURCHARGE`. Added `MULTI_STORE_SURCHARGE_LABEL = 'Additional store surcharge'`.
+  2. `src/utils/deliveryFee.js`: Implemented `calculateAdditionalStoreSurcharge(storeCount, surcharge)` adhering strictly to the formula $A = \max(0, N - 1) \times S$. Updated `calculateDeliveryFee(distanceKm, storeCount, options)` returning combined delivery fee $D = B + A$ alongside granular breakdown fields (`baseDeliveryFee`, `additionalStoreSurcharge`, `storeCount`, `surchargePerAdditionalStore`).
+  3. `src/utils/orderTotals.js`: Extended `calculateOrderTotals` to accept optional `baseDeliveryFee` and `additionalStoreSurcharge`, returning them in breakdown while preserving exact backward compatibility for existing callers.
+  4. `src/utils/__tests__/deliveryFee.test.js`: Added 10 new test cases covering single store ($N=1 \implies A=0$), 2 stores ($N=2 \implies A=S$), 3 stores ($N=3 \implies A=2S$), store count reductions, custom surcharge rate overrides, and edge cases.
+- **Verification Commands & Evidence:**
+  - `npx vitest run src/utils/__tests__/deliveryFee.test.js`: 42 tests passed, exit code 0.
+  - `npx vitest run src/utils/__tests__/ src/pages/customer/__tests__/flatDeliveryFeePolicy.test.jsx`: 7 test files, 124 passed, exit code 0.
