@@ -311,11 +311,42 @@ export function formatCanonicalOrder(order) {
     0
   )
 
+  const storeIds = order.storeIds || (
+    fulfillmentGroups.length > 0
+      ? Array.from(new Set(fulfillmentGroups.map((g) => g.store_id || g.storeId).filter(Boolean)))
+      : (storeId ? [storeId] : [])
+  )
+
+  let baseDeliveryFee = order.pricing?.baseDeliveryFee != null
+    ? Number(order.pricing.baseDeliveryFee)
+    : null
+  let additionalStoreSurcharge = order.pricing?.additionalStoreSurcharge != null
+    ? Number(order.pricing.additionalStoreSurcharge)
+    : null
+
+  if (baseDeliveryFee == null || additionalStoreSurcharge == null) {
+    const distinctCount = (storeIds.length > 0)
+      ? storeIds.length
+      : (fulfillmentGroups.length > 0)
+        ? fulfillmentGroups.length
+        : 1
+
+    if (distinctCount > 1 && deliveryFee > FLAT_DELIVERY_FEE) {
+      const calculatedSurcharge = calculateAdditionalStoreSurcharge(distinctCount, MULTI_STORE_SURCHARGE)
+      additionalStoreSurcharge = additionalStoreSurcharge ?? Math.min(deliveryFee - FLAT_DELIVERY_FEE, calculatedSurcharge)
+      baseDeliveryFee = baseDeliveryFee ?? (deliveryFee - additionalStoreSurcharge)
+    } else {
+      baseDeliveryFee = baseDeliveryFee ?? deliveryFee
+      additionalStoreSurcharge = additionalStoreSurcharge ?? 0
+    }
+  }
+
   return {
     id: order.id,
     customerId: order.customer_id || order.customerId,
     runnerId: order.runner_id || order.runnerId || null,
     storeId,
+    storeIds,
     locationId,
     deliveryLocationId: locationId,
     deliveryLocationSnapshot: snapshot || null,
@@ -326,6 +357,8 @@ export function formatCanonicalOrder(order) {
     pricing: {
       itemSubtotal,
       deliveryFee,
+      baseDeliveryFee,
+      additionalStoreSurcharge,
       baseAmount,
       platformFee,
       total,

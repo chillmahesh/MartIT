@@ -64,7 +64,7 @@ export default function OrdersPage() {
     }
     const cart = useCartStore.getState()
     order.lines.forEach((l) => {
-      cart.setQuantity(l.productId, l.quantity, order.storeId)
+      cart.setQuantity(l.productId, l.quantity, l.storeId || order.storeId)
     })
     toast.success(`Added ${order.lines.length} item(s) to your cart!`)
     navigate('/app/cart')
@@ -143,6 +143,23 @@ export default function OrdersPage() {
         <div className="space-y-6" data-testid="orders-list">
           {orders.map((order) => {
             const store = SAMPLE_STORES.find((s) => s.id === order.storeId)
+            const orderStoreIds = order.storeIds || (
+              order.fulfillmentGroups?.length > 0
+                ? order.fulfillmentGroups.map((g) => g.storeId || g.store_id).filter(Boolean)
+                : (order.storeId ? [order.storeId] : [])
+            )
+            const distinctOrderStoreIds = Array.from(new Set(orderStoreIds))
+            const isMultiStore = distinctOrderStoreIds.length > 1
+            const storeDisplayNames = isMultiStore
+              ? (
+                  order.fulfillmentGroups?.length > 0
+                    ? order.fulfillmentGroups.map((g) => g.storeSnapshot?.name || g.storeId).filter(Boolean).join(', ')
+                    : distinctOrderStoreIds
+                        .map((id) => SAMPLE_STORES.find((s) => s.id === id)?.name || id)
+                        .join(', ')
+                )
+              : (store ? store.name : order.storeId || 'Campus Store')
+
             const location = SAMPLE_DELIVERY_LOCATIONS.find((l) => l.id === order.locationId)
             const destinationName =
               order.customerDetails?.selectedDestination ||
@@ -181,7 +198,14 @@ export default function OrdersPage() {
                   <div className="flex items-start gap-2 text-ink-muted">
                     <Store className="size-4 text-brand shrink-0 mt-0.5" aria-hidden="true" />
                     <div>
-                      <p className="font-semibold text-ink">{store ? store.name : order.storeId}</p>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="font-semibold text-ink">{storeDisplayNames}</p>
+                        {isMultiStore && (
+                          <span className="rounded-full bg-brand/10 text-brand px-1.5 py-0.5 text-[10px] font-semibold">
+                            Multi-Store ({distinctOrderStoreIds.length})
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[11px] text-ink-subtle truncate">
                         {order.lines?.map((l) => `${l.quantity}× ${l.name}`).join(', ') || 'Campus products'}
                       </p>
@@ -203,12 +227,19 @@ export default function OrdersPage() {
 
                 {/* Total, Reorder and Payment Status */}
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-line/40 text-xs">
-                  <span className="text-ink-muted">
-                    Total Amount:{' '}
-                    <strong className="text-ink font-bold font-mono">
-                      {formatINR(order.pricing?.total || 0)}
-                    </strong>
-                  </span>
+                  <div>
+                    <span className="text-ink-muted">
+                      Total Amount:{' '}
+                      <strong className="text-ink font-bold font-mono">
+                        {formatINR(order.pricing?.total || 0)}
+                      </strong>
+                    </span>
+                    {order.pricing?.additionalStoreSurcharge > 0 && (
+                      <span className="text-[11px] text-ink-subtle block">
+                        (Includes {formatINR(order.pricing.additionalStoreSurcharge)} multi-store surcharge)
+                      </span>
+                    )}
+                  </div>
 
                   <div className="flex items-center gap-2">
                     {isPendingPayment && (

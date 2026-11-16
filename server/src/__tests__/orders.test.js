@@ -123,6 +123,8 @@ describe('Order History & Detail Endpoints', () => {
     expect(res.body.pricing).toEqual({
       itemSubtotal: 120,
       deliveryFee: 15,
+      baseDeliveryFee: 15,
+      additionalStoreSurcharge: 0,
       baseAmount: 135,
       platformFee: 0.12,
       total: 135.12,
@@ -1076,6 +1078,7 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
       stores: [
         { id: 'store_campus_mart', name: 'Campus Mart', is_open: true, latitude: 12.9716, longitude: 77.5946 },
         { id: 'store_stationery', name: 'Campus Stationery', is_open: true, latitude: 12.9720, longitude: 77.5950 },
+        { id: 'store_canteen', name: 'Campus Night Canteen', is_open: true, latitude: 12.9725, longitude: 77.5955 },
         { id: 'store_closed', name: 'Closed Mart', is_open: false, latitude: 12.9716, longitude: 77.5946 },
       ],
       locations: [
@@ -1089,10 +1092,25 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
         { id: 'p_limited', store_id: 'store_campus_mart', name: 'Limited Stock Item', pack: '1 pc', price: 15.00, stock: 2, is_available: true },
         { id: 'p_unavailable', store_id: 'store_campus_mart', name: 'Unavailable Item', pack: '1 pc', price: 20.00, stock: 10, is_available: false },
         { id: 'p_notebook', store_id: 'store_stationery', name: 'Spiral Notebook', pack: '1 pc', price: 50.00, stock: 8, is_available: true },
+        { id: 'p_maggi', store_id: 'store_canteen', name: 'Hot Maggi', pack: '1 bowl', price: 40.00, stock: 15, is_available: true },
+        { id: 'p_single_100', store_id: 'store_campus_mart', name: '100 Rupee Item', pack: '1 pc', price: 100.00, stock: 10, is_available: true },
+        { id: 'p_mart_50', store_id: 'store_campus_mart', name: '50 Rupee Mart', pack: '1 pc', price: 50.00, stock: 10, is_available: true },
+        { id: 'p_stat_50', store_id: 'store_stationery', name: '50 Rupee Stationery', pack: '1 pc', price: 50.00, stock: 10, is_available: true },
+        { id: 'p_mart_20', store_id: 'store_campus_mart', name: '20 Rupee Mart', pack: '1 pc', price: 20.00, stock: 10, is_available: true },
+        { id: 'p_stat_40', store_id: 'store_stationery', name: '40 Rupee Stationery', pack: '1 pc', price: 40.00, stock: 10, is_available: true },
+        { id: 'p_canteen_40', store_id: 'store_canteen', name: '40 Rupee Canteen', pack: '1 pc', price: 40.00, stock: 10, is_available: true },
       ],
       platform_fee_reservations: [
         { fee_paise: 12, is_paid: false, active_order_id: null },
         { fee_paise: 15, is_paid: false, active_order_id: null },
+        { fee_paise: 11, is_paid: false, active_order_id: null },
+        { fee_paise: 13, is_paid: false, active_order_id: null },
+        { fee_paise: 14, is_paid: false, active_order_id: null },
+        { fee_paise: 16, is_paid: false, active_order_id: null },
+        { fee_paise: 17, is_paid: false, active_order_id: null },
+        { fee_paise: 18, is_paid: false, active_order_id: null },
+        { fee_paise: 19, is_paid: false, active_order_id: null },
+        { fee_paise: 20, is_paid: false, active_order_id: null },
       ],
       orders: [],
       inventory_reservations: [],
@@ -1933,10 +1951,10 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
     // Pricing checks: milk (28) + 2 notebooks (100) = 128
     expect(order.pricing.itemSubtotal).toBe(128)
     expect(order.pricing.baseDeliveryFee).toBe(10)
-    // Surcharge for 2 stores: max(0, 2 - 1) * MULTI_STORE_SURCHARGE (0 by default)
-    expect(order.pricing.additionalStoreSurcharge).toBe(0)
-    expect(order.pricing.deliveryFee).toBe(10)
-    expect(order.pricing.baseAmount).toBe(138)
+    // Surcharge for 2 stores: max(0, 2 - 1) * 10 = 10
+    expect(order.pricing.additionalStoreSurcharge).toBe(10)
+    expect(order.pricing.deliveryFee).toBe(20)
+    expect(order.pricing.baseAmount).toBe(148)
 
     // Fulfillment groups: one per store
     expect(order.fulfillmentGroups.length).toBe(2)
@@ -1959,6 +1977,195 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
 
     expect(res.status).toBe(409)
     expect(res.body.code).toBe('STORE_CLOSED')
+  })
+
+  it('35. Acceptance Scenario 1: 1 distinct store -> Surcharge ₹0, Delivery ₹10, Total ₹110', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeId: 'store_campus_mart',
+        locationId: 'loc_hostel_a',
+        lines: [
+          { productId: 'p_single_100', quantity: 1, storeId: 'store_campus_mart' },
+        ],
+        customerDetails: {
+          fullName: 'Alice Customer',
+          phoneNumber: '9876543210',
+          selectedDestination: 'Hostel A',
+        },
+      })
+
+    expect(res.status).toBe(201)
+    const order = res.body
+    expect(order.storeIds).toEqual(['store_campus_mart'])
+    expect(order.pricing.itemSubtotal).toBe(100)
+    expect(order.pricing.baseDeliveryFee).toBe(10)
+    expect(order.pricing.additionalStoreSurcharge).toBe(0)
+    expect(order.pricing.deliveryFee).toBe(10)
+    expect(order.pricing.baseAmount).toBe(110)
+  })
+
+  it('36. Acceptance Scenario 2: 2 distinct stores -> Surcharge ₹10, Delivery ₹20, Total ₹120', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeIds: ['store_campus_mart', 'store_stationery'],
+        locationId: 'loc_hostel_a',
+        lines: [
+          { productId: 'p_mart_50', quantity: 1, storeId: 'store_campus_mart' },
+          { productId: 'p_stat_50', quantity: 1, storeId: 'store_stationery' },
+        ],
+        customerDetails: {
+          fullName: 'Alice Customer',
+          phoneNumber: '9876543210',
+          selectedDestination: 'Hostel A',
+        },
+      })
+
+    expect(res.status).toBe(201)
+    const order = res.body
+    expect(order.storeIds).toEqual(['store_campus_mart', 'store_stationery'])
+    expect(order.pricing.itemSubtotal).toBe(100)
+    expect(order.pricing.baseDeliveryFee).toBe(10)
+    expect(order.pricing.additionalStoreSurcharge).toBe(10)
+    expect(order.pricing.deliveryFee).toBe(20)
+    expect(order.pricing.baseAmount).toBe(120)
+  })
+
+  it('37. Acceptance Scenario 3: 3 distinct stores -> Surcharge ₹20, Delivery ₹30, Total ₹130', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeIds: ['store_campus_mart', 'store_stationery', 'store_canteen'],
+        locationId: 'loc_hostel_a',
+        lines: [
+          { productId: 'p_mart_20', quantity: 1, storeId: 'store_campus_mart' },
+          { productId: 'p_stat_40', quantity: 1, storeId: 'store_stationery' },
+          { productId: 'p_canteen_40', quantity: 1, storeId: 'store_canteen' },
+        ],
+        customerDetails: {
+          fullName: 'Alice Customer',
+          phoneNumber: '9876543210',
+          selectedDestination: 'Hostel A',
+        },
+      })
+
+    expect(res.status).toBe(201)
+    const order = res.body
+    expect(order.storeIds).toEqual(['store_campus_mart', 'store_stationery', 'store_canteen'])
+    expect(order.pricing.itemSubtotal).toBe(100)
+    expect(order.pricing.baseDeliveryFee).toBe(10)
+    expect(order.pricing.additionalStoreSurcharge).toBe(20)
+    expect(order.pricing.deliveryFee).toBe(30)
+    expect(order.pricing.baseAmount).toBe(130)
+    expect(order.fulfillmentGroups.length).toBe(3)
+  })
+
+  it('38. adding multiple items or changing quantities within the same store does not increase surcharge', async () => {
+    // 2 stores, but multiple items in store_campus_mart
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeIds: ['store_campus_mart', 'store_stationery'],
+        locationId: 'loc_hostel_a',
+        lines: [
+          { productId: 'p_milk', quantity: 2, storeId: 'store_campus_mart' }, // 56
+          { productId: 'p_bread', quantity: 1, storeId: 'store_campus_mart' }, // 40
+          { productId: 'p_notebook', quantity: 3, storeId: 'store_stationery' }, // 150
+        ],
+        customerDetails: {
+          fullName: 'Alice Customer',
+          phoneNumber: '9876543210',
+          selectedDestination: 'Hostel A',
+        },
+      })
+
+    expect(res.status).toBe(201)
+    const order = res.body
+    expect(order.pricing.itemSubtotal).toBe(246)
+    expect(order.pricing.baseDeliveryFee).toBe(10)
+    // Surcharge remains ₹10 because distinct store count is 2 (2 - 1 = 1 additional store)
+    expect(order.pricing.additionalStoreSurcharge).toBe(10)
+    expect(order.pricing.deliveryFee).toBe(20)
+    expect(order.pricing.baseAmount).toBe(266)
+  })
+
+  it('39. server ignores client-supplied pricing/totals/surcharges in request body', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeIds: ['store_campus_mart', 'store_stationery'],
+        locationId: 'loc_hostel_a',
+        lines: [
+          { productId: 'p_mart_50', quantity: 1, storeId: 'store_campus_mart' },
+          { productId: 'p_stat_50', quantity: 1, storeId: 'store_stationery' },
+        ],
+        // Client attempts to spoof 0 fees / lower totals
+        deliveryFee: 0,
+        additionalStoreSurcharge: 0,
+        total: 50,
+        itemSubtotal: 50,
+        customerDetails: {
+          fullName: 'Alice Customer',
+          phoneNumber: '9876543210',
+          selectedDestination: 'Hostel A',
+        },
+      })
+
+    expect(res.status).toBe(201)
+    const order = res.body
+    // Authoritative totals enforced by server
+    expect(order.pricing.itemSubtotal).toBe(100)
+    expect(order.pricing.baseDeliveryFee).toBe(10)
+    expect(order.pricing.additionalStoreSurcharge).toBe(10)
+    expect(order.pricing.deliveryFee).toBe(20)
+    expect(order.pricing.baseAmount).toBe(120)
+  })
+
+  it('40. idempotent re-submission returns identical canonical order preserving surcharge and storeIds', async () => {
+    const idempotencyKey = 'idem_multistore_replay_test'
+    const payload = {
+      idempotencyKey,
+      storeIds: ['store_campus_mart', 'store_stationery'],
+      locationId: 'loc_hostel_a',
+      lines: [
+        { productId: 'p_mart_50', quantity: 1, storeId: 'store_campus_mart' },
+        { productId: 'p_stat_50', quantity: 1, storeId: 'store_stationery' },
+      ],
+      customerDetails: {
+        fullName: 'Alice Customer',
+        phoneNumber: '9876543210',
+        selectedDestination: 'Hostel A',
+      },
+    }
+
+    const firstRes = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send(payload)
+
+    expect(firstRes.status).toBe(201)
+    const firstOrder = firstRes.body
+
+    const secondRes = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send(payload)
+
+    expect(secondRes.status).toBe(200)
+    const secondOrder = secondRes.body
+
+    expect(secondOrder.id).toBe(firstOrder.id)
+    expect(secondOrder.storeIds).toEqual(firstOrder.storeIds)
+    expect(secondOrder.pricing.additionalStoreSurcharge).toBe(10)
+    expect(secondOrder.pricing.baseDeliveryFee).toBe(10)
+    expect(secondOrder.pricing.deliveryFee).toBe(20)
+    expect(secondOrder.pricing.total).toBe(firstOrder.pricing.total)
   })
 })
 

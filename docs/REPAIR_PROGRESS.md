@@ -38,6 +38,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M12.3 | Multi-store server & mock order creation | VERIFIED | Commit 1172324; Migration 20261116000001_multi_store_atomic_orders.sql, multi-store handleCreateOrder, fulfillment groups, 89 orders tests & 42 test suites (748 passed) | Complete; proceed to M12.4 |
 | M12.4 | Combined payment & multi-store runner tracking | VERIFIED | Commit ab76194; Single UPI payment view with multi-store fee breakdown, OrderConfirmation multi-store pickup checklist, multi-store runner pickup completion, 42 test files (750 passed) & clean build | Complete |
 | M12.5 | Cart selector stability & React Error #185 fix | VERIFIED | Commit ed8b799; Fixed unstable Zustand selectors with useShallow and memoized store selectors, eliminated infinite re-render loop on /app/cart, 44 test files (770 passed, 1 skipped) | Complete |
+| M12.6 | Authoritative ₹10 multi-store surcharge & pricing consistency | VERIFIED | Commit 7f5c3d9; Authoritative ₹10 surcharge default, fees.js, env.js, server orders.js, OrdersPage, AdminConsole, 48 deliveryFee + 95 orders tests, 44 test files (782 passed, 1 skipped) | Complete |
 
 ## Milestone Evidence & Audit Trails
 
@@ -497,5 +498,41 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `npm run test:server`: 17 test files, 374 passed, 1 skipped, exit code 0.
   - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
   - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
+
+### M12.6 — Authoritative ₹10 Multi-Store Surcharge & Pricing Consistency
+- **Date / Session:** 2026-11-17
+- **Problem Statement:**
+  - Multi-store orders were displaying ₹0 additional-store surcharge on the cart page (e.g. 2 stores, ₹100 items, ₹10 base delivery, ₹0 surcharge, ₹110 estimated total).
+  - Root Cause: In `src/config/fees.js`, `MULTI_STORE_SURCHARGE` fell back to `0` when `process.env.MULTI_STORE_SURCHARGE` or `import.meta.env.VITE_MULTI_STORE_SURCHARGE` was omitted from environment variables.
+- **Changes Implemented:**
+  1. `src/config/fees.js`:
+     - Established `DEFAULT_MULTI_STORE_SURCHARGE = 10` as the authoritative approved default.
+     - Implemented `resolveMultiStoreSurcharge` with strict validation: safely returns ₹10 when omitted/empty; parses valid numbers; throws descriptive error on negative or non-numeric values.
+     - Bumped `PRICING_VERSION = '2026-11-17.1'`.
+  2. `server/src/config/env.js`:
+     - Added `MULTI_STORE_SURCHARGE: z.coerce.number().nonnegative().default(10)` to production and development schemas, and default 10 to test schema.
+  3. `server/src/routes/orders.js`:
+     - Updated `formatCanonicalOrder` to include `baseDeliveryFee` and `additionalStoreSurcharge` in all canonical order snapshots (including idempotent replays and order lookups).
+     - Ensured `storeIds` array is always present in canonical order outputs.
+     - Preserved authoritative server-side calculation: client-supplied totals, delivery fees, and surcharges in request bodies are completely ignored.
+  4. `src/pages/customer/OrdersPage.jsx`:
+     - Added multi-store indicator (`Multi-Store (N)`) and rendered all store names for multi-store orders.
+     - Rendered explicit surcharge breakdown (`(Includes ₹X multi-store surcharge)`) in the order card summary.
+     - Preserved store affinity per line item during reorders.
+  5. `src/pages/admin/AdminConsolePage.jsx`:
+     - Added multi-store badges and store names in the Admin operations order list.
+     - Rendered granular delivery fee breakdown (`(Delivery: ₹D [Base ₹B + Surcharge ₹S])`) in the pricing summary.
+  6. Tests:
+     - `src/utils/__tests__/deliveryFee.test.js`: Added 6 tests for `resolveMultiStoreSurcharge` validation, default ₹10 surcharge, and multi-store delivery fee calculations (48 passed).
+     - `server/src/__tests__/orders.test.js`: Added 6 tests for Acceptance Scenarios 1, 2, and 3 (1 store ₹110, 2 stores ₹120, 3 stores ₹130), same-store item additions, client-spoofing rejection, and idempotent replay consistency (95 passed).
+     - `src/pages/customer/__tests__/multiStoreCart.test.jsx`: Updated cart rendering assertions for ₹10 surcharge and combined breakdown (7 passed).
+- **Verification Commands & Evidence:**
+  - `npx vitest run src/utils/__tests__/deliveryFee.test.js`: 48 passed, exit code 0.
+  - `npx vitest run server/src/__tests__/orders.test.js`: 95 passed, exit code 0.
+  - `npm test`: 44 test files, 782 passed, 1 skipped, exit code 0.
+  - `npm run test:server`: 17 test files, 380 passed, 1 skipped, exit code 0.
+  - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
+
 
 

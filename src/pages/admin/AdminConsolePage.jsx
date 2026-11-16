@@ -912,9 +912,18 @@ export default function AdminConsolePage({ initialTab = 'people' } = {}) {
 
                     {/* Store & Line Items */}
                     <div className="space-y-1">
-                      <p className="font-semibold text-ink flex items-center gap-1.5">
+                      <p className="font-semibold text-ink flex items-center gap-1.5 flex-wrap">
                         <Store className="size-3.5 text-brand shrink-0" />
-                        <span>{store ? store.name : order.storeId || 'Campus Store'}</span>
+                        <span>
+                          {order.fulfillmentGroups?.length > 1
+                            ? order.fulfillmentGroups.map((g) => g.storeSnapshot?.name || g.storeId).filter(Boolean).join(', ')
+                            : (store ? store.name : order.storeId || 'Campus Store')}
+                        </span>
+                        {order.fulfillmentGroups?.length > 1 && (
+                          <Badge tone="brand" size="xs">
+                            Multi-Store ({order.fulfillmentGroups.length})
+                          </Badge>
+                        )}
                       </p>
                       <p className="text-ink-muted text-[11px] line-clamp-2">
                         {order.lines?.map((l) => `${l.quantity}× ${l.name}`).join(', ') || 'No line items'}
@@ -930,8 +939,11 @@ export default function AdminConsolePage({ initialTab = 'people' } = {}) {
                         </strong>
                       </p>
                       <p className="text-[11px] text-ink-subtle">
-                        Base: {formatINR(order.pricing?.baseAmount || 0)} | Suffix Fee:{' '}
-                        {formatINR(order.pricing?.platformFee || 0)}
+                        Base: {formatINR(order.pricing?.baseAmount || 0)}
+                        {order.pricing?.additionalStoreSurcharge > 0 && (
+                          <span> (Delivery: {formatINR(order.pricing?.deliveryFee || 0)} [Base {formatINR(order.pricing?.baseDeliveryFee || 10)} + Surcharge {formatINR(order.pricing?.additionalStoreSurcharge)}])</span>
+                        )}
+                        {' '}| Suffix Fee: {formatINR(order.pricing?.platformFee || 0)}
                       </p>
                       <div className="pt-0.5">
                         {order.runnerId ? (

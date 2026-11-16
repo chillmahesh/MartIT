@@ -145,6 +145,20 @@ export function createMockSupabaseClient({
           if (row && table === 'profiles') {
             row = { ...row, user_roles: (state.user_roles || []).filter((r) => r.user_id === row.id) }
           }
+          if (row && table === 'orders') {
+            const fgs = (state.order_fulfillment_groups || [])
+              .filter((g) => g.order_id === row.id)
+              .map((g) => ({
+                ...g,
+                order_items: (state.order_items || []).filter(
+                  (it) => it.order_id === row.id && (it.fulfillment_group_id === g.id || !it.fulfillment_group_id)
+                ),
+              }))
+            row = {
+              ...row,
+              order_fulfillment_groups: fgs.length > 0 ? fgs : (row.order_fulfillment_groups || []),
+            }
+          }
           return { data: row, error: null }
         },
         async single() {
@@ -158,6 +172,20 @@ export function createMockSupabaseClient({
           let row = results[0]
           if (row && table === 'profiles') {
             row = { ...row, user_roles: (state.user_roles || []).filter((r) => r.user_id === row.id) }
+          }
+          if (row && table === 'orders') {
+            const fgs = (state.order_fulfillment_groups || [])
+              .filter((g) => g.order_id === row.id)
+              .map((g) => ({
+                ...g,
+                order_items: (state.order_items || []).filter(
+                  (it) => it.order_id === row.id && (it.fulfillment_group_id === g.id || !it.fulfillment_group_id)
+                ),
+              }))
+            row = {
+              ...row,
+              order_fulfillment_groups: fgs.length > 0 ? fgs : (row.order_fulfillment_groups || []),
+            }
           }
           return { data: row, error: null }
         },
@@ -248,6 +276,22 @@ export function createMockSupabaseClient({
               ...p,
               user_roles: state.user_roles.filter((r) => r.user_id === p.id),
             }))
+          }
+          if (table === 'orders') {
+            results = results.map((o) => {
+              const fgs = (state.order_fulfillment_groups || [])
+                .filter((g) => g.order_id === o.id)
+                .map((g) => ({
+                  ...g,
+                  order_items: (state.order_items || []).filter(
+                    (it) => it.order_id === o.id && (it.fulfillment_group_id === g.id || !it.fulfillment_group_id)
+                  ),
+                }))
+              return {
+                ...o,
+                order_fulfillment_groups: fgs.length > 0 ? fgs : (o.order_fulfillment_groups || []),
+              }
+            })
           }
           resolve({ data: results, error: null })
         },

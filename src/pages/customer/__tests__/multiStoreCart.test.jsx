@@ -120,6 +120,10 @@ describe('Multi-Store Cart Store & Warning System (Milestone 12.2)', () => {
       // Delivery fee breakdown
       expect(html).toContain('Base Delivery Fee:')
       expect(html).toContain('Total Delivery Fee:')
+      expect(html).toContain('Additional Store Surcharge')
+      expect(html).toContain('An additional surcharge of ₹10 is included.')
+      expect(html).toContain('Base ₹10 + Surcharge ₹10')
+      expect(html).toContain('Total Delivery Fee:')
     } finally {
       spy.mockRestore()
     }
