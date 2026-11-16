@@ -36,7 +36,6 @@ import {
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Price } from '@/components/ui/Price'
-import { Badge } from '@/components/ui/Badge'
 import { formatINR } from '@/utils/currency'
 import { formatDistanceKm } from '@/utils/distance'
 import { calculateAdditionalStoreSurcharge } from '@/utils/deliveryFee'

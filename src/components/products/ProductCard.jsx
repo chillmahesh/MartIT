@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { m } from 'motion/react'
 import { Minus, Plus, ShoppingBasket } from 'lucide-react'
 import { Price } from '@/components/ui/Price'
