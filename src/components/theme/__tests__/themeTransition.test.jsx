@@ -182,18 +182,22 @@ describe('Theme Transition System — Sun to Moon Animated Eclipse', () => {
     })
 
     it('maintains uniform spoke length and prevents collision with sun outline', () => {
-      // Sun outline radius = 20, strokeWidth = 3.5 -> outer edge is 21.75
-      const sunOuterRadius = 21.75
+      // Sun outline radius = 19, strokeWidth = 3.2 -> outer edge is 20.6
+      const sunOuterRadius = 20.6
 
       SUN_RAYS.forEach((ray) => {
         const length = Math.hypot(ray.x2 - ray.x1, ray.y2 - ray.y1)
-        // Consistent ray length ~9.5 units
-        expect(length).toBeCloseTo(9.5, 1)
+        // Consistent prominent ray length ~14.0 units
+        expect(length).toBeCloseTo(14.0, 1)
 
-        // Distance from center to ray start must be at least 30 (giving >8 units clearance)
+        // Distance from center to ray start is 26.0 units (clear 5.4 unit gap from sun body)
         const startDist = Math.hypot(ray.x1 - 50, ray.y1 - 50)
-        expect(startDist).toBeCloseTo(30, 1)
-        expect(startDist).toBeGreaterThan(sunOuterRadius + 5)
+        expect(startDist).toBeCloseTo(26.0, 1)
+        expect(startDist).toBeGreaterThan(sunOuterRadius + 4)
+
+        // Distance from center to ray end is 40.0 units
+        const endDist = Math.hypot(ray.x2 - 50, ray.y2 - 50)
+        expect(endDist).toBeCloseTo(40.0, 1)
       })
     })
 
@@ -203,7 +207,9 @@ describe('Theme Transition System — Sun to Moon Animated Eclipse', () => {
         const ray = SUN_RAYS.find((r) => r.label === label)
         expect(ray).toBeDefined()
         const startDist = Math.hypot(ray.x1 - 50, ray.y1 - 50)
-        expect(startDist).toBeGreaterThan(25) // Well clear of the sun circle (radius 20)
+        expect(startDist).toBeCloseTo(26.0, 1)
+        const length = Math.hypot(ray.x2 - ray.x1, ray.y2 - ray.y1)
+        expect(length).toBeCloseTo(14.0, 1)
       })
     })
   })

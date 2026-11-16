@@ -541,9 +541,11 @@ This is the durable execution ledger. Update it throughout implementation. Never
        - `ThemeToggle` accessibility attributes (`aria-label`, `disabled`, `aria-busy`).
        - Full-screen overlay markup in both directions.
   6. Spokes & Speed Refinements:
-     - Updated Sun SVG with 8 evenly spaced spokes at the 8 standard clock positions.
-     - Scaled inner spoke radius to 30 with outer radius 39.5, leaving an 8.25-unit gap from the sun circle to prevent diagonal collision.
-     - Adjusted transition durations by multiplying by 1.3333 (0.75x playback speed): INTRO 187ms, SWEEP 907ms, OUTRO 267ms (TOTAL 1361ms).
+     - Completely redesigned and rewrote the sun spokes so that all 8 spokes (12:00, 1:30, 3:00, 4:30, 6:00, 7:30, 9:00, 10:30) are bold, crisp, and prominent.
+     - Spoke length extended to a uniform 14.0 units (inner radius 26.0, outer radius 40.0, strokeWidth 3.6 with rounded caps).
+     - Sun circular body calibrated to radius 19.0 (strokeWidth 3.2, outer edge 20.6), providing a clean 5.4-unit visual margin with guaranteed zero collision.
+     - Calibrated subtle glow filter (`stdDeviation="1.0"`) and radial aura (`r="23"`) so diagonal rays are never washed out or blurred into background haze.
+     - Maintained 0.75x playback speed consistently across the entire transition lifecycle (1.3333x duration scaling: INTRO 187ms, SWEEP 907ms, OUTRO 267ms, TOTAL 1361ms).
 - **Verification Commands & Evidence:**
   - `npx vitest run src/components/theme/__tests__/themeTransition.test.jsx`: 27 tests passed, exit code 0.
   - `npm test`: 45 test files, 809 passed, 1 skipped (810 total), exit code 0.
@@ -627,9 +629,11 @@ This is the durable execution ledger. Update it throughout implementation. Never
        - `ThemeToggle` accessibility attributes (`aria-label`, `disabled`, `aria-busy`).
        - Full-screen overlay markup in both directions.
   6. Spokes & Speed Refinements:
-     - Updated Sun SVG with 8 evenly spaced spokes at the 8 standard clock positions.
-     - Scaled inner spoke radius to 30 with outer radius 39.5, leaving an 8.25-unit gap from the sun circle to prevent diagonal collision.
-     - Adjusted transition durations by multiplying by 1.3333 (0.75x playback speed): INTRO 187ms, SWEEP 907ms, OUTRO 267ms (TOTAL 1361ms).
+     - Completely redesigned and rewrote the sun spokes so that all 8 spokes (12:00, 1:30, 3:00, 4:30, 6:00, 7:30, 9:00, 10:30) are bold, crisp, and prominent.
+     - Spoke length extended to a uniform 14.0 units (inner radius 26.0, outer radius 40.0, strokeWidth 3.6 with rounded caps).
+     - Sun circular body calibrated to radius 19.0 (strokeWidth 3.2, outer edge 20.6), providing a clean 5.4-unit visual margin with guaranteed zero collision.
+     - Calibrated subtle glow filter (`stdDeviation="1.0"`) and radial aura (`r="23"`) so diagonal rays are never washed out or blurred into background haze.
+     - Maintained 0.75x playback speed consistently across the entire transition lifecycle (1.3333x duration scaling: INTRO 187ms, SWEEP 907ms, OUTRO 267ms, TOTAL 1361ms).
 - **Verification Commands & Evidence:**
   - `npx vitest run src/components/theme/__tests__/themeTransition.test.jsx`: 27 tests passed, exit code 0.
   - `npm test`: 45 test files, 809 passed, 1 skipped (810 total), exit code 0.
