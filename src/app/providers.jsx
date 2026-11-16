@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/authStore'
 import { authService } from '@/services/authService'
 import { toast } from '@/components/ui/Toaster'
 import { MultiStoreWarningModal } from '@/components/cart/MultiStoreWarningModal'
+import { ThemeTransitionOverlay } from '@/components/theme/ThemeTransitionOverlay'
 import { targetPathForAuthed } from '@/app/RouteGuards'
 import { whenIdle } from '@/utils/idle'
 
@@ -97,6 +98,7 @@ export function Providers({ children }) {
           <SessionCheck />
           {children}
           <MultiStoreWarningModal />
+          <ThemeTransitionOverlay />
           <DeferredToaster />
           <CustomCursor />
         </SmoothScroll>

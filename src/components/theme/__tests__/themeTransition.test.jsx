@@ -1,0 +1,401 @@
+import React from 'react'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { renderToString } from 'react-dom/server'
+import * as themeStoreModule from '@/stores/themeStore'
+import { useThemeStore } from '@/stores/themeStore'
+import {
+  ThemeTransitionOverlay,
+  getSectorPath,
+  easeInOutCubic,
+  SUN_RAYS,
+} from '@/components/theme/ThemeTransitionOverlay'
+import { ThemeToggle } from '@/components/layout/ThemeToggle'
+import { safeStorage } from '@/utils/storage'
+
+describe('Theme Transition System — Sun to Moon Animated Eclipse', () => {
+  const storeMap = new Map()
+
+  beforeEach(() => {
+    storeMap.clear()
+    globalThis.localStorage = {
+      getItem: (key) => storeMap.get(key) ?? null,
+      setItem: (key, val) => storeMap.set(key, String(val)),
+      removeItem: (key) => storeMap.delete(key),
+      clear: () => storeMap.clear(),
+    }
+
+    // Provide DOM document and window mocks in Node test environment
+    globalThis.document = {
+      documentElement: {
+        dataset: { theme: 'light' },
+      },
+    }
+
+    globalThis.window = {
+      matchMedia: vi.fn().mockImplementation((query) => ({
+        matches: false,
+        media: query,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    }
+
+    safeStorage.set('martit-theme', 'light')
+
+    // Reset store state
+    useThemeStore.setState({
+      theme: 'light',
+      isTransitioning: false,
+      transitionDirection: null,
+      targetTheme: null,
+      isOverlayMounted: false,
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    delete globalThis.document
+    delete globalThis.window
+    delete globalThis.localStorage
+  })
+
+  describe('1. Circular Sector Geometry & 3 O\'Clock Starting Point', () => {
+    it('returns an empty string when angle is 0 degrees', () => {
+      expect(getSectorPath(50, 50, 25, 0)).toBe('')
+      expect(getSectorPath(50, 50, 25, -10)).toBe('')
+    })
+
+    it('returns a complete closed circle when angle is 360 degrees or higher', () => {
+      const path360 = getSectorPath(50, 50, 25, 360)
+      expect(path360).toContain('M 25 50')
+      expect(path360).toContain('A 25 25 0 1 0 75 50')
+      expect(path360).toContain('A 25 25 0 1 0 25 50 Z')
+
+      const pathOver360 = getSectorPath(50, 50, 25, 375)
+      expect(pathOver360).toBe(path360)
+    })
+
+    it('starts exactly at 3 o\'clock (cx + r, cy) for any intermediate angle', () => {
+      const cx = 50
+      const cy = 50
+      const r = 24.5
+
+      // At 45 degrees:
+      const path45 = getSectorPath(cx, cy, r, 45)
+      expect(path45.startsWith(`M ${cx} ${cy} L ${cx + r} ${cy}`)).toBe(true)
+
+      // At 180 degrees:
+      const path180 = getSectorPath(cx, cy, r, 180)
+      expect(path180.startsWith(`M ${cx} ${cy} L ${cx + r} ${cy}`)).toBe(true)
+
+      // At 270 degrees:
+      const path270 = getSectorPath(cx, cy, r, 270)
+      expect(path270.startsWith(`M ${cx} ${cy} L ${cx + r} ${cy}`)).toBe(true)
+    })
+
+    it('sweeps clockwise: 90° hits 6 o\'clock, 180° hits 9 o\'clock, 270° hits 12 o\'clock', () => {
+      const cx = 50
+      const cy = 50
+      const r = 40
+
+      // 90° = 6 o'clock (x = cx, y = cy + r = 90)
+      const path90 = getSectorPath(cx, cy, r, 90)
+      expect(path90).toContain('50.000 90.000 Z')
+      expect(path90).toContain('0 0 1') // largeArc=0, sweep=1 (clockwise)
+
+      // 180° = 9 o'clock (x = cx - r = 10, y = cy = 50)
+      const path180 = getSectorPath(cx, cy, r, 180)
+      expect(path180).toContain('10.000 50.000 Z')
+      expect(path180).toContain('0 0 1') // largeArc=0, sweep=1
+
+      // 270° = 12 o'clock (x = cx = 50, y = cy - r = 10)
+      const path270 = getSectorPath(cx, cy, r, 270)
+      expect(path270).toContain('50.000 10.000 Z')
+      expect(path270).toContain('0 1 1') // largeArc=1, sweep=1
+    })
+
+    it('generates valid non-NaN path coordinates throughout a complete 0 to 360 degree sweep', () => {
+      for (let angle = 0; angle <= 360; angle += 15) {
+        const path = getSectorPath(50, 50, 24.5, angle)
+        expect(path).not.toContain('NaN')
+        expect(path).not.toContain('undefined')
+      }
+    })
+  })
+
+  describe('2. Sun Rays Array & Art Direction Specifications', () => {
+    it('defines 8 evenly spaced rays at 45 degree intervals', () => {
+      expect(SUN_RAYS).toHaveLength(8)
+      const degrees = SUN_RAYS.map((r) => r.deg)
+      expect(degrees).toEqual([0, 45, 90, 135, 180, 225, 270, 315])
+    })
+
+    it('places the 0° ray at the 3 o\'clock position (y = 50, x > 50)', () => {
+      const ray0 = SUN_RAYS.find((r) => r.deg === 0)
+      expect(ray0).toBeDefined()
+      expect(ray0.y1).toBe(50)
+      expect(ray0.y2).toBe(50)
+      expect(ray0.x1).toBeGreaterThan(50)
+      expect(ray0.x2).toBeGreaterThan(ray0.x1)
+    })
+
+    it('places the 90° ray at the 6 o\'clock position (x = 50, y > 50)', () => {
+      const ray90 = SUN_RAYS.find((r) => r.deg === 90)
+      expect(ray90).toBeDefined()
+      expect(ray90.x1).toBe(50)
+      expect(ray90.x2).toBe(50)
+      expect(ray90.y1).toBeGreaterThan(50)
+      expect(ray90.y2).toBeGreaterThan(ray90.y1)
+    })
+
+    it('places the 180° ray at the 9 o\'clock position (y = 50, x < 50)', () => {
+      const ray180 = SUN_RAYS.find((r) => r.deg === 180)
+      expect(ray180).toBeDefined()
+      expect(ray180.y1).toBe(50)
+      expect(ray180.y2).toBe(50)
+      expect(ray180.x1).toBeLessThan(50)
+      expect(ray180.x2).toBeLessThan(ray180.x1)
+    })
+
+    it('places the 270° ray at the 12 o\'clock position (x = 50, y < 50)', () => {
+      const ray270 = SUN_RAYS.find((r) => r.deg === 270)
+      expect(ray270).toBeDefined()
+      expect(ray270.x1).toBe(50)
+      expect(ray270.x2).toBe(50)
+      expect(ray270.y1).toBeLessThan(50)
+      expect(ray270.y2).toBeLessThan(ray270.y1)
+    })
+  })
+
+  describe('3. Easing Function (easeInOutCubic)', () => {
+    it('starts at 0 and ends at 1 with symmetry at 0.5', () => {
+      expect(easeInOutCubic(0)).toBe(0)
+      expect(easeInOutCubic(1)).toBe(1)
+      expect(easeInOutCubic(0.5)).toBe(0.5)
+    })
+
+    it('is strictly monotonic over the [0, 1] range', () => {
+      let previous = -1
+      for (let t = 0; t <= 1; t += 0.05) {
+        const value = easeInOutCubic(t)
+        expect(value).toBeGreaterThanOrEqual(previous)
+        previous = value
+      }
+    })
+  })
+
+  describe('4. Theme Store Lifecycle & Protection', () => {
+    it('initializes with current document or storage theme', () => {
+      expect(useThemeStore.getState().theme).toBe('light')
+      expect(useThemeStore.getState().isTransitioning).toBe(false)
+    })
+
+    it('triggers transition when overlay is mounted and target theme differs', () => {
+      const store = useThemeStore.getState()
+      store.registerOverlay()
+
+      store.setTheme('dark')
+
+      const state = useThemeStore.getState()
+      expect(state.isTransitioning).toBe(true)
+      expect(state.transitionDirection).toBe('to-dark')
+      expect(state.targetTheme).toBe('dark')
+    })
+
+    it('ignores clicks while transition is already active (rapid click protection)', () => {
+      const store = useThemeStore.getState()
+      store.registerOverlay()
+
+      store.setTheme('dark')
+      expect(useThemeStore.getState().isTransitioning).toBe(true)
+
+      // Attempt rapid second click while transitioning
+      store.setTheme('light')
+
+      // Should remain transitioning to dark, ignoring the conflicting click
+      expect(useThemeStore.getState().isTransitioning).toBe(true)
+      expect(useThemeStore.getState().transitionDirection).toBe('to-dark')
+      expect(useThemeStore.getState().targetTheme).toBe('dark')
+    })
+
+    it('commits theme to DOM dataset, localStorage, and store state at totality', () => {
+      const store = useThemeStore.getState()
+      store.registerOverlay()
+      store.setTheme('dark')
+
+      // Totality is reached: commitTheme executes
+      store.commitTheme('dark')
+
+      expect(useThemeStore.getState().theme).toBe('dark')
+      expect(globalThis.document.documentElement.dataset.theme).toBe('dark')
+      expect(safeStorage.get('martit-theme')).toBe('dark')
+    })
+
+    it('resets transitioning state upon finishTransition', () => {
+      const store = useThemeStore.getState()
+      store.registerOverlay()
+      store.setTheme('dark')
+      store.commitTheme('dark')
+
+      store.finishTransition()
+
+      const state = useThemeStore.getState()
+      expect(state.isTransitioning).toBe(false)
+      expect(state.transitionDirection).toBe(null)
+      expect(state.targetTheme).toBe(null)
+      expect(state.theme).toBe('dark')
+    })
+
+    it('executes reverse transition to-light cleanly', () => {
+      useThemeStore.setState({
+        theme: 'dark',
+        isOverlayMounted: true,
+      })
+      globalThis.document.documentElement.dataset.theme = 'dark'
+
+      const store = useThemeStore.getState()
+      store.setTheme('light')
+
+      expect(useThemeStore.getState().isTransitioning).toBe(true)
+      expect(useThemeStore.getState().transitionDirection).toBe('to-light')
+      expect(useThemeStore.getState().targetTheme).toBe('light')
+
+      store.commitTheme('light')
+      store.finishTransition()
+
+      expect(useThemeStore.getState().theme).toBe('light')
+      expect(globalThis.document.documentElement.dataset.theme).toBe('light')
+      expect(safeStorage.get('martit-theme')).toBe('light')
+    })
+
+    it('bypasses transition immediately when prefers-reduced-motion is true', () => {
+      globalThis.window.matchMedia = vi.fn().mockImplementation((query) => ({
+        matches: query === '(prefers-reduced-motion: reduce)',
+        media: query,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }))
+
+      const store = useThemeStore.getState()
+      store.registerOverlay()
+
+      store.setTheme('dark')
+
+      // Should be committed immediately with NO transition
+      expect(useThemeStore.getState().isTransitioning).toBe(false)
+      expect(useThemeStore.getState().theme).toBe('dark')
+      expect(globalThis.document.documentElement.dataset.theme).toBe('dark')
+      expect(safeStorage.get('martit-theme')).toBe('dark')
+    })
+
+    it('applies theme immediately if overlay is not mounted (SSR/unit-test resilience)', () => {
+      useThemeStore.setState({
+        isOverlayMounted: false,
+        theme: 'light',
+      })
+
+      const store = useThemeStore.getState()
+      store.setTheme('dark')
+
+      expect(useThemeStore.getState().isTransitioning).toBe(false)
+      expect(useThemeStore.getState().theme).toBe('dark')
+      expect(globalThis.document.documentElement.dataset.theme).toBe('dark')
+    })
+  })
+
+  describe('5. ThemeToggle Button Accessibility & State', () => {
+    it('renders with appropriate accessible label in light mode', () => {
+      useThemeStore.setState({ theme: 'light', isTransitioning: false })
+      const html = renderToString(React.createElement(ThemeToggle))
+      expect(html).toContain('aria-label="Switch to dark mode"')
+      expect(html).not.toContain('disabled=""')
+      expect(html).toContain('aria-busy="false"')
+    })
+
+    it('renders with disabled and aria-busy attributes during active transition', () => {
+      useThemeStore.setState({
+        theme: 'light',
+        isTransitioning: true,
+        transitionDirection: 'to-dark',
+      })
+
+      // Spy on store hook for renderToString in Node environment
+      vi.spyOn(themeStoreModule, 'useThemeStore').mockImplementation((selector) => {
+        const state = useThemeStore.getState()
+        return selector ? selector(state) : state
+      })
+
+      const html = renderToString(React.createElement(ThemeToggle))
+      expect(html).toContain('disabled=""')
+      expect(html).toContain('aria-busy="true"')
+      expect(html).toContain('Switch to dark mode')
+    })
+  })
+
+  describe('6. ThemeTransitionOverlay Component Markup', () => {
+    it('returns null when transition is not active', () => {
+      useThemeStore.setState({ isTransitioning: false, transitionDirection: null })
+      const html = renderToString(React.createElement(ThemeTransitionOverlay))
+      expect(html).toBe('')
+    })
+
+    it('renders full-screen overlay with sun rays and dark moon cover in to-dark mode', () => {
+      useThemeStore.setState({
+        isTransitioning: true,
+        transitionDirection: 'to-dark',
+        targetTheme: 'dark',
+      })
+
+      // Spy on store hook for renderToString in Node environment
+      vi.spyOn(themeStoreModule, 'useThemeStore').mockImplementation((selector) => {
+        const state = useThemeStore.getState()
+        return selector ? selector(state) : state
+      })
+
+      const html = renderToString(
+        React.createElement(ThemeTransitionOverlay, {
+          forceActive: true,
+          forceDirection: 'to-dark',
+          forceTargetTheme: 'dark',
+        })
+      )
+      expect(html).toContain('data-testid="theme-transition-overlay"')
+      expect(html).toContain('data-direction="to-dark"')
+      expect(html).toContain('id="lightToDarkGroup"')
+      expect(html).toContain('id="sunRays"')
+      expect(html).toContain('id="martitSunGlow"')
+    })
+
+    it('renders full-screen overlay with moon disk and sun sweep clipPath in to-light mode', () => {
+      useThemeStore.setState({
+        isTransitioning: true,
+        transitionDirection: 'to-light',
+        targetTheme: 'light',
+      })
+
+      // Spy on store hook for renderToString in Node environment
+      vi.spyOn(themeStoreModule, 'useThemeStore').mockImplementation((selector) => {
+        const state = useThemeStore.getState()
+        return selector ? selector(state) : state
+      })
+
+      const html = renderToString(
+        React.createElement(ThemeTransitionOverlay, {
+          forceActive: true,
+          forceDirection: 'to-light',
+          forceTargetTheme: 'light',
+        })
+      )
+      expect(html).toContain('data-testid="theme-transition-overlay"')
+      expect(html).toContain('data-direction="to-light"')
+      expect(html).toContain('id="darkToLightGroup"')
+      expect(html).toContain('clip-path="url(#sunSweepClip)"')
+    })
+  })
+})

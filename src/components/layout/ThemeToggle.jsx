@@ -4,22 +4,27 @@ import { useThemeStore } from '@/stores/themeStore'
 import { cn } from '@/utils/cn'
 import { useHydrated } from '@/hooks/useHydrated'
 
-export function ThemeToggle({ className }) {
-  const { theme: storedTheme, setTheme } = useThemeStore()
+export function ThemeToggle({ className, disabled: propDisabled, ariaBusy: propAriaBusy } = {}) {
+  const { theme: storedTheme, setTheme, isTransitioning } = useThemeStore()
   const theme = useHydrated() ? storedTheme : 'light' // matches pre-rendered HTML until hydrated
   const next = theme === 'dark' ? 'light' : 'dark'
   const Icon = theme === 'dark' ? Moon : Sun
+  const isBusy = propAriaBusy !== undefined ? propAriaBusy : isTransitioning
+  const isDisabled = propDisabled !== undefined ? propDisabled : isTransitioning
 
   return (
     <button
       type="button"
-      onClick={(e) => {
-        const r = e.currentTarget.getBoundingClientRect()
-        setTheme(next, { x: r.left + r.width / 2, y: r.top + r.height / 2 })
+      disabled={isDisabled}
+      aria-busy={isBusy}
+      onClick={() => {
+        if (!isBusy) {
+          setTheme(next)
+        }
       }}
       aria-label={`Switch to ${next} mode`}
       className={cn(
-        'relative grid size-10 place-items-center overflow-hidden rounded-full text-ink transition-colors hover:bg-surface-2',
+        'relative grid size-10 place-items-center overflow-hidden rounded-full text-ink transition-colors hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-70',
         className,
       )}
     >

@@ -39,6 +39,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M12.4 | Combined payment & multi-store runner tracking | VERIFIED | Commit ab76194; Single UPI payment view with multi-store fee breakdown, OrderConfirmation multi-store pickup checklist, multi-store runner pickup completion, 42 test files (750 passed) & clean build | Complete |
 | M12.5 | Cart selector stability & React Error #185 fix | VERIFIED | Commit ed8b799; Fixed unstable Zustand selectors with useShallow and memoized store selectors, eliminated infinite re-render loop on /app/cart, 44 test files (770 passed, 1 skipped) | Complete |
 | M12.6 | Authoritative ₹10 multi-store surcharge & pricing consistency | VERIFIED | Commit 7f5c3d9; Authoritative ₹10 surcharge default, fees.js, env.js, server orders.js, OrdersPage, AdminConsole, 48 deliveryFee + 95 orders tests, 44 test files (782 passed, 1 skipped) | Complete |
+| M13 | Animated Sun-to-Moon theme transition | VERIFIED | Commit 062bd2c; Clockwise 360° eclipse sweep starting at 3 o'clock, zero-flash veil, reduced-motion bypass, rapid click protection, 45 test files (807 passed) | Complete |
 
 ## Milestone Evidence & Audit Trails
 
@@ -499,6 +500,51 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
   - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
 
+### M13 — Animated Sun-to-Moon Theme Transition
+- **Date / Session:** 2026-11-17
+- **Objective:**
+  - Replace MartIT's basic circular reveal theme toggle with a cinematic, animated sun-to-moon eclipse transition.
+  - Deliver genuine clockwise 360-degree sweep starting from the 3 o'clock position (rightmost coordinate: $(cx + r, cy)$).
+  - Guarantee zero flash of previous theme or unstyled intermediate states.
+  - Support `prefers-reduced-motion` accessible bypass, rapid-click protection, and SSR pre-rendering compatibility.
+- **Changes Implemented:**
+  1. `src/stores/themeStore.js`:
+     - Added `isTransitioning`, `transitionDirection` (`'to-dark'` | `'to-light'`), `targetTheme`, and `isOverlayMounted`.
+     - Hardened `setTheme(theme)` with rapid click guard: ignores redundant triggers while transition is running.
+     - Added `prefers-reduced-motion` check: instantly commits theme without animation if reduced motion is requested.
+     - Added overlay mount check: commits immediately when overlay is not mounted (e.g. headless unit tests, non-overlay routes).
+     - Added `commitTheme(targetTheme)` to commit dataset and localStorage state at totality.
+     - Added `finishTransition()` to clean up transition state after exit fade.
+  2. `src/components/theme/ThemeTransitionOverlay.jsx`:
+     - Full-screen fixed overlay (`fixed inset-0 z-[99999] pointer-events-auto`) mounted centrally in the viewport.
+     - Implemented `getSectorPath(cx, cy, r, angleDeg)` generating an exact circular sector starting at 3 o'clock and sweeping clockwise through 360°.
+     - Light $\to$ Dark: Warm glowing sun (`#FEF08A`) with 8 rays that extinguish sequentially as the dark moon sector (`#0b1410`) sweeps clockwise from 3 o'clock over the sun disk.
+     - Dark $\to$ Light: Dark celestial moon disk revealed clockwise into a warm glowing sun with a radiant dawn beam travelling along the leading sweep edge.
+     - Totality synchronization: at 360° totality (850ms), the backdrop veil reaches 100% opacity of the destination theme token (`#0b1410` for dark, `#f8fafc` for light), calling `commitTheme()` behind the solid veil with zero visible flash.
+     - Exit fade: smooth 200ms dissolve from opacity 1.0 to 0 with subtle scale dispersion.
+  3. `src/components/layout/ThemeToggle.jsx`:
+     - Connected `disabled={isTransitioning}` and `aria-busy={isTransitioning}`.
+     - Blocked click events during transition (`if (!isTransitioning) setTheme(next)`).
+     - Preserved accessible `aria-label` and spring-based icon flip.
+  4. `src/app/providers.jsx`:
+     - Mounted `<ThemeTransitionOverlay />` inside the application's global provider hierarchy.
+  5. `src/components/theme/__tests__/themeTransition.test.jsx`:
+     - 25 comprehensive unit and integration tests covering:
+       - 3 o'clock starting position $(cx + r, cy)$ and clockwise 360° sweep geometry.
+       - Ray coordinates and 45-degree interval placement.
+       - `easeInOutCubic` monotonicity and bounds.
+       - Store state transitions, rapid click protection, totality commit, and finish lifecycle.
+       - Reverse `to-light` transition.
+       - `prefers-reduced-motion` instant bypass.
+       - `ThemeToggle` accessibility attributes (`aria-label`, `disabled`, `aria-busy`).
+       - Full-screen overlay markup in both directions.
+- **Verification Commands & Evidence:**
+  - `npx vitest run src/components/theme/__tests__/themeTransition.test.jsx`: 25 tests passed, exit code 0.
+  - `npm test`: 45 test files, 807 passed, 1 skipped (808 total), exit code 0.
+  - `npm run test:server`: 17 test files, 380 passed, 1 skipped, exit code 0.
+  - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
+
 ### M12.6 — Authoritative ₹10 Multi-Store Surcharge & Pricing Consistency
 - **Date / Session:** 2026-11-17
 - **Problem Statement:**
@@ -530,6 +576,51 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `npx vitest run src/utils/__tests__/deliveryFee.test.js`: 48 passed, exit code 0.
   - `npx vitest run server/src/__tests__/orders.test.js`: 95 passed, exit code 0.
   - `npm test`: 44 test files, 782 passed, 1 skipped, exit code 0.
+  - `npm run test:server`: 17 test files, 380 passed, 1 skipped, exit code 0.
+  - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
+
+### M13 — Animated Sun-to-Moon Theme Transition
+- **Date / Session:** 2026-11-17
+- **Objective:**
+  - Replace MartIT's basic circular reveal theme toggle with a cinematic, animated sun-to-moon eclipse transition.
+  - Deliver genuine clockwise 360-degree sweep starting from the 3 o'clock position (rightmost coordinate: $(cx + r, cy)$).
+  - Guarantee zero flash of previous theme or unstyled intermediate states.
+  - Support `prefers-reduced-motion` accessible bypass, rapid-click protection, and SSR pre-rendering compatibility.
+- **Changes Implemented:**
+  1. `src/stores/themeStore.js`:
+     - Added `isTransitioning`, `transitionDirection` (`'to-dark'` | `'to-light'`), `targetTheme`, and `isOverlayMounted`.
+     - Hardened `setTheme(theme)` with rapid click guard: ignores redundant triggers while transition is running.
+     - Added `prefers-reduced-motion` check: instantly commits theme without animation if reduced motion is requested.
+     - Added overlay mount check: commits immediately when overlay is not mounted (e.g. headless unit tests, non-overlay routes).
+     - Added `commitTheme(targetTheme)` to commit dataset and localStorage state at totality.
+     - Added `finishTransition()` to clean up transition state after exit fade.
+  2. `src/components/theme/ThemeTransitionOverlay.jsx`:
+     - Full-screen fixed overlay (`fixed inset-0 z-[99999] pointer-events-auto`) mounted centrally in the viewport.
+     - Implemented `getSectorPath(cx, cy, r, angleDeg)` generating an exact circular sector starting at 3 o'clock and sweeping clockwise through 360°.
+     - Light $\to$ Dark: Warm glowing sun (`#FEF08A`) with 8 rays that extinguish sequentially as the dark moon sector (`#0b1410`) sweeps clockwise from 3 o'clock over the sun disk.
+     - Dark $\to$ Light: Dark celestial moon disk revealed clockwise into a warm glowing sun with a radiant dawn beam travelling along the leading sweep edge.
+     - Totality synchronization: at 360° totality (850ms), the backdrop veil reaches 100% opacity of the destination theme token (`#0b1410` for dark, `#f8fafc` for light), calling `commitTheme()` behind the solid veil with zero visible flash.
+     - Exit fade: smooth 200ms dissolve from opacity 1.0 to 0 with subtle scale dispersion.
+  3. `src/components/layout/ThemeToggle.jsx`:
+     - Connected `disabled={isTransitioning}` and `aria-busy={isTransitioning}`.
+     - Blocked click events during transition (`if (!isTransitioning) setTheme(next)`).
+     - Preserved accessible `aria-label` and spring-based icon flip.
+  4. `src/app/providers.jsx`:
+     - Mounted `<ThemeTransitionOverlay />` inside the application's global provider hierarchy.
+  5. `src/components/theme/__tests__/themeTransition.test.jsx`:
+     - 25 comprehensive unit and integration tests covering:
+       - 3 o'clock starting position $(cx + r, cy)$ and clockwise 360° sweep geometry.
+       - Ray coordinates and 45-degree interval placement.
+       - `easeInOutCubic` monotonicity and bounds.
+       - Store state transitions, rapid click protection, totality commit, and finish lifecycle.
+       - Reverse `to-light` transition.
+       - `prefers-reduced-motion` instant bypass.
+       - `ThemeToggle` accessibility attributes (`aria-label`, `disabled`, `aria-busy`).
+       - Full-screen overlay markup in both directions.
+- **Verification Commands & Evidence:**
+  - `npx vitest run src/components/theme/__tests__/themeTransition.test.jsx`: 25 tests passed, exit code 0.
+  - `npm test`: 45 test files, 807 passed, 1 skipped (808 total), exit code 0.
   - `npm run test:server`: 17 test files, 380 passed, 1 skipped, exit code 0.
   - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
   - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
