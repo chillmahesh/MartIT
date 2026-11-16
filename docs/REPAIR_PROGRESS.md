@@ -34,8 +34,8 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M10 | Final Product Plan execution & verification | VERIFIED | Commit cb2b871; docs/FINAL_PRODUCT_PLAN.md executed, README.md updated, 630 tests passed, build verified | Operator live staging acceptance on external infrastructure |
 | M11 | Form validation, input constraints & responsive UX fix | VERIFIED | Commits c57477e, ab9e24c, 09e1eb4; Complete client/server input validation, 10-digit Indian phone constraints, RFC email normalization, Unicode names, checkout/admin/runner bounds, 41 test files (730 passed, 1 skipped) | Complete |
 | M12.1 | Multi-store pricing & surcharge configuration | VERIFIED | Commit eaa729b; MULTI_STORE_SURCHARGE, calculateAdditionalStoreSurcharge, calculateDeliveryFee breakdown, 42 deliveryFee tests passed | Complete; proceed to M12.2 |
-| M12.2 | Multi-store cart store & customer warning UI | VERIFIED | In progress commit; Cart lines storeId tracking, multi-store transition detection, first-add warning modal, CartPage store grouping, persistent indicator & 117 customer/product tests passed | Proceed to M12.3 |
-| M12.3 | Multi-store server & mock order creation | IN_PROGRESS | Authoritative backend multi-store product lookup, atomic order creation, fulfillment groups | In progress |
+| M12.2 | Multi-store cart store & customer warning UI | VERIFIED | Commit f9a1a66; Cart lines storeId tracking, multi-store transition detection, first-add warning modal, CartPage store grouping, persistent indicator & 117 customer/product tests passed | Complete; proceed to M12.3 |
+| M12.3 | Multi-store server & mock order creation | VERIFIED | In progress commit; Migration 20261116000001_multi_store_atomic_orders.sql, multi-store handleCreateOrder, fulfillment groups, 89 orders tests & 42 test suites (748 passed) | Complete; proceed to M12.4 |
 | M12.4 | Combined payment & multi-store runner tracking | NOT_STARTED | Single payment flow, multi-store pickup sequence & completion | Pending |
 
 ## Milestone Evidence & Audit Trails
@@ -421,3 +421,34 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `npx vitest run src/components/products/__tests__/catalogue.test.js`: 21 tests passed, exit code 0.
   - `npx vitest run src/pages/customer/__tests__/checkoutFlow.test.js`: 22 tests passed, exit code 0.
   - `npx vitest run src/components/products/__tests__/ src/pages/customer/__tests__/`: 8 test files, 117 tests passed, exit code 0.
+
+### M12.3 — Server & Mock Server Multi-Store Order Creation
+- **Date / Session:** 2026-11-16
+- **Changes Implemented:**
+  1. `supabase/migrations/20261116000001_multi_store_atomic_orders.sql`:
+     - Upgraded PostgreSQL stored procedure `create_order_atomic` to support multi-store carts.
+     - Loops through unique store IDs derived from line items, inserting distinct `order_fulfillment_groups` with indexed pickup sequences.
+     - Inserts `order_items` linked to their respective fulfillment groups and store IDs.
+     - Creates `inventory_reservations` held per store and product with automatic expiration window.
+     - Statically validated against schema conventions with `node scripts/validate-migrations.mjs`.
+  2. `server/src/routes/orders.js`:
+     - Updated `handleCreateOrder` to accept `storeIds` array and line-item store mappings.
+     - Validates all requested stores upfront (exists, open); rejects closed stores with `STORE_CLOSED` (409) and missing stores with `STORE_NOT_FOUND` (404).
+     - Validates product availability and stock across all participating campus stores.
+     - Computes multi-store delivery distances across all involved store locations to customer destination.
+     - Calculates authoritative financial totals including base delivery fee + additional store surcharge ($A = \max(0, N-1) \times S$).
+     - Returns canonical response shape with populated `fulfillmentGroups` array containing store snapshots and respective line items.
+  3. `src/services/mockServer/handlers.js`:
+     - Updated mock server `orders.create` to handle multi-store cart payloads, calculate multi-store delivery fees with surcharge, deduct inventory across stores, and populate `order_fulfillment_groups` and `pickups`.
+  4. `server/src/__tests__/testHelpers.js`:
+     - Updated mock transaction engine for `create_order_atomic` to create distinct fulfillment groups and items per store.
+  5. `server/src/__tests__/orders.test.js`:
+     - Added test 33: creates multi-store order across campus stores with distinct fulfillment groups and fee breakdown.
+     - Added test 34: rejects multi-store order if any included store is closed.
+- **Verification Commands & Evidence:**
+  - `node scripts/validate-migrations.mjs`: 14 migration files validated, exit code 0.
+  - `npx vitest run server/src/__tests__/orders.test.js`: 89 tests passed, exit code 0.
+  - `npx vitest run server/src/__tests__/endToEndOrderLifecycle.test.js`: 8 tests passed, exit code 0.
+  - `npm run test:server`: 17 test files, 374 passed, exit code 0.
+  - `npm test`: 42 test files, 748 passed, 1 skipped, exit code 0.
+

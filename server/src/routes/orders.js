@@ -8,8 +8,10 @@ import { env } from '../config/env.js'
 import {
   FLAT_DELIVERY_FEE,
   MAX_SERVICE_KM,
+  MULTI_STORE_SURCHARGE,
   PRICING_VERSION,
 } from '../../../src/config/fees.js'
+import { calculateAdditionalStoreSurcharge } from '../../../src/utils/deliveryFee.js'
 import { parseCoordinate, straightLineKm } from '../../../src/utils/distance.js'
 import {
   validateName,
@@ -1721,10 +1723,10 @@ async function handleCreateOrder(req, res, next) {
     }
 
     // 2. Validate payload
-    const { storeId, locationId, lines, customerDetails, idempotencyKey: bodyIdempotencyKey } = req.body || {}
+    const { storeId, storeIds, locationId, lines, customerDetails, idempotencyKey: bodyIdempotencyKey } = req.body || {}
     const idempotencyKey = req.headers['idempotency-key'] || bodyIdempotencyKey || null
 
-    if (!storeId || typeof storeId !== 'string') {
+    if ((!storeId || typeof storeId !== 'string') && (!Array.isArray(storeIds) || storeIds.length === 0)) {
       throw ApiError.badRequest('Store ID is required.', 'INVALID_STORE_ID')
     }
     if (!locationId || typeof locationId !== 'string') {
@@ -1732,6 +1734,12 @@ async function handleCreateOrder(req, res, next) {
     }
     if (!Array.isArray(lines) || lines.length === 0) {
       throw ApiError.unprocessable('Your cart is empty.', 'EMPTY_CART')
+    }
+
+    const allowedStoreIds = new Set()
+    if (storeId && typeof storeId === 'string') allowedStoreIds.add(storeId)
+    if (Array.isArray(storeIds)) {
+      storeIds.forEach((sid) => sid && typeof sid === 'string' && allowedStoreIds.add(sid))
     }
 
     // Customer details validation
@@ -1807,50 +1815,24 @@ async function handleCreateOrder(req, res, next) {
       }
     }
 
-    // 4. Query & validate store
-    const { data: store, error: storeErr } = await supabase
+    // 4. Query & validate store(s) involved in the order
+    const requestedStoreIds = Array.from(allowedStoreIds)
+    const { data: dbStores, error: storesErr } = await supabase
       .from('stores')
       .select('id, name, description, is_open, latitude, longitude')
-      .eq('id', storeId)
-      .maybeSingle()
+      .in('id', requestedStoreIds)
 
-    if (storeErr || !store) {
+    if (storesErr || !dbStores || dbStores.length !== requestedStoreIds.length) {
       throw ApiError.notFound('That store is not available.', 'STORE_NOT_FOUND')
     }
-    if (!store.is_open) {
+    const closedStore = dbStores.find((s) => !s.is_open)
+    if (closedStore) {
       throw ApiError.conflict('This store is closed right now.', 'STORE_CLOSED')
     }
 
-    // 5. Query & validate delivery location (authoritative server-side destination validation)
-    const { data: location, error: locErr } = await supabase
-      .from('locations')
-      .select('id, name, group_name, latitude, longitude, is_active')
-      .eq('id', locationId)
-      .maybeSingle()
+    const store = dbStores.find((s) => s.id === storeId) || dbStores[0]
 
-    if (locErr || !location || !location.is_active) {
-      throw ApiError.notFound('Choose a valid delivery spot first.', 'LOCATION_NOT_FOUND')
-    }
-
-    // 6. Validate coordinates and delivery distance
-    const storeCoords = parseCoordinate({ latitude: store.latitude, longitude: store.longitude })
-    if (!storeCoords) {
-      throw ApiError.unprocessable('Store coordinates are missing or invalid.', 'INVALID_COORDINATES', { entity: 'store', storeId })
-    }
-    const locationCoords = parseCoordinate({ latitude: location.latitude, longitude: location.longitude })
-    if (!locationCoords) {
-      throw ApiError.unprocessable('Delivery destination coordinates are missing or invalid.', 'INVALID_COORDINATES', { entity: 'location', locationId })
-    }
-
-    const distanceKm = straightLineKm(storeCoords, locationCoords)
-    if (!Number.isFinite(distanceKm) || distanceKm <= 0) {
-      throw ApiError.unprocessable("We couldn't work out the distance for that drop point. Please re-pick your location.", 'INVALID_DISTANCE', { distanceKm })
-    }
-    if (distanceKm > MAX_SERVICE_KM + 1e-9) {
-      throw ApiError.unprocessable('Delivery location is outside our 5 km service radius.', 'OUT_OF_SERVICE_AREA', { distanceKm, maxKm: MAX_SERVICE_KM })
-    }
-
-    // 7. Authoritative product pricing & inventory check
+    // 5. Authoritative product pricing & inventory check
     const productIds = Array.from(lineMap.keys())
     const { data: dbProducts, error: prodErr } = await supabase
       .from('products')
@@ -1863,7 +1845,7 @@ async function handleCreateOrder(req, res, next) {
 
     const pricedLines = []
     for (const [productId, quantity] of lineMap.entries()) {
-      const product = dbProducts.find((p) => p.id === productId && p.store_id === storeId)
+      const product = dbProducts.find((p) => p.id === productId && (allowedStoreIds.size === 0 || allowedStoreIds.has(p.store_id)))
       if (!product || !product.is_available) {
         throw ApiError.conflict('An item in your cart is no longer available.', 'PRODUCT_UNAVAILABLE', { productId })
       }
@@ -1877,6 +1859,7 @@ async function handleCreateOrder(req, res, next) {
       }
       pricedLines.push({
         productId,
+        storeId: product.store_id,
         name: product.name,
         pack: product.pack || null,
         unitPrice,
@@ -1885,11 +1868,52 @@ async function handleCreateOrder(req, res, next) {
       })
     }
 
+    const distinctStoreIds = Array.from(new Set(pricedLines.map((l) => l.storeId)))
+    const activeStores = dbStores.filter((s) => distinctStoreIds.includes(s.id))
+
+    // 6. Query & validate delivery location (authoritative server-side destination validation)
+    const { data: location, error: locErr } = await supabase
+      .from('locations')
+      .select('id, name, group_name, latitude, longitude, is_active')
+      .eq('id', locationId)
+      .maybeSingle()
+
+    if (locErr || !location || !location.is_active) {
+      throw ApiError.notFound('Choose a valid delivery spot first.', 'LOCATION_NOT_FOUND')
+    }
+
+    const locationCoords = parseCoordinate({ latitude: location.latitude, longitude: location.longitude })
+    if (!locationCoords) {
+      throw ApiError.unprocessable('Delivery destination coordinates are missing or invalid.', 'INVALID_COORDINATES', { entity: 'location', locationId })
+    }
+
+    // 7. Validate coordinates and delivery distance for each store
+    let maxDistanceKm = 0
+    const relevantStores = activeStores.length > 0 ? activeStores : dbStores
+    for (const st of relevantStores) {
+      const storeCoords = parseCoordinate({ latitude: st.latitude, longitude: st.longitude })
+      if (!storeCoords) {
+        throw ApiError.unprocessable('Store coordinates are missing or invalid.', 'INVALID_COORDINATES', { entity: 'store', storeId: st.id })
+      }
+      const distanceKm = straightLineKm(storeCoords, locationCoords)
+      if (!Number.isFinite(distanceKm) || distanceKm <= 0) {
+        throw ApiError.unprocessable("We couldn't work out the distance for that drop point. Please re-pick your location.", 'INVALID_DISTANCE', { distanceKm })
+      }
+      if (distanceKm > MAX_SERVICE_KM + 1e-9) {
+        throw ApiError.unprocessable('Delivery location is outside our 5 km service radius.', 'OUT_OF_SERVICE_AREA', { distanceKm, maxKm: MAX_SERVICE_KM })
+      }
+      if (distanceKm > maxDistanceKm) {
+        maxDistanceKm = distanceKm
+      }
+    }
+
     // Sort priced lines deterministically by productId to prevent lock-ordering cycles
     pricedLines.sort((a, b) => a.productId.localeCompare(b.productId))
 
-    // 8. Financial totals calculation under MVP Flat ₹10 Delivery Fee Policy
-    const deliveryFee = FLAT_DELIVERY_FEE
+    // 8. Financial totals calculation under MVP Flat ₹10 Delivery Fee Policy + Multi-Store Surcharge
+    const storeCount = distinctStoreIds.length
+    const additionalStoreSurcharge = calculateAdditionalStoreSurcharge(storeCount, MULTI_STORE_SURCHARGE)
+    const deliveryFee = FLAT_DELIVERY_FEE + additionalStoreSurcharge
     const itemSubtotal = Math.round(pricedLines.reduce((acc, l) => acc + l.lineSubtotal, 0) * 100) / 100
     if (itemSubtotal > 99999999.99) {
       throw ApiError.unprocessable('Order subtotal exceeds maximum allowable limit.', 'ORDER_TOTAL_EXCEEDED')
@@ -1917,7 +1941,7 @@ async function handleCreateOrder(req, res, next) {
       p_items: atomicItemsPayload,
       p_delivery_fee: deliveryFee,
       p_fee_policy_version: PRICING_VERSION,
-      p_route_distance_km: Number(distanceKm.toFixed(4)),
+      p_route_distance_km: Number(maxDistanceKm.toFixed(4)),
       p_idempotency_key: finalIdempotencyKey,
       p_fee_window_seconds: 120,
       p_fee_cooldown_seconds: 300,
@@ -2027,6 +2051,7 @@ async function handleCreateOrder(req, res, next) {
       id: assignedOrderId,
       customerId: req.user.id,
       storeId: store.id,
+      storeIds: distinctStoreIds,
       locationId: location.id,
       deliveryLocationId: location.id,
       deliveryLocationSnapshot: {
@@ -2049,10 +2074,12 @@ async function handleCreateOrder(req, res, next) {
       pricing: {
         itemSubtotal: authoritativeSubtotal,
         deliveryFee: authoritativeDeliveryFee,
+        baseDeliveryFee: FLAT_DELIVERY_FEE,
+        additionalStoreSurcharge,
         baseAmount: authoritativeBaseAmount,
         platformFee: authoritativePlatformFee,
         total: authoritativeTotal,
-        distanceKm: Number(distanceKm.toFixed(2)),
+        distanceKm: Number(maxDistanceKm.toFixed(2)),
         distanceMethod: 'straight_line',
         pricingVersion: PRICING_VERSION,
       },
@@ -2065,19 +2092,21 @@ async function handleCreateOrder(req, res, next) {
         cooldownExpiresAt,
         paidAt: null,
       },
-      fulfillmentGroups: [
-        {
-          id: `grp_${assignedOrderId.replace(/^ord_/, '')}`,
-          storeId: store.id,
+      fulfillmentGroups: relevantStores.map((st, idx) => {
+        const storeLines = pricedLines.filter((l) => l.storeId === st.id)
+        return {
+          id: `grp_${assignedOrderId.replace(/^ord_/, '')}_${idx + 1}`,
+          storeId: st.id,
           storeSnapshot: {
-            id: store.id,
-            name: store.name,
-            description: store.description || null,
-            latitude: store.latitude,
-            longitude: store.longitude,
+            id: st.id,
+            name: st.name,
+            description: st.description || null,
+            latitude: st.latitude,
+            longitude: st.longitude,
           },
           status: 'PENDING',
-          orderItems: pricedLines.map((l) => ({
+          pickupSequenceIndex: idx,
+          orderItems: storeLines.map((l) => ({
             productId: l.productId,
             productName: l.name,
             productPack: l.pack,
@@ -2085,8 +2114,8 @@ async function handleCreateOrder(req, res, next) {
             quantity: l.quantity,
             lineSubtotal: l.lineSubtotal,
           })),
-        },
-      ],
+        }
+      }),
       status: 'AWAITING_PAYMENT',
       paymentStatus: 'PENDING',
       createdAt: allocatedAt,

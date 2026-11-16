@@ -413,16 +413,56 @@ export function createMockSupabaseClient({
         state.orders.push(orderRecord)
 
         if (!state.inventory_reservations) state.inventory_reservations = []
+        if (!state.order_fulfillment_groups) state.order_fulfillment_groups = []
+        if (!state.order_items) state.order_items = []
+
+        const distinctStores = Array.from(new Set(
+          sortedProductIds.map((pid) => (state.products || []).find((p) => p.id === pid)?.store_id || args?.p_store_id)
+        ))
+
+        const groupMap = new Map()
+        distinctStores.forEach((sid, idx) => {
+          const groupId = `grp_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`
+          const storeObj = (state.stores || []).find((s) => s.id === sid)
+          groupMap.set(sid, groupId)
+          state.order_fulfillment_groups.push({
+            id: groupId,
+            order_id: orderId,
+            store_id: sid,
+            store_snapshot: storeObj ? { id: storeObj.id, name: storeObj.name } : { id: sid, name: 'Store' },
+            status: 'PENDING',
+            pickup_sequence_index: idx,
+            picked_up_at: null,
+            created_at: nowIso,
+            updated_at: nowIso,
+          })
+        })
+
         for (const pid of sortedProductIds) {
           const qty = aggregatedMap.get(pid)
+          const prod = (state.products || []).find((p) => p.id === pid)
+          const sid = prod?.store_id || args?.p_store_id
+          const groupId = groupMap.get(sid)
           state.inventory_reservations.push({
             id: `res_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
             order_id: orderId,
-            store_id: args?.p_store_id,
+            store_id: sid,
             product_id: pid,
             quantity: qty,
             status: 'HELD',
             expires_at: windowExp,
+            created_at: nowIso,
+          })
+          state.order_items.push({
+            id: `item_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+            order_id: orderId,
+            fulfillment_group_id: groupId,
+            store_id: sid,
+            product_id: pid,
+            product_name: prod?.name || 'Product',
+            unit_price: Number(prod?.price || 0),
+            quantity: qty,
+            line_subtotal: Math.round(Number(prod?.price || 0) * qty * 100) / 100,
             created_at: nowIso,
           })
         }

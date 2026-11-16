@@ -1075,6 +1075,7 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
       ],
       stores: [
         { id: 'store_campus_mart', name: 'Campus Mart', is_open: true, latitude: 12.9716, longitude: 77.5946 },
+        { id: 'store_stationery', name: 'Campus Stationery', is_open: true, latitude: 12.9720, longitude: 77.5950 },
         { id: 'store_closed', name: 'Closed Mart', is_open: false, latitude: 12.9716, longitude: 77.5946 },
       ],
       locations: [
@@ -1087,6 +1088,7 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
         { id: 'p_bread', store_id: 'store_campus_mart', name: 'Whole Wheat Bread', pack: '400 g', price: 40.00, stock: 5, is_available: true },
         { id: 'p_limited', store_id: 'store_campus_mart', name: 'Limited Stock Item', pack: '1 pc', price: 15.00, stock: 2, is_available: true },
         { id: 'p_unavailable', store_id: 'store_campus_mart', name: 'Unavailable Item', pack: '1 pc', price: 20.00, stock: 10, is_available: false },
+        { id: 'p_notebook', store_id: 'store_stationery', name: 'Spiral Notebook', pack: '1 pc', price: 50.00, stock: 8, is_available: true },
       ],
       platform_fee_reservations: [
         { fee_paise: 12, is_paid: false, active_order_id: null },
@@ -1901,6 +1903,62 @@ describe('Order Creation Endpoint (POST /orders/create & POST /api/v1/orders)', 
     const order = mockState.orders.find((o) => o.id === 'ord_pending_release')
     expect(order.status).toBe('AWAITING_PAYMENT')
     expect(order.payment_status).toBe('PENDING')
+  })
+
+  it('33. creates multi-store order across multiple campus stores with distinct fulfillment groups and accurate delivery fee breakdown', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeIds: ['store_campus_mart', 'store_stationery'],
+        locationId: 'loc_hostel_a',
+        lines: [
+          { productId: 'p_milk', quantity: 1, storeId: 'store_campus_mart' },
+          { productId: 'p_notebook', quantity: 2, storeId: 'store_stationery' },
+        ],
+        customerDetails: {
+          fullName: 'Alice Customer',
+          phoneNumber: '9876543210',
+          selectedDestination: 'Hostel A',
+        },
+      })
+
+    expect(res.status).toBe(201)
+    const order = res.body
+    expect(order.id).toBeDefined()
+    expect(order.status).toBe('AWAITING_PAYMENT')
+    expect(order.storeIds).toEqual(['store_campus_mart', 'store_stationery'])
+    expect(order.lines.length).toBe(2)
+
+    // Pricing checks: milk (28) + 2 notebooks (100) = 128
+    expect(order.pricing.itemSubtotal).toBe(128)
+    expect(order.pricing.baseDeliveryFee).toBe(10)
+    // Surcharge for 2 stores: max(0, 2 - 1) * MULTI_STORE_SURCHARGE (0 by default)
+    expect(order.pricing.additionalStoreSurcharge).toBe(0)
+    expect(order.pricing.deliveryFee).toBe(10)
+    expect(order.pricing.baseAmount).toBe(138)
+
+    // Fulfillment groups: one per store
+    expect(order.fulfillmentGroups.length).toBe(2)
+    const storeIds = order.fulfillmentGroups.map((g) => g.storeId)
+    expect(storeIds).toContain('store_campus_mart')
+    expect(storeIds).toContain('store_stationery')
+  })
+
+  it('34. rejects multi-store order if any included store is closed', async () => {
+    const res = await request(app)
+      .post('/orders/create')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({
+        storeIds: ['store_campus_mart', 'store_closed'],
+        locationId: 'loc_hostel_a',
+        lines: [
+          { productId: 'p_milk', quantity: 1, storeId: 'store_campus_mart' },
+        ],
+      })
+
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('STORE_CLOSED')
   })
 })
 

@@ -3,7 +3,13 @@
  * Everything here models what the server must do: it never trusts prices, fees or
  * totals sent by the browser, and it derives the user from the session token.
  */
-import { calculateDeliveryFee, splitDeliveryFee, DELIVERY_FEE_MESSAGES } from '@/utils/deliveryFee'
+import {
+  calculateDeliveryFee,
+  calculateAdditionalStoreSurcharge,
+  splitDeliveryFee,
+  DELIVERY_FEE_MESSAGES,
+} from '@/utils/deliveryFee'
+import { MULTI_STORE_SURCHARGE } from '@/config/fees'
 import { calculateOrderTotals } from '@/utils/orderTotals'
 import { ORDER_STATUS, canTransitionOrder, transitionOrder } from '@/utils/orderMachine'
 import { PAYMENT_STATUS, PAYMENT_SOURCE, transitionPayment } from '@/utils/paymentMachine'
@@ -359,7 +365,7 @@ export function createMockServer({ routingProvider = null } = {}) {
      * in the payload is ignored; everything is recomputed here and snapshotted so
      * later price/fee changes never alter this order.
      */
-    'orders.create': async ({ storeId, locationId, lines, customerDetails }, { token }) => {
+    'orders.create': async ({ storeId, storeIds, locationId, lines, customerDetails }, { token }) => {
       const user = requirePermission(token, PERMISSIONS.SHOP)
       if (!Array.isArray(lines) || lines.length === 0) {
         throw new ApiError('EMPTY_CART', 'Your cart is empty.', 422)
@@ -392,17 +398,40 @@ export function createMockServer({ routingProvider = null } = {}) {
         sanitizedCustomerDetails = customerDetails
       }
 
-      const pricedLines = lines.map(({ productId, quantity }) => {
-        const product = db.products.find((p) => p.id === productId && p.storeId === storeId)
+      const allowedStoreIds = new Set()
+      if (storeId && typeof storeId === 'string') allowedStoreIds.add(storeId)
+      if (Array.isArray(storeIds)) {
+        storeIds.forEach((sid) => sid && typeof sid === 'string' && allowedStoreIds.add(sid))
+      }
+
+      const pricedLines = lines.map(({ productId, quantity, storeId: lineStoreId }) => {
+        const product = db.products.find((p) => {
+          if (p.id !== productId) return false
+          if (lineStoreId) return p.storeId === lineStoreId
+          if (allowedStoreIds.size > 0) return allowedStoreIds.has(p.storeId)
+          return true
+        })
         if (!product) throw new ApiError('PRODUCT_UNAVAILABLE', 'An item in your cart is no longer available.', 409, { productId })
         if (!Number.isInteger(quantity) || quantity < 1) throw new ApiError('INVALID_QUANTITY', 'Invalid quantity.', 422, { productId })
         if (product.stock < quantity) {
           throw new ApiError('OUT_OF_STOCK', `Only ${product.stock} left of ${product.name}.`, 409, { productId, available: product.stock })
         }
-        return { productId, name: product.name, pack: product.pack, unitPrice: product.price, quantity }
+        return { productId, _storeId: product.storeId, name: product.name, pack: product.pack, unitPrice: product.price, quantity }
       })
 
-      const quote = await computeDeliveryQuote(storeId, locationId)
+      const distinctStoreIds = Array.from(new Set(pricedLines.map((l) => l._storeId)))
+      for (const sid of distinctStoreIds) {
+        const s = db.stores.find((st) => st.id === sid)
+        if (!s) throw new ApiError('STORE_NOT_FOUND', 'That store is not available.', 404)
+        if (!s.isOpen) throw new ApiError('STORE_CLOSED', 'This store is closed right now.', 409)
+      }
+
+      const primaryStoreId = storeId || distinctStoreIds[0]
+      const quote = await computeDeliveryQuote(primaryStoreId, locationId)
+
+      const storeCount = distinctStoreIds.length
+      const additionalStoreSurcharge = calculateAdditionalStoreSurcharge(storeCount, MULTI_STORE_SURCHARGE)
+      const totalDeliveryFee = quote.deliveryFee + additionalStoreSurcharge
 
       const orderId = newId('ord')
       let feeAllocation = null
@@ -414,21 +443,37 @@ export function createMockServer({ routingProvider = null } = {}) {
 
         const totals = calculateOrderTotals({
           lines: pricedLines,
-          deliveryFee: quote.deliveryFee,
+          deliveryFee: totalDeliveryFee,
+          baseDeliveryFee: quote.deliveryFee,
+          additionalStoreSurcharge,
           platformFee,
         })
         const split = splitDeliveryFee(quote.deliveryFee)
 
+        // Deduct inventory
+        for (const line of pricedLines) {
+          const p = db.products.find((prod) => prod.id === line.productId && prod.storeId === line._storeId)
+          if (p) p.stock -= line.quantity
+        }
+
         const order = {
           id: orderId,
           customerId: user.id,
-          storeId,
+          storeId: primaryStoreId,
+          storeIds: distinctStoreIds,
           locationId,
-          lines: pricedLines,
+          lines: pricedLines.map(({ _storeId, ...line }) => line),
           customerDetails: sanitizedCustomerDetails || null,
           pricing: {
             itemSubtotal: totals.itemSubtotal,
             deliveryFee: totals.deliveryFee,
+            ...(storeCount > 1 || additionalStoreSurcharge > 0
+              ? {
+                  baseDeliveryFee: quote.deliveryFee,
+                  additionalStoreSurcharge,
+                  storeCount,
+                }
+              : {}),
             baseAmount: totals.baseAmount,
             platformFee: totals.platformFee,
             total: totals.total,
@@ -445,6 +490,23 @@ export function createMockServer({ routingProvider = null } = {}) {
             cooldownExpiresAt: feeAllocation.reservation.cooldownExpiresAt,
             paidAt: null,
           },
+          pickups: distinctStoreIds.map((sid) => ({
+            storeId: sid,
+            status: 'PENDING',
+            pickedUpAt: null,
+          })),
+          order_fulfillment_groups: distinctStoreIds.map((sid, idx) => {
+            const st = db.stores.find((s) => s.id === sid)
+            return {
+              id: newId('grp'),
+              order_id: orderId,
+              store_id: sid,
+              status: 'PENDING',
+              pickup_sequence_index: idx,
+              picked_up_at: null,
+              store_snapshot: st ? { id: st.id, name: st.name, isOpen: st.isOpen } : null,
+            }
+          }),
           // Internal ledger — never sent to the customer.
           ledger: {
             runnerPayout: split.runnerPayout,
