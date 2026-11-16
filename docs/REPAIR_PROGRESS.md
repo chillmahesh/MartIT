@@ -36,7 +36,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M12.1 | Multi-store pricing & surcharge configuration | VERIFIED | Commit eaa729b; MULTI_STORE_SURCHARGE, calculateAdditionalStoreSurcharge, calculateDeliveryFee breakdown, 42 deliveryFee tests passed | Complete; proceed to M12.2 |
 | M12.2 | Multi-store cart store & customer warning UI | VERIFIED | Commit f9a1a66; Cart lines storeId tracking, multi-store transition detection, first-add warning modal, CartPage store grouping, persistent indicator & 117 customer/product tests passed | Complete; proceed to M12.3 |
 | M12.3 | Multi-store server & mock order creation | VERIFIED | Commit 1172324; Migration 20261116000001_multi_store_atomic_orders.sql, multi-store handleCreateOrder, fulfillment groups, 89 orders tests & 42 test suites (748 passed) | Complete; proceed to M12.4 |
-| M12.4 | Combined payment & multi-store runner tracking | VERIFIED | In progress commit; Single UPI payment view with multi-store fee breakdown, OrderConfirmation multi-store pickup checklist, multi-store runner pickup completion, 42 test files (750 passed) & clean build | Complete |
+| M12.4 | Combined payment & multi-store runner tracking | VERIFIED | Commit ab76194; Single UPI payment view with multi-store fee breakdown, OrderConfirmation multi-store pickup checklist, multi-store runner pickup completion, 42 test files (750 passed) & clean build | Complete |
 
 ## Milestone Evidence & Audit Trails
 
