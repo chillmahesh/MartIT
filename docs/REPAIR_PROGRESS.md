@@ -39,7 +39,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M12.4 | Combined payment & multi-store runner tracking | VERIFIED | Commit ab76194; Single UPI payment view with multi-store fee breakdown, OrderConfirmation multi-store pickup checklist, multi-store runner pickup completion, 42 test files (750 passed) & clean build | Complete |
 | M12.5 | Cart selector stability & React Error #185 fix | VERIFIED | Commit ed8b799; Fixed unstable Zustand selectors with useShallow and memoized store selectors, eliminated infinite re-render loop on /app/cart, 44 test files (770 passed, 1 skipped) | Complete |
 | M12.6 | Authoritative ₹10 multi-store surcharge & pricing consistency | VERIFIED | Commit 7f5c3d9; Authoritative ₹10 surcharge default, fees.js, env.js, server orders.js, OrdersPage, AdminConsole, 48 deliveryFee + 95 orders tests, 44 test files (782 passed, 1 skipped) | Complete |
-| M13 | Animated Sun-to-Moon theme transition | VERIFIED | Commit 062bd2c; Clockwise 360° eclipse sweep starting at 3 o'clock, zero-flash veil, reduced-motion bypass, rapid click protection, 45 test files (807 passed) | Complete |
+| M13 | Animated Sun-to-Moon theme transition | VERIFIED | Commit a94fabd; Clockwise 360° eclipse sweep starting at 3 o'clock, zero-flash veil, reduced-motion bypass, rapid click protection, 45 test files (807 passed) | Complete |
 
 ## Milestone Evidence & Audit Trails
 
