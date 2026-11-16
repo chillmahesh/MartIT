@@ -172,6 +172,7 @@
 | Store: Daily Order & Sales Summary Per Store | VERIFIED | `adminOperationalMetrics.test.jsx`, `AdminConsolePage.jsx` | `c8b0d3c` |
 | Store: Low-Stock Alerts & Rapid Restock Actions | VERIFIED | `adminOperationalMetrics.test.jsx`, `AdminConsolePage.jsx` | `c8b0d3c` |
 | Store: Fast Product Availability & Inventory Controls | VERIFIED | `catalogueOperations.test.js`, `AdminConsolePage.jsx` | `c8b0d3c` |
+| Customer: Multi-Store Cart, Additional Store Surcharge & Warnings | VERIFIED | `multiStoreCart.test.jsx`, `orders.test.js`, `checkoutFlow.test.js` | `bf92b24` |
 | Admin: Runner Applications Approval / Suspension RPC | VERIFIED | `adminAuth.test.jsx`, `admin_set_runner_status` RPC | `e38c0a3` |
 | Admin: Searchable All-Orders View & Status Filters | VERIFIED | `adminOrders.test.js`, `adminConsoleOrders.test.jsx` | `9b59f42` |
 | Admin: Payment Exception Queue & Resolution | VERIFIED | `adminOrders.test.js`, `AdminConsolePage.jsx` | `9b59f42` |
@@ -180,6 +181,14 @@
 | Shared: Make.com Fail-Closed Webhook Verification | VERIFIED | `webhooks.test.js`, `orders.test.js` | `c1f06ac` |
 
 ## Progress log
+
+- **2026-11-16 | Milestone 12 — Multi-Store Cart, Additional Store Surcharge & Customer Warnings:**
+  - Milestone 12.1 (Pricing & Surcharge Formula): Implemented additional store surcharge formula $A = \max(0, N-1) \times S$ and combined delivery fee $D = B + A$ in `src/utils/deliveryFee.js`. Configured `MULTI_STORE_SURCHARGE` in `src/config/fees.js` with safe default 0 and environment overrides. Verified with 42 delivery fee unit tests.
+  - Milestone 12.2 (Multi-Store Cart Store & Warning UI): Updated `cartStore.js` to preserve store identity on line items (`{ productId, quantity, storeId }`), detect single-to-multi-store transitions, trigger `MultiStoreWarningModal.jsx`, and auto-reset on cart reduction. Updated `CartPage.jsx` with distinct store item groups, persistent multi-store banner, and granular fee breakdown. Verified with 117 customer/cart tests.
+  - Milestone 12.3 (Atomic Multi-Store Server Order Creation): Created PostgreSQL stored procedure migration `20261116000001_multi_store_atomic_orders.sql` generating indexed `order_fulfillment_groups`, line items, and store-specific inventory holds in one transaction. Updated `server/src/routes/orders.js` and `src/services/mockServer/handlers.js` with multi-store validation, distance calculation, and canonical fulfillment group responses. Verified with 89 order tests and 15 statically validated migrations.
+  - Milestone 12.4 (Combined Payment & Multi-Store Runner Tracking): Preserved single combined UPI payment attempt and dynamic platform-fee verification in `CustomerPaymentView.jsx` with collection stores list and fee breakdown. Added multi-store pickup progress checklist in `OrderConfirmationView.jsx`. Verified runner multi-store pickup flow advancing order to `PICKED_UP` upon collecting all stores.
+  - Verification: 43 test files passed, 756 tests passed, 1 skipped (0 failures), production build passed.
+  - Commits: `eaa729b` (M12.1), `f9a1a66` (M12.2), `1172324` (M12.3), `ab76194` (M12.4).
 
 - **2026-10-24 | Milestone 3 — Store Operations, Daily Summaries, Low-Stock Alerts & Admin Operational Metrics:**
   - Store Operations Daily Summary: Integrated per-store real-time calculations directly into Store cards (`AdminConsolePage.jsx`) displaying today's store revenue, order volume, active in-prep fulfillment count, and completed deliveries.
