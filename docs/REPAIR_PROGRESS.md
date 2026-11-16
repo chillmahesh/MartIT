@@ -35,8 +35,8 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M11 | Form validation, input constraints & responsive UX fix | VERIFIED | Commits c57477e, ab9e24c, 09e1eb4; Complete client/server input validation, 10-digit Indian phone constraints, RFC email normalization, Unicode names, checkout/admin/runner bounds, 41 test files (730 passed, 1 skipped) | Complete |
 | M12.1 | Multi-store pricing & surcharge configuration | VERIFIED | Commit eaa729b; MULTI_STORE_SURCHARGE, calculateAdditionalStoreSurcharge, calculateDeliveryFee breakdown, 42 deliveryFee tests passed | Complete; proceed to M12.2 |
 | M12.2 | Multi-store cart store & customer warning UI | VERIFIED | Commit f9a1a66; Cart lines storeId tracking, multi-store transition detection, first-add warning modal, CartPage store grouping, persistent indicator & 117 customer/product tests passed | Complete; proceed to M12.3 |
-| M12.3 | Multi-store server & mock order creation | VERIFIED | In progress commit; Migration 20261116000001_multi_store_atomic_orders.sql, multi-store handleCreateOrder, fulfillment groups, 89 orders tests & 42 test suites (748 passed) | Complete; proceed to M12.4 |
-| M12.4 | Combined payment & multi-store runner tracking | NOT_STARTED | Single payment flow, multi-store pickup sequence & completion | Pending |
+| M12.3 | Multi-store server & mock order creation | VERIFIED | Commit 1172324; Migration 20261116000001_multi_store_atomic_orders.sql, multi-store handleCreateOrder, fulfillment groups, 89 orders tests & 42 test suites (748 passed) | Complete; proceed to M12.4 |
+| M12.4 | Combined payment & multi-store runner tracking | VERIFIED | In progress commit; Single UPI payment view with multi-store fee breakdown, OrderConfirmation multi-store pickup checklist, multi-store runner pickup completion, 42 test files (750 passed) & clean build | Complete |
 
 ## Milestone Evidence & Audit Trails
 
@@ -451,4 +451,25 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `npx vitest run server/src/__tests__/endToEndOrderLifecycle.test.js`: 8 tests passed, exit code 0.
   - `npm run test:server`: 17 test files, 374 passed, exit code 0.
   - `npm test`: 42 test files, 748 passed, 1 skipped, exit code 0.
+
+### M12.4 — Combined Payment & Multi-Store Runner Tracking
+- **Date / Session:** 2026-11-16
+- **Changes Implemented:**
+  1. `src/components/payment/CustomerPaymentView.jsx`:
+     - Updated store header to reflect multi-store collections ("Stores (Multi-Store)" listing campus store names).
+     - Rendered granular delivery fee breakdown when multi-store surcharges apply: `(Base ₹10 + Multi-Store ₹S)`.
+     - Preserved single combined UPI payment attempt, dynamic platform fee allocation, 2-minute payment window, and Make.com + Gmail verification path.
+  2. `src/components/cart/OrderConfirmationView.jsx`:
+     - Updated store summary to render all participating stores when order contains multiple fulfillment groups.
+     - Added multi-store pickup status card displaying collection progress across all distinct campus stores (`X of N Picked Up` with individual store status badges).
+     - Added granular delivery fee breakdown in the authoritative pricing snapshot.
+  3. Tests:
+     - Added tests to `src/pages/customer/__tests__/multiStoreCart.test.jsx` verifying `CustomerPaymentView` and `OrderConfirmationView` multi-store UI rendering, granular fee breakdown, and pickup checklist.
+- **Verification Commands & Evidence:**
+  - `npx vitest run src/pages/customer/__tests__/multiStoreCart.test.jsx`: 7 tests passed, exit code 0.
+  - `npx vitest run src/pages/runner/__tests__/`: 4 test files, 65 tests passed, exit code 0.
+  - `npm test`: 42 test files, 750 passed, 1 skipped, exit code 0.
+  - `npm run test:server`: 17 test files, 374 passed, exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
+
 

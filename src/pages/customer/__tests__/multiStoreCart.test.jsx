@@ -13,6 +13,8 @@ import {
 import CartPage from '@/pages/customer/CartPage'
 import { FLAT_DELIVERY_FEE, MULTI_STORE_SURCHARGE } from '@/config/fees'
 import { calculateAdditionalStoreSurcharge, calculateDeliveryFee } from '@/utils/deliveryFee'
+import { CustomerPaymentView } from '@/components/payment/CustomerPaymentView'
+import { OrderConfirmationView } from '@/components/cart/OrderConfirmationView'
 
 describe('Multi-Store Cart Store & Warning System (Milestone 12.2)', () => {
   beforeEach(() => {
@@ -121,5 +123,116 @@ describe('Multi-Store Cart Store & Warning System (Milestone 12.2)', () => {
     } finally {
       spy.mockRestore()
     }
+  })
+
+  it('renders CustomerPaymentView with multi-store details and granular surcharge breakdown', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const multiStoreOrder = {
+      id: 'ord_multi_123',
+      customerId: 'usr_alice',
+      storeIds: ['store_campus_mart', 'store_night_canteen'],
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_a',
+      status: 'AWAITING_PAYMENT',
+      paymentStatus: 'PENDING',
+      lines: [
+        { productId: 'p_milk', name: 'Toned Milk', unitPrice: 28, quantity: 1, lineSubtotal: 28 },
+        { productId: 'p_maggi', name: 'Cheese Maggi', unitPrice: 65, quantity: 1, lineSubtotal: 65 },
+      ],
+      fulfillmentGroups: [
+        { id: 'grp_1', storeId: 'store_campus_mart', storeSnapshot: { name: 'Campus Mart' }, status: 'PENDING' },
+        { id: 'grp_2', storeId: 'store_night_canteen', storeSnapshot: { name: 'Night Canteen' }, status: 'PENDING' },
+      ],
+      pricing: {
+        itemSubtotal: 93,
+        deliveryFee: 20,
+        baseDeliveryFee: 10,
+        additionalStoreSurcharge: 10,
+        baseAmount: 113,
+        platformFee: 0.15,
+        total: 113.15,
+        distanceKm: 1.2,
+      },
+      payment: {
+        status: 'PENDING',
+        feePaise: 15,
+        windowExpiresAt: new Date(Date.now() + 100000).toISOString(),
+      },
+    }
+
+    const html = renderToString(
+      React.createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        React.createElement(MemoryRouter, null, React.createElement(CustomerPaymentView, { initialOrder: multiStoreOrder }))
+      )
+    )
+
+    // Displays multi-store label and store names
+    expect(html).toContain('Stores (Multi-Store)')
+    expect(html).toContain('Campus Mart, Night Canteen')
+    // Displays delivery fee and breakdown
+    expect(html).toContain('Multi-Store')
+    expect(html).toContain('Base')
+    // Combined total
+    expect(html).toContain('Final Authoritative Total')
+    expect(html).toContain('₹113.15')
+  })
+
+  it('renders OrderConfirmationView with multi-store pickup progress checklist and breakdown', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const confirmedMultiStoreOrder = {
+      id: 'ord_confirmed_multi',
+      customerId: 'usr_alice',
+      storeIds: ['store_campus_mart', 'store_night_canteen'],
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_a',
+      status: 'PREPARING',
+      paymentStatus: 'PAID',
+      runnerName: 'Runner Rob',
+      runnerId: 'usr_runner_1',
+      lines: [
+        { productId: 'p_milk', name: 'Toned Milk', unitPrice: 28, quantity: 1 },
+        { productId: 'p_maggi', name: 'Cheese Maggi', unitPrice: 65, quantity: 1 },
+      ],
+      fulfillmentGroups: [
+        { id: 'grp_1', storeId: 'store_campus_mart', storeSnapshot: { name: 'Campus Mart' }, status: 'PICKED_UP' },
+        { id: 'grp_2', storeId: 'store_night_canteen', storeSnapshot: { name: 'Night Canteen' }, status: 'PENDING' },
+      ],
+      pricing: {
+        itemSubtotal: 93,
+        deliveryFee: 20,
+        baseDeliveryFee: 10,
+        additionalStoreSurcharge: 10,
+        baseAmount: 113,
+        platformFee: 0.15,
+        total: 113.15,
+        distanceKm: 1.2,
+      },
+      payment: {
+        status: 'PAID',
+        feePaise: 15,
+      },
+      createdAt: new Date().toISOString(),
+    }
+
+    const html = renderToString(
+      React.createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        React.createElement(MemoryRouter, null, React.createElement(OrderConfirmationView, { order: confirmedMultiStoreOrder }))
+      )
+    )
+
+    // Multi-store store name
+    expect(html).toContain('Stores (Multi-Store Order)')
+    expect(html).toContain('Campus Mart, Night Canteen')
+    // Multi-store pickup status
+    expect(html).toContain('Multi-Store Pickup Status')
+    expect(html).toContain('1 of 2 Picked Up')
+    expect(html).toContain('Collected')
+    expect(html).toContain('Pending Pickup')
+    // Fee breakdown
+    expect(html).toContain('Multi-Store')
   })
 })

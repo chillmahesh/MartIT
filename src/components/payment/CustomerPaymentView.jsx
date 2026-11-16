@@ -174,6 +174,8 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
     const p = order?.pricing || {}
     const itemSubtotal = Number(p.itemSubtotal ?? 0)
     const deliveryFee = Number(p.deliveryFee ?? 0)
+    const baseDeliveryFee = p.baseDeliveryFee != null ? Number(p.baseDeliveryFee) : null
+    const additionalStoreSurcharge = p.additionalStoreSurcharge != null ? Number(p.additionalStoreSurcharge) : 0
     const platformFee = Number(
       p.platformFee ?? (order?.payment?.feePaise ? order.payment.feePaise / 100 : 0),
     )
@@ -181,6 +183,8 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
     return {
       itemSubtotal,
       deliveryFee,
+      baseDeliveryFee,
+      additionalStoreSurcharge,
       baseAmount: Number(p.baseAmount ?? itemSubtotal + deliveryFee),
       platformFee,
       total,
@@ -539,8 +543,16 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
               <div className="flex items-start gap-2">
                 <Store className="size-4 text-brand shrink-0 mt-0.5" aria-hidden="true" />
                 <div>
-                  <p className="text-[11px] font-medium text-ink-subtle">Store</p>
-                  <p className="font-semibold text-ink">{store ? store.name : (order.storeId || 'Campus Store')}</p>
+                  <p className="text-[11px] font-medium text-ink-subtle">
+                    {order.storeIds?.length > 1 || order.fulfillmentGroups?.length > 1 ? 'Stores (Multi-Store)' : 'Store'}
+                  </p>
+                  <p className="font-semibold text-ink">
+                    {order.storeIds?.length > 1 || order.fulfillmentGroups?.length > 1
+                      ? (order.fulfillmentGroups
+                          ? order.fulfillmentGroups.map((g) => g.storeSnapshot?.name || g.storeId).filter(Boolean).join(', ')
+                          : `${order.storeIds?.length || 2} Campus Stores`)
+                      : (store ? store.name : (order.storeId || 'Campus Store'))}
+                  </p>
                 </div>
               </div>
 
@@ -617,6 +629,11 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
                   {pricing.distanceKm != null && (
                     <span className="text-xs text-ink-subtle block">
                       {`(${formatDistanceKm(pricing.distanceKm)} km ${distanceMethodLabel})`}
+                    </span>
+                  )}
+                  {pricing.additionalStoreSurcharge > 0 && (
+                    <span className="text-[11px] text-ink-subtle block">
+                      (Base {formatINR(pricing.baseDeliveryFee || 10)} + Multi-Store {formatINR(pricing.additionalStoreSurcharge)})
                     </span>
                   )}
                 </div>

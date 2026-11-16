@@ -356,6 +356,48 @@ export function OrderConfirmationView({ order, onStartNew }) {
       )}
 
 
+      {/* Multi-Store Pickup Progress for In-Flight Orders */}
+      {isPaid && (order.fulfillmentGroups?.length > 1 || order.pickups?.length > 1) && order.status !== ORDER_STATUS.DELIVERED && (
+        <div className="rounded-card border border-line bg-surface p-4 sm:p-5 shadow-1 space-y-3" data-testid="multi-store-pickup-progress">
+          <div className="flex items-center justify-between border-b border-line/60 pb-2.5">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-ink-subtle flex items-center gap-1.5">
+              <Store className="size-3.5 text-brand" aria-hidden="true" />
+              <span>Multi-Store Pickup Status</span>
+            </h3>
+            <span className="text-[11px] font-medium text-ink-muted">
+              {(() => {
+                const groups = order.fulfillmentGroups || order.pickups || []
+                const completed = groups.filter((g) => g.status === 'PICKED_UP').length
+                return `${completed} of ${groups.length} Picked Up`
+              })()}
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            {(order.fulfillmentGroups || order.pickups || []).map((group, idx) => {
+              const storeName = group.storeSnapshot?.name || group.storeId
+              const isGroupPickedUp = group.status === 'PICKED_UP'
+              return (
+                <div key={group.id || `grp-${idx}`} className="flex items-center justify-between p-2.5 rounded-tile bg-surface-2 border border-line text-xs">
+                  <div className="flex items-center gap-2.5">
+                    <div className={cn(
+                      'grid size-5 place-items-center rounded-full text-[10px] font-bold',
+                      isGroupPickedUp ? 'bg-fresh text-ink-inverse' : 'bg-surface text-ink-subtle border border-line'
+                    )}>
+                      {isGroupPickedUp ? <Check className="size-3 stroke-[3]" /> : idx + 1}
+                    </div>
+                    <span className="font-semibold text-ink">{storeName}</span>
+                  </div>
+                  <Badge tone={isGroupPickedUp ? 'success' : 'neutral'} size="sm">
+                    {isGroupPickedUp ? 'Collected' : 'Pending Pickup'}
+                  </Badge>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Order Details & Authoritative Pricing */}
       <div className="rounded-card border border-line bg-surface p-5 sm:p-6 shadow-2 space-y-6">
         <div className="flex items-center justify-between border-b border-line/60 pb-4">
@@ -370,8 +412,16 @@ export function OrderConfirmationView({ order, onStartNew }) {
           <div className="flex items-start gap-2.5">
             <Store className="size-4 text-brand shrink-0 mt-0.5" aria-hidden="true" />
             <div>
-              <p className="text-xs font-medium text-ink-subtle">Store</p>
-              <p className="font-semibold text-ink">{store ? store.name : order.storeId}</p>
+              <p className="text-xs font-medium text-ink-subtle">
+                {order.storeIds?.length > 1 || order.fulfillmentGroups?.length > 1 ? 'Stores (Multi-Store Order)' : 'Store'}
+              </p>
+              <p className="font-semibold text-ink">
+                {order.storeIds?.length > 1 || order.fulfillmentGroups?.length > 1
+                  ? (order.fulfillmentGroups
+                      ? order.fulfillmentGroups.map((g) => g.storeSnapshot?.name || g.storeId).filter(Boolean).join(', ')
+                      : `${order.storeIds?.length || 2} Campus Stores`)
+                  : (store ? store.name : order.storeId)}
+              </p>
             </div>
           </div>
 
@@ -445,6 +495,11 @@ export function OrderConfirmationView({ order, onStartNew }) {
                 {order.pricing.distanceKm != null && (
                   <span className="text-xs text-ink-subtle block">
                     {`(${formatDistanceKm(order.pricing.distanceKm)} km ${distanceMethodLabel})`}
+                  </span>
+                )}
+                {order.pricing.additionalStoreSurcharge > 0 && (
+                  <span className="text-[11px] text-ink-subtle block">
+                    (Base {formatINR(order.pricing.baseDeliveryFee || 10)} + Multi-Store {formatINR(order.pricing.additionalStoreSurcharge)})
                   </span>
                 )}
               </div>
