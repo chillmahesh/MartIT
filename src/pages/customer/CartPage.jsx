@@ -21,6 +21,7 @@ import {
   selectIsMultiStore,
   selectMultiStoreCount,
 } from '@/stores/cartStore'
+import { useShallow } from 'zustand/react/shallow'
 import { useStores, useProducts } from '@/hooks/useCatalogue'
 import { useLocations } from '@/hooks/useLocations'
 import { useDeliveryQuote } from '@/hooks/useDeliveryQuote'
@@ -61,12 +62,12 @@ export default function CartPage() {
   const cartCount = useCartStore(selectCartCount)
   const setQuantity = useCartStore((s) => s.setQuantity)
   const clearCart = useCartStore((s) => s.clear)
-  const checkoutDetails = useCartStore((s) => s.checkoutDetails)
+  const checkoutDetails = useCartStore(useShallow((s) => s.checkoutDetails))
   const setCheckoutDetails = useCartStore((s) => s.setCheckoutDetails)
 
   // Stores & Products
   const { data: stores = [], isLoading: isLoadingStores } = useStores()
-  const distinctStoreIds = useCartStore(selectDistinctStoreIds)
+  const distinctStoreIds = useCartStore(useShallow(selectDistinctStoreIds))
   const isMultiStore = distinctStoreIds.length > 1
   const storeCount = distinctStoreIds.length
   const effectiveStoreId = cartStoreId || distinctStoreIds[0] || stores[0]?.id || 'store_campus_mart'
@@ -102,19 +103,21 @@ export default function CartPage() {
   const [fieldErrors, setFieldErrors] = useState({})
 
   // Prefill authenticated profile details without overwriting existing user edits
+  const userName = user?.name
+  const userPhone = user?.phone
   useEffect(() => {
-    if (!user) return
+    if (!userName && !userPhone) return
     const updates = {}
-    if (!checkoutDetails?.fullName && user.name) {
-      updates.fullName = user.name
+    if (!checkoutDetails?.fullName && userName) {
+      updates.fullName = userName
     }
-    if (!checkoutDetails?.mobileNumber && user.phone) {
-      updates.mobileNumber = user.phone
+    if (!checkoutDetails?.mobileNumber && userPhone) {
+      updates.mobileNumber = userPhone
     }
     if (Object.keys(updates).length > 0) {
       setCheckoutDetails(updates)
     }
-  }, [user, checkoutDetails?.fullName, checkoutDetails?.mobileNumber, setCheckoutDetails])
+  }, [userName, userPhone, checkoutDetails?.fullName, checkoutDetails?.mobileNumber, setCheckoutDetails])
 
   // Map selected campus preset / other to authoritative registered delivery destination ID
   const selectedLocationId = useMemo(() => {

@@ -149,26 +149,62 @@ export const useCartStore = create(
 
 export const selectCartCount = (s) => s.lines.reduce((n, l) => n + l.quantity, 0)
 
-export const selectDistinctStoreIds = (s) => extractDistinctStoreIds(s.lines, s.storeId)
+// Stable cache for selectDistinctStoreIds ensuring referential equality across render evaluations
+let prevLinesForDistinct = null
+let prevStoreIdForDistinct = null
+let cachedDistinctStoreIds = []
 
-export const selectIsMultiStore = (s) => extractDistinctStoreIds(s.lines, s.storeId).length > 1
+export const selectDistinctStoreIds = (s) => {
+  if (!s) return []
+  if (s.lines === prevLinesForDistinct && s.storeId === prevStoreIdForDistinct) {
+    return cachedDistinctStoreIds
+  }
+  const next = extractDistinctStoreIds(s.lines, s.storeId)
+  if (
+    cachedDistinctStoreIds.length === next.length &&
+    cachedDistinctStoreIds.every((id, idx) => id === next[idx])
+  ) {
+    prevLinesForDistinct = s.lines
+    prevStoreIdForDistinct = s.storeId
+    return cachedDistinctStoreIds
+  }
+  prevLinesForDistinct = s.lines
+  prevStoreIdForDistinct = s.storeId
+  cachedDistinctStoreIds = next
+  return cachedDistinctStoreIds
+}
 
-export const selectMultiStoreCount = (s) => extractDistinctStoreIds(s.lines, s.storeId).length
+export const selectIsMultiStore = (s) => selectDistinctStoreIds(s).length > 1
+
+export const selectMultiStoreCount = (s) => selectDistinctStoreIds(s).length
 
 export const selectCartStoreId = (s) => {
   if (s.storeId) return s.storeId
-  const distinct = extractDistinctStoreIds(s.lines)
+  const distinct = selectDistinctStoreIds(s)
   return distinct[0] || null
 }
 
+// Stable cache for selectCartLinesByStore
+let prevLinesForByStore = null
+let prevStoreIdForByStore = null
+let cachedCartLinesByStore = []
+
 export const selectCartLinesByStore = (s) => {
+  if (!s) return []
+  if (s.lines === prevLinesForByStore && s.storeId === prevStoreIdForByStore) {
+    return cachedCartLinesByStore
+  }
   const map = new Map()
-  for (const line of s.lines) {
+  for (const line of s.lines || []) {
     const sid = line.storeId || getProductStoreId(line.productId) || s.storeId || 'unknown'
     if (!map.has(sid)) {
       map.set(sid, [])
     }
     map.get(sid).push(line)
   }
-  return Array.from(map.entries()).map(([storeId, lines]) => ({ storeId, lines }))
+  const next = Array.from(map.entries()).map(([storeId, lines]) => ({ storeId, lines }))
+  prevLinesForByStore = s.lines
+  prevStoreIdForByStore = s.storeId
+  cachedCartLinesByStore = next
+  return cachedCartLinesByStore
 }

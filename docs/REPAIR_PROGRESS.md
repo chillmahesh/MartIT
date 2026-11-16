@@ -37,6 +37,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M12.2 | Multi-store cart store & customer warning UI | VERIFIED | Commit f9a1a66; Cart lines storeId tracking, multi-store transition detection, first-add warning modal, CartPage store grouping, persistent indicator & 117 customer/product tests passed | Complete; proceed to M12.3 |
 | M12.3 | Multi-store server & mock order creation | VERIFIED | Commit 1172324; Migration 20261116000001_multi_store_atomic_orders.sql, multi-store handleCreateOrder, fulfillment groups, 89 orders tests & 42 test suites (748 passed) | Complete; proceed to M12.4 |
 | M12.4 | Combined payment & multi-store runner tracking | VERIFIED | Commit ab76194; Single UPI payment view with multi-store fee breakdown, OrderConfirmation multi-store pickup checklist, multi-store runner pickup completion, 42 test files (750 passed) & clean build | Complete |
+| M12.5 | Cart selector stability & React Error #185 fix | VERIFIED | Commit ed8b799; Fixed unstable Zustand selectors with useShallow and memoized store selectors, eliminated infinite re-render loop on /app/cart, 44 test files (770 passed, 1 skipped) | Complete |
 
 ## Milestone Evidence & Audit Trails
 
@@ -470,6 +471,31 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `npx vitest run src/pages/runner/__tests__/`: 4 test files, 65 tests passed, exit code 0.
   - `npm test`: 42 test files, 750 passed, 1 skipped, exit code 0.
   - `npm run test:server`: 17 test files, 374 passed, exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
+
+### M12.5 — Cart Selector Stability & React Error #185 Prevention
+- **Date / Session:** 2026-11-17
+- **Problem Statement:**
+  - Production deployment at `https://martit.vercel.app/app/cart` crashed with `Minified React error #185 — Maximum update depth exceeded`.
+  - Root Cause: In Zustand v5 (`^5.0.15`) with React 19 (`^19.3.0`), `useCartStore(selectDistinctStoreIds)` in `CartPage.jsx` returned a newly allocated array instance (`Array.from(...)`) on every read. When combined with state updates (such as the `checkoutDetails` profile prefill effect), `Object.is` check in React's `useSyncExternalStore` detected changed snapshots during render cycles, triggering continuous updates and crashing with `Minified React error #185`.
+- **Changes Implemented:**
+  1. `src/pages/customer/CartPage.jsx`:
+     - Imported `useShallow` from `zustand/react/shallow`.
+     - Wrapped `selectDistinctStoreIds` in `useCartStore(useShallow(selectDistinctStoreIds))`.
+     - Wrapped `checkoutDetails` in `useCartStore(useShallow((s) => s.checkoutDetails))`.
+     - Deconstructed primitive strings (`userName = user?.name`, `userPhone = user?.phone`) in the profile prefill `useEffect` dependency array.
+  2. `src/stores/cartStore.js`:
+     - Stabilized `selectDistinctStoreIds` with internal referential equality caching (`cachedDistinctStoreIds`) so consecutive selector evaluations return the exact same array reference when distinct store IDs have not changed.
+     - Refactored `selectIsMultiStore`, `selectMultiStoreCount`, and `selectCartStoreId` to reuse the memoized `selectDistinctStoreIds(s)`.
+     - Stabilized `selectCartLinesByStore` with caching (`cachedCartLinesByStore`) so consecutive reads return the same array reference when cart lines have not changed.
+  3. `src/pages/customer/__tests__/cartSelectorStability.test.jsx`:
+     - Added 11 regression tests verifying selector referential stability across consecutive reads, state updates, item quantity changes, and store additions/removals.
+     - Verified `CartPage` renders without error for empty cart, single-store cart, persisted multi-store cart, and authenticated profile prefill.
+- **Verification Commands & Evidence:**
+  - `npx vitest run src/pages/customer/__tests__/cartSelectorStability.test.jsx`: 11 passed, exit code 0.
+  - `npm test`: 44 test files, 767 passed, 1 skipped, exit code 0.
+  - `npm run test:server`: 17 test files, 374 passed, 1 skipped, exit code 0.
+  - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
   - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
 
 
