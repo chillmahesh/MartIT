@@ -1,0 +1,113 @@
+# MARTIT PAYMENT LIFECYCLE INVESTIGATION & KICKOFF REPORT
+
+## 1. ENVIRONMENT & CHECKPOINT
+- Repository: MartIT
+- Current branch: audit/deep-clean-issue-register
+- HEAD commit: 39a87b332f9402e090d755babc877ee7f761837f
+- Upstream commit: origin/audit/deep-clean-issue-register at 39a87b332f9402e090d755babc877ee7f761837f
+- Working-tree status: Clean (no uncommitted or unstaged changes)
+- Exact test validation commands and results:
+  1. `node scripts/validate-migrations.mjs`
+     - Result: 11 of 11 SQL migration files statically verified successfully.
+  2. `npm test -- server/src/__tests__/orders.test.js server/src/__tests__/webhooks.test.js server/src/__tests__/atomicOrderSqlContract.test.js`
+     - Result: 3 test files passed, 128 tests passed, 1 skipped (duration: 1.62s).
+  3. Full suite baseline (recorded prior run):
+     - Result: 604 tests across suite (567 passed, 1 skipped in earlier full Vitest run).
+
+## 2. ORDER LIFECYCLE SUMMARY
+1. Creation & Reservation:
+   - Route `server/src/routes/orders.js` (`handleCreateOrder`, lines 270-362) calls RPC `create_order_atomic`.
+   - RPC reserves inventory rows in `inventory_reservations` with `status = 'HELD'`, decrements `products.stock_quantity`, creates a fee reservation in `platform_fee_reservations`, and sets `orders.payment_status = 'PENDING'`, `orders.status = 'PENDING'`, and `orders.payment_window_expires_at = NOW() + INTERVAL '2 minutes'`.
+2. QR & Payment Attempt:
+   - Customer UI (`src/components/payment/PaymentQr.jsx`, lines 31-48; `src/utils/upi.js`, line 14) constructs a raw static NPCI UPI URI (`upi://pay?pa=...&am=...&tr=ord_...`).
+   - Purely client-side string generation; no transaction intent or session is registered with any payment gateway or bank.
+3. Webhook Ingestion:
+   - Notification arrives at `server/src/routes/webhooks.js` (`handleMakePaymentWebhook`, lines 212-420) from Make.com.
+   - (Clarification: Make.com operates outbound via MAKE_VERIFICATION_WEBHOOK_URL; no incoming webhook secret exists).
+   - Ingested record inserted into `payment_records` as `status = 'PROCESSING'`, `verification_source = 'MAKE_WEBHOOK_INGESTION'`.
+   - Verification pipeline invokes `verifyWithAuthoritativePaymentGateway`. In production, no gateway is wired, returning `verified: false`. Webhook halts without confirming order.
+4. Polling & Automated Expiry:
+   - Frontend polls `server/src/routes/orders.js` (`handleCheckPayment`, lines 388-510).
+   - Route checks `payment_records` for `status = 'PAID'` and `verification_source = 'AUTHORITATIVE_GATEWAY'`.
+   - Finding none, it returns `inconclusive` until `payment_window_expires_at` is reached.
+   - Once expired, `executeAtomicPaymentExpiry` invokes RPC `expire_order_payment`, setting `orders.payment_status = 'EXPIRED'`, `orders.status = 'CANCELLED'`, reverting inventory reservations (`status = 'RELEASED'`), and restoring stock.
+
+## 3. CONFIRMED BY CODE
+1. Authoritative Verification Dead End (Fails Closed):
+   - Location: `server/src/routes/webhooks.js` lines 117-135, 391-409; `server/src/routes/orders.js` lines 434-456.
+   - Finding: Default gateway verifier returns `{ verified: false, reason: 'NO_AUTHORITATIVE_GATEWAY_INTEGRATION' }`. The webhook does not call `executeAtomicPaymentVerification()`. Polling endpoint cannot find an `AUTHORITATIVE_GATEWAY` record.
+   - Consequence: Every legitimate live customer payment is stuck in `PROCESSING`, leaving orders `PENDING` until 2-minute timer forces order cancellation and stock release.
+2. Late Webhook Notification Telemetry Blackout:
+   - Location: `server/src/routes/webhooks.js` lines 266-273, lines 283-290.
+   - Finding: If an order reaches terminal state (`PAID`, `CANCELLED`, `REFUNDED`) or if `payment_window_expires_at < new Date()`, webhook returns HTTP 409 or HTTP 400 immediately.
+   - Evidence: Ingestion into `payment_records` occurs at line 312, strictly after lines 270 and 285.
+   - Consequence: Customer payments arriving after 2 minutes or after cancellation are rejected at HTTP boundary with zero database record, UTR log, or audit trail in `payment_records`.
+3. Database Concurrency Serialization & Locks:
+   - Location: `supabase/migrations/20261021000001_seed_canonical_campus_locations_and_atomic_orders.sql` lines 275 and 325.
+   - Finding: Both `mark_platform_fee_paid` and `expire_order_payment` execute `SELECT payment_status, status FROM public.orders WHERE id = p_order_id FOR UPDATE`.
+   - Consequence: Race conditions between verification and expiration are strictly serialized at the PostgreSQL row level. The first transaction wins; the second encounters updated status and throws `CANNOT_VERIFY_TERMINAL_PAYMENT` or `CANNOT_EXPIRE_PAID_ORDER`.
+4. Payment Record Amount Integrity Trigger:
+   - Location: `supabase/migrations/20261022150000_require_authoritative_payment_verification.sql` lines 30-58.
+   - Finding: PostgreSQL trigger `trg_verify_payment_record_amount` asserts `NEW.amount = v_total_payable`.
+   - Consequence: Partial payments or tampering cannot transition or persist as valid payment records for the order.
+5. RPC and Table Authorization:
+   - Location: `supabase/migrations/20261022160000_restrict_payment_transition_rpc.sql` and `20261010000003_row_level_security.sql`.
+   - Finding: `mark_platform_fee_paid` execution revoked from `PUBLIC`, `anon`, and `authenticated`; granted only to `service_role`. `payment_records` table has RLS enabled with only customer SELECT permitted; insert/update restricted to `service_role`.
+
+## 4. VERIFIED BY TESTS
+1. Vitest Suite Execution:
+   - Suites: `server/src/__tests__/webhooks.test.js`, `server/src/__tests__/orders.test.js`, `server/src/__tests__/atomicOrderSqlContract.test.js`.
+   - Result: 128 tests passing.
+2. Verified Behaviors:
+   - Pluggable gateway verifier: When a custom verifier resolves `{ verified: true }`, webhook marks order `PAID` and `CONFIRMED` and stores evidence.
+   - Evidence write failure: When persisting evidence fails, webhook aborts verification and keeps order `PENDING`.
+   - Non-boolean return value: Truthy non-boolean values fail closed and leave order `PENDING`.
+   - Gateway rejection: When gateway returns `{ verified: false }`, order remains `PENDING`.
+   - Idempotency on paid orders: Re-delivered webhooks for already-paid orders return HTTP 200 with idempotent event without duplicate state mutations.
+3. Critical Caveat:
+   - All passing tests use an in-memory mocked `customGatewayVerifier`. No tests run against real network endpoints, real bank APIs, or live Paytm servers.
+
+## 5. REPORTED BUT NOT INDEPENDENTLY VERIFIED
+1. Production Make.com delivery latency and failure rate under peak network congestion.
+2. Actual format and payload fields emitted by Make.com scenarios in live production.
+3. Real Paytm Merchant API rate limits, query latencies, and uptime guarantees.
+4. Frequency of customer banking apps truncating or altering the order reference (`tr` parameter).
+
+## 6. PROPOSED DESIGN — NOT IMPLEMENTED
+1. Authoritative Gateway Adapter:
+   - Implement real Paytm Order Status Query API (`/v2/order/status` or merchant reconciliation API) validating MID, orderId, txnId, and checksum.
+2. Orphan Payment Record Ingestion (Late Payment Capture):
+   - In `server/src/routes/webhooks.js`, move `payment_records` insertion before expiry checks or insert into dedicated `unallocated_payment_records` table with status `ORPHAN_PAID_AFTER_EXPIRY`.
+3. Administrative Reconciliation Flow:
+   - Admin UI and secured RPC allowing manual matching of unallocated UTRs to customer accounts or refund processing.
+4. Migration Implications:
+   - Add enum value `ORPHAN_PAID_AFTER_EXPIRY` or table `unallocated_payments`.
+   - Update `chk_payment_records_status_source` check constraint if new statuses are introduced.
+
+## 7. UNKNOWN / REQUIRES INVESTIGATION
+1. Order Reinstatement Safety:
+   - An expired order cannot be safely reinstated automatically. Once an order expires, its inventory reservations (`inventory_reservations`) are deleted or marked `RELEASED`, returning stock to general availability. Reinstating without re-checking stock could lead to negative inventory or unfulfillable orders.
+2. Transaction Boundary Latencies:
+   - If an external gateway HTTP call is made while holding database connections or long-lived locks, connection pool exhaustion could occur. External gateway calls must execute outside the PostgreSQL transaction boundary.
+3. Admin Reconciliation Authorization:
+   - Administrative reconciliation is not secure by default. Database RLS, role checks, and dual-custody audit logs must be designed and verified before allowing manual payment overrides.
+
+## 8. DECISIONS REQUIRED
+1. Gateway Integration Strategy:
+   - Formally approve switching from raw static UPI QR to Paytm Merchant API (or integrating authoritative UPI transaction query API) requiring active API credentials, MID, and merchant key.
+2. Late Payment Policy on Expired Orders:
+   - Choose between:
+     A. Automatic refund issuance via gateway refund API.
+     B. Retaining funds as unallocated customer credit for manual admin review.
+     C. Attempting conditional order revival only if inventory remains available.
+3. Payment Expiry Window Duration:
+   - Confirm whether the 2-minute (`NOW() + INTERVAL '2 minutes'`) window is sufficient for campus UPI payments or should be extended to 5-10 minutes to reduce late-payment collisions.
+
+## 9. NEXT IMPLEMENTATION STEP
+- Recommended smallest safe step:
+  Capture and persist late payment telemetry in `server/src/routes/webhooks.js` before throwing HTTP 400/409 errors.
+- Scope:
+  When an incoming webhook matches an expired or terminal order, persist the record as `EXPIRED_PAYMENT_RECEIVED` or `UNALLOCATED` with the UTR and amount before returning HTTP response, eliminating the current financial telemetry blind spot.
+- Prerequisites:
+  1. Add migration supporting unallocated/expired payment status in `payment_records` check constraints.
+  2. Verify that writing orphan records does not trigger order state transitions or violate amount validation triggers.

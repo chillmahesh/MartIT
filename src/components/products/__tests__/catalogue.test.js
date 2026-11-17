@@ -153,7 +153,7 @@ describe('Product-First Cart Operations & Store Identity', () => {
     store.setQuantity('p_nc_maggi', 1, 'store_night_canteen')
 
     const state = useCartStore.getState()
-    expect(state.lines).toEqual([{ productId: 'p_nc_maggi', quantity: 1 }])
+    expect(state.lines).toEqual([{ productId: 'p_nc_maggi', quantity: 1, storeId: 'store_night_canteen' }])
     expect(state.storeId).toBe('store_night_canteen')
     expect(selectCartStoreId(state)).toBe('store_night_canteen')
   })
@@ -178,7 +178,7 @@ describe('Product-First Cart Operations & Store Identity', () => {
 
     const updated = useCartStore.getState()
     expect(updated.storeId).toBe('store_night_canteen')
-    expect(updated.lines).toEqual([{ productId: 'p_nc_soda', quantity: 2 }])
+    expect(updated.lines).toEqual([{ productId: 'p_nc_soda', quantity: 2, storeId: 'store_night_canteen' }])
   })
 })
 
@@ -234,6 +234,40 @@ describe('Product Card Store Metadata & Stock Safeguards', () => {
     expect(html).toContain('Only')
     expect(html).toContain('3')
     expect(html).toContain('left')
+  })
+
+  it('renders real product image when imageUrl is present', () => {
+    const product = SAMPLE_PRODUCTS.find((p) => p.id === 'p_milk_500')
+    const html = renderCard(product)
+    expect(html).toContain('src="/products/p_milk_500.png"')
+    expect(html).toContain('alt="Toned Milk"')
+  })
+
+  it('gracefully falls back to static product image when imageUrl is null from remote database', () => {
+    const remoteProduct = {
+      ...SAMPLE_PRODUCTS.find((p) => p.id === 'p_bread'),
+      imageUrl: null, // As returned by production Supabase currently
+    }
+    const html = renderCard(remoteProduct)
+    expect(html).toContain('src="/products/p_bread.jpg"')
+    expect(html).toContain('alt="Whole Wheat Bread"')
+  })
+
+  it('falls back to category vector illustration if neither imageUrl nor static asset exists', () => {
+    const unknownProduct = {
+      id: 'p_unknown_custom',
+      storeId: 'store_campus_mart',
+      categoryId: 'dairy',
+      name: 'Custom Unmapped Item',
+      pack: '1 pc',
+      price: 10,
+      mrp: 10,
+      stock: 5,
+      imageUrl: null,
+    }
+    const html = renderCard(unknownProduct)
+    expect(html).not.toContain('<img')
+    expect(html).toContain('<svg')
   })
 })
 
@@ -378,6 +412,33 @@ describe('StoreHeader Delivery Radius Error Handling', () => {
       expect(html).not.toContain('Outside 5 km delivery radius')
     } finally {
       quoteSpy.mockRestore()
+      authSpy.mockRestore()
+    }
+  })
+
+  it('renders catalogue sorting dropdown with options for price and name', () => {
+    const authSpy = vi.spyOn(authStoreModule, 'useAuthStore').mockImplementation((selector) => {
+      const state = {
+        user: { id: 'usr_test_1', name: 'Devendra Patel', roles: ['customer'] },
+        token: 'tok_test',
+      }
+      return selector ? selector(state) : state
+    })
+
+    try {
+      const html = renderToString(
+        React.createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          React.createElement(MemoryRouter, null, React.createElement(HomePage)),
+        ),
+      )
+      expect(html).toContain('data-testid="catalogue-sort-select"')
+      expect(html).toContain('Featured')
+      expect(html).toContain('Price: Low to High')
+      expect(html).toContain('Price: High to Low')
+      expect(html).toContain('Name: A to Z')
+    } finally {
       authSpy.mockRestore()
     }
   })

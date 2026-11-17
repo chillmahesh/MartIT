@@ -1,15 +1,18 @@
-import { PackagePlus, Bike, CheckCircle2, ListFilter } from 'lucide-react'
+import { PackagePlus, Bike, CheckCircle2, ListFilter, Wallet } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
+import { formatINR } from '@/utils/currency'
 import { cn } from '@/utils/cn'
 
 /**
  * RunnerStatsSummary Component
- * Displays live counts derived from orders data.
+ * Displays live counts and earnings ledger derived from orders data.
  */
 export function RunnerStatsSummary({
   availableCount = 0,
   activeCount = 0,
   completedCount = 0,
+  earnedTotal = 0,
+  activeEstimatedTotal = 0,
   selectedTab = 'all',
   onSelectTab,
   className,
@@ -75,13 +78,13 @@ export function RunnerStatsSummary({
               )}
               data-testid={`stat-card-${stat.id}`}
             >
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-xs font-medium text-ink-subtle">{stat.label}</p>
+              <div className="flex items-center justify-between gap-3 min-w-0">
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-medium text-ink-subtle truncate">{stat.label}</p>
                   <p className="font-display text-2xl sm:text-3xl font-extrabold text-ink mt-0.5" data-testid={`stat-count-${stat.id}`}>
                     {stat.count}
                   </p>
-                  <p className="text-[11px] text-ink-muted mt-0.5">{stat.description}</p>
+                  <p className="text-[11px] text-ink-muted mt-0.5 truncate">{stat.description}</p>
                 </div>
 
                 <div className={cn('grid size-11 shrink-0 place-items-center rounded-tile', stat.bg, stat.color)}>
@@ -91,6 +94,42 @@ export function RunnerStatsSummary({
             </Card>
           )
         })}
+      </div>
+
+      {/* Earnings & Settlement Summary (P1 Usability) */}
+      <div
+        className="rounded-tile border border-line bg-surface p-3.5 sm:p-4 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 text-xs"
+        data-testid="runner-earnings-summary"
+      >
+        <div className="flex items-center gap-2.5">
+          <div className="grid size-9 shrink-0 place-items-center rounded-tile bg-fresh-soft text-fresh-ink">
+            <Wallet className="size-4" aria-hidden="true" />
+          </div>
+          <div>
+            <p className="font-bold text-ink text-sm">Earnings & Payout Ledger</p>
+            <p className="text-[11px] text-ink-muted">
+              Standard campus policy: ₹8 payout per completed delivery
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4 border-t sm:border-t-0 sm:border-l border-line/60 pt-2.5 sm:pt-0 sm:pl-4">
+          <div>
+            <p className="text-[11px] text-ink-subtle font-medium">Settled Today</p>
+            <p className="font-display text-base font-extrabold text-fresh-ink" data-testid="runner-settled-total">
+              {formatINR(earnedTotal)}
+            </p>
+          </div>
+
+          <div className="h-7 w-px bg-line/60" />
+
+          <div>
+            <p className="text-[11px] text-ink-subtle font-medium">In Transit (Est.)</p>
+            <p className="font-display text-base font-extrabold text-accent" data-testid="runner-active-estimated-total">
+              {formatINR(activeEstimatedTotal)}
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   )

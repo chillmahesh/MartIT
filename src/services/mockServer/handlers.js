@@ -3,7 +3,13 @@
  * Everything here models what the server must do: it never trusts prices, fees or
  * totals sent by the browser, and it derives the user from the session token.
  */
-import { calculateDeliveryFee, splitDeliveryFee, DELIVERY_FEE_MESSAGES } from '@/utils/deliveryFee'
+import {
+  calculateDeliveryFee,
+  calculateAdditionalStoreSurcharge,
+  splitDeliveryFee,
+  DELIVERY_FEE_MESSAGES,
+} from '@/utils/deliveryFee'
+import { MULTI_STORE_SURCHARGE } from '@/config/fees'
 import { calculateOrderTotals } from '@/utils/orderTotals'
 import { ORDER_STATUS, canTransitionOrder, transitionOrder } from '@/utils/orderMachine'
 import { PAYMENT_STATUS, PAYMENT_SOURCE, transitionPayment } from '@/utils/paymentMachine'
@@ -16,6 +22,12 @@ import { ApiError } from './errors'
 import { getDistanceKm } from './routing'
 import { DISTANCE_METHOD, straightLineKm, parseCoordinate } from '@/utils/distance'
 import { PERMISSIONS, ROLES, hasPermission } from '@/utils/permissions'
+import {
+  validateName,
+  validateEmail,
+  validateIndianPhone,
+  validatePassword,
+} from '@/utils/validators'
 
 const publicUser = (u) => ({
   id: u.id,
@@ -114,14 +126,24 @@ export function createMockServer({ routingProvider = null } = {}) {
       return { token, user: publicUser(user) }
     },
     'auth.signup': ({ email, password, name, phone, role = 'customer' }) => {
-      if (!name || typeof name !== 'string' || name.trim().length < 2) {
-        throw new ApiError('INVALID_NAME', 'Please enter your full name (minimum 2 characters).', 400)
+      const nameRes = validateName(name, { required: true, minLength: 2, maxLength: 120, label: 'Full name' })
+      if (!nameRes.isValid) {
+        throw new ApiError('INVALID_NAME', nameRes.error, 400)
       }
-      if (!email || typeof email !== 'string' || !email.includes('@')) {
-        throw new ApiError('INVALID_EMAIL', 'Please enter a valid campus or personal email address.', 400)
+
+      const emailRes = validateEmail(email, { required: true, label: 'Campus or personal email' })
+      if (!emailRes.isValid) {
+        throw new ApiError('INVALID_EMAIL', emailRes.error, 400)
       }
-      if (!password || typeof password !== 'string' || password.length < 8) {
-        throw new ApiError('INVALID_PASSWORD', 'Password must be at least 8 characters long.', 400)
+
+      const passwordRes = validatePassword(password, { minLength: 8, maxLength: 72, label: 'Password' })
+      if (!passwordRes.isValid) {
+        throw new ApiError('INVALID_PASSWORD', passwordRes.error, 400)
+      }
+
+      const phoneRes = validateIndianPhone(phone, { required: false, label: 'Phone number' })
+      if (!phoneRes.isValid) {
+        throw new ApiError('INVALID_PHONE', phoneRes.error, 400)
       }
 
       if (!role || typeof role !== 'string') {
@@ -137,7 +159,7 @@ export function createMockServer({ routingProvider = null } = {}) {
         throw new ApiError('INVALID_ROLE', 'Valid role selection (customer or runner) is required.', 400)
       }
 
-      const existing = db.users.find((u) => u.email.toLowerCase() === email.trim().toLowerCase())
+      const existing = db.users.find((u) => u.email.toLowerCase() === emailRes.normalized)
       if (existing) {
         throw new ApiError('DUPLICATE_EMAIL', 'An account with this email already exists. Please log in instead.', 409)
       }
@@ -147,10 +169,10 @@ export function createMockServer({ routingProvider = null } = {}) {
       const runnerStatus = isRunner ? 'applicant' : null
       const newUser = {
         id,
-        name: name.trim(),
-        email: email.trim().toLowerCase(),
-        phone: phone && typeof phone === 'string' ? phone.trim() : null,
-        roles: isRunner ? [ROLES.CUSTOMER, ROLES.RUNNER] : [ROLES.CUSTOMER],
+        name: nameRes.value,
+        email: emailRes.normalized,
+        phone: phoneRes.normalized || null,
+        roles: [ROLES.CUSTOMER],
         runnerStatus,
         defaultLocationId: null,
       }
@@ -164,6 +186,16 @@ export function createMockServer({ routingProvider = null } = {}) {
         user: publicUser(newUser),
         needsConfirmation: false,
       }
+    },
+    'auth.applyRunner': (_payload, { token }) => {
+      const user = requireUser(token)
+      if (user.runnerStatus === 'suspended') {
+        throw new ApiError('RUNNER_SUSPENDED', 'Runner privileges are suspended. Please contact platform administrators.', 403)
+      }
+      if (user.runnerStatus !== 'approved') {
+        user.runnerStatus = 'applicant'
+      }
+      return publicUser(user)
     },
     'auth.logout': (_payload, { token }) => {
       db.sessions.delete(token)
@@ -190,7 +222,11 @@ export function createMockServer({ routingProvider = null } = {}) {
       const target = findUser(userId)
       if (target.runnerStatus == null) throw new ApiError('NOT_AN_APPLICANT', 'This user has not applied to be a runner.', 409)
       target.runnerStatus = status
-      if (status === 'approved' && !target.roles.includes(ROLES.RUNNER)) target.roles.push(ROLES.RUNNER)
+      if (status === 'approved') {
+        if (!target.roles.includes(ROLES.RUNNER)) target.roles.push(ROLES.RUNNER)
+      } else if (status === 'suspended') {
+        target.roles = target.roles.filter((r) => r !== ROLES.RUNNER)
+      }
       return publicUser(target)
     },
 
@@ -204,14 +240,82 @@ export function createMockServer({ routingProvider = null } = {}) {
         const remaining = db.users.filter((u) => u.roles.includes(ROLES.SUPER_ADMIN) && u.id !== target.id)
         if (remaining.length === 0) throw new ApiError('LAST_SUPER_ADMIN', 'There must always be at least one super admin.', 409)
       }
-      if (role === ROLES.RUNNER && granted) target.runnerStatus = 'approved'
+      if (role === ROLES.RUNNER && granted) {
+        if (target.runnerStatus == null) {
+          throw new ApiError('NOT_AN_APPLICANT', 'This user has not applied to be a runner.', 409)
+        }
+        target.runnerStatus = 'approved'
+      }
+      if (role === ROLES.RUNNER && !granted) {
+        target.runnerStatus = 'suspended'
+      }
       target.roles = granted ? [...new Set([...target.roles, role])] : target.roles.filter((r) => r !== role)
       return publicUser(target)
+    },
+
+    /**
+     * Lists all orders across the campus platform for administrators.
+     * Enforces ORDERS_READ_ALL permission.
+     */
+    'admin.orders.list': ({ status, paymentStatus, storeId, runnerId, search } = {}, { token }) => {
+      requirePermission(token, PERMISSIONS.ORDERS_READ_ALL)
+
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+
+      let orders = db.orders.map((o) => {
+        const sanitized = structuredClone(o)
+        delete sanitized.handoverOtpHash
+        delete sanitized._mockOtp
+        return sanitized
+      })
+
+      if (status) {
+        orders = orders.filter((o) => o.status === status)
+      }
+      if (paymentStatus) {
+        orders = orders.filter((o) => (o.paymentStatus || o.payment?.status) === paymentStatus)
+      }
+      if (storeId) {
+        orders = orders.filter((o) => o.storeId === storeId)
+      }
+      if (runnerId) {
+        orders = orders.filter((o) => o.runnerId === runnerId)
+      }
+      if (search && typeof search === 'string') {
+        const q = search.trim().toLowerCase()
+        orders = orders.filter((o) => {
+          const idMatch = o.id?.toLowerCase().includes(q)
+          const nameMatch = o.customerDetails?.fullName?.toLowerCase().includes(q)
+          const phoneMatch = o.customerDetails?.phoneNumber?.includes(q)
+          const customerIdMatch = o.customerId?.toLowerCase().includes(q)
+          return idMatch || nameMatch || phoneMatch || customerIdMatch
+        })
+      }
+
+      orders.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
+      return orders
     },
 
     // ---- locations & stores ------------------------------------------------
     'locations.list': () => db.locations.map(({ id, name, group }) => ({ id, name, group })),
     'stores.list': () => db.stores.map(({ id, name, isOpen }) => ({ id, name, isOpen })),
+    'stores.update': ({ storeId, isOpen, description }, { token }) => {
+      const user = requireUser(token)
+      const hasStaffAccess =
+        user.roles.includes(ROLES.ADMIN) || user.roles.includes(ROLES.SUPER_ADMIN)
+      const store = db.stores.find((s) => s.id === storeId)
+      if (!store) throw new ApiError('STORE_NOT_FOUND', 'Store not found.', 404)
+      if (!hasStaffAccess && store.ownerId !== user.id) {
+        throw new ApiError('FORBIDDEN', "You don't have permission to update this store.", 403)
+      }
+      if (typeof isOpen === 'boolean') store.isOpen = isOpen
+      if (typeof description === 'string') store.description = description
+      return store
+    },
 
     // ---- catalogue ----------------------------------------------------------
     'catalogue.products': ({ storeId } = {}) => {
@@ -219,6 +323,36 @@ export function createMockServer({ routingProvider = null } = {}) {
         return db.products.filter((p) => p.storeId === storeId)
       }
       return db.products
+    },
+    'catalogue.products.update': ({ productId, stock, isAvailable }, { token }) => {
+      const user = requireUser(token)
+      if (!productId) {
+        throw new ApiError('INVALID_PRODUCT_ID', 'Product ID is required.', 400)
+      }
+      const product = db.products.find((p) => p.id === productId)
+      if (!product) {
+        throw new ApiError('PRODUCT_NOT_FOUND', 'Product not found.', 404)
+      }
+
+      const store = db.stores.find((s) => s.id === product.storeId)
+      const isOwner = store && store.ownerId === user.id
+      const hasStaffAccess =
+        user.roles.includes(ROLES.ADMIN) || user.roles.includes(ROLES.SUPER_ADMIN)
+
+      if (!isOwner && !hasStaffAccess) {
+        throw new ApiError('FORBIDDEN', "You don't have permission to update this product.", 403)
+      }
+
+      if (typeof stock === 'number') {
+        if (stock < 0 || !Number.isInteger(stock)) {
+          throw new ApiError('INVALID_STOCK', 'Stock must be a non-negative integer.', 422)
+        }
+        product.stock = stock
+      }
+      if (typeof isAvailable === 'boolean') {
+        product.isAvailable = isAvailable
+      }
+      return product
     },
     'catalogue.categories': () => SAMPLE_CATEGORIES,
 
@@ -231,23 +365,73 @@ export function createMockServer({ routingProvider = null } = {}) {
      * in the payload is ignored; everything is recomputed here and snapshotted so
      * later price/fee changes never alter this order.
      */
-    'orders.create': async ({ storeId, locationId, lines, customerDetails }, { token }) => {
+    'orders.create': async ({ storeId, storeIds, locationId, lines, customerDetails }, { token }) => {
       const user = requirePermission(token, PERMISSIONS.SHOP)
       if (!Array.isArray(lines) || lines.length === 0) {
         throw new ApiError('EMPTY_CART', 'Your cart is empty.', 422)
       }
 
-      const pricedLines = lines.map(({ productId, quantity }) => {
-        const product = db.products.find((p) => p.id === productId && p.storeId === storeId)
+      let sanitizedCustomerDetails = null
+      if (customerDetails && typeof customerDetails === 'object') {
+        const { fullName, name, phoneNumber, mobileNumber, phone, customLocation, deliveryInstructions, instructions } = customerDetails
+        const recipientName = fullName || name
+        if (recipientName !== undefined && recipientName !== null && String(recipientName).trim() !== '') {
+          const nameRes = validateName(recipientName, { required: false, minLength: 2, maxLength: 120, label: 'Recipient name' })
+          if (!nameRes.isValid) {
+            throw new ApiError('INVALID_CUSTOMER_NAME', nameRes.error, 400)
+          }
+        }
+        const rawPhone = phoneNumber || mobileNumber || phone
+        if (rawPhone !== undefined && rawPhone !== null && String(rawPhone).trim() !== '') {
+          const phoneRes = validateIndianPhone(rawPhone, { required: false, label: 'Delivery phone number' })
+          if (!phoneRes.isValid) {
+            throw new ApiError('INVALID_CUSTOMER_PHONE', phoneRes.error, 400)
+          }
+        }
+        if (customLocation && typeof customLocation === 'string' && customLocation.length > 200) {
+          throw new ApiError('INVALID_LOCATION_DETAILS', 'Custom delivery destination cannot exceed 200 characters.', 400)
+        }
+        const notes = deliveryInstructions || instructions
+        if (notes && typeof notes === 'string' && notes.length > 500) {
+          throw new ApiError('INVALID_DELIVERY_NOTES', 'Delivery instructions cannot exceed 500 characters.', 400)
+        }
+        sanitizedCustomerDetails = customerDetails
+      }
+
+      const allowedStoreIds = new Set()
+      if (storeId && typeof storeId === 'string') allowedStoreIds.add(storeId)
+      if (Array.isArray(storeIds)) {
+        storeIds.forEach((sid) => sid && typeof sid === 'string' && allowedStoreIds.add(sid))
+      }
+
+      const pricedLines = lines.map(({ productId, quantity, storeId: lineStoreId }) => {
+        const product = db.products.find((p) => {
+          if (p.id !== productId) return false
+          if (lineStoreId) return p.storeId === lineStoreId
+          if (allowedStoreIds.size > 0) return allowedStoreIds.has(p.storeId)
+          return true
+        })
         if (!product) throw new ApiError('PRODUCT_UNAVAILABLE', 'An item in your cart is no longer available.', 409, { productId })
         if (!Number.isInteger(quantity) || quantity < 1) throw new ApiError('INVALID_QUANTITY', 'Invalid quantity.', 422, { productId })
         if (product.stock < quantity) {
           throw new ApiError('OUT_OF_STOCK', `Only ${product.stock} left of ${product.name}.`, 409, { productId, available: product.stock })
         }
-        return { productId, name: product.name, pack: product.pack, unitPrice: product.price, quantity }
+        return { productId, _storeId: product.storeId, name: product.name, pack: product.pack, unitPrice: product.price, quantity }
       })
 
-      const quote = await computeDeliveryQuote(storeId, locationId)
+      const distinctStoreIds = Array.from(new Set(pricedLines.map((l) => l._storeId)))
+      for (const sid of distinctStoreIds) {
+        const s = db.stores.find((st) => st.id === sid)
+        if (!s) throw new ApiError('STORE_NOT_FOUND', 'That store is not available.', 404)
+        if (!s.isOpen) throw new ApiError('STORE_CLOSED', 'This store is closed right now.', 409)
+      }
+
+      const primaryStoreId = storeId || distinctStoreIds[0]
+      const quote = await computeDeliveryQuote(primaryStoreId, locationId)
+
+      const storeCount = distinctStoreIds.length
+      const additionalStoreSurcharge = calculateAdditionalStoreSurcharge(storeCount, MULTI_STORE_SURCHARGE)
+      const totalDeliveryFee = quote.deliveryFee + additionalStoreSurcharge
 
       const orderId = newId('ord')
       let feeAllocation = null
@@ -259,21 +443,37 @@ export function createMockServer({ routingProvider = null } = {}) {
 
         const totals = calculateOrderTotals({
           lines: pricedLines,
-          deliveryFee: quote.deliveryFee,
+          deliveryFee: totalDeliveryFee,
+          baseDeliveryFee: quote.deliveryFee,
+          additionalStoreSurcharge,
           platformFee,
         })
         const split = splitDeliveryFee(quote.deliveryFee)
 
+        // Deduct inventory
+        for (const line of pricedLines) {
+          const p = db.products.find((prod) => prod.id === line.productId && prod.storeId === line._storeId)
+          if (p) p.stock -= line.quantity
+        }
+
         const order = {
           id: orderId,
           customerId: user.id,
-          storeId,
+          storeId: primaryStoreId,
+          storeIds: distinctStoreIds,
           locationId,
-          lines: pricedLines,
-          customerDetails: customerDetails || null,
+          lines: pricedLines.map(({ _storeId, ...line }) => line),
+          customerDetails: sanitizedCustomerDetails || null,
           pricing: {
             itemSubtotal: totals.itemSubtotal,
             deliveryFee: totals.deliveryFee,
+            ...(storeCount > 1 || additionalStoreSurcharge > 0
+              ? {
+                  baseDeliveryFee: quote.deliveryFee,
+                  additionalStoreSurcharge,
+                  storeCount,
+                }
+              : {}),
             baseAmount: totals.baseAmount,
             platformFee: totals.platformFee,
             total: totals.total,
@@ -290,6 +490,23 @@ export function createMockServer({ routingProvider = null } = {}) {
             cooldownExpiresAt: feeAllocation.reservation.cooldownExpiresAt,
             paidAt: null,
           },
+          pickups: distinctStoreIds.map((sid) => ({
+            storeId: sid,
+            status: 'PENDING',
+            pickedUpAt: null,
+          })),
+          order_fulfillment_groups: distinctStoreIds.map((sid, idx) => {
+            const st = db.stores.find((s) => s.id === sid)
+            return {
+              id: newId('grp'),
+              order_id: orderId,
+              store_id: sid,
+              status: 'PENDING',
+              pickup_sequence_index: idx,
+              picked_up_at: null,
+              store_snapshot: st ? { id: st.id, name: st.name, isOpen: st.isOpen } : null,
+            }
+          }),
           // Internal ledger — never sent to the customer.
           ledger: {
             runnerPayout: split.runnerPayout,
@@ -975,6 +1192,60 @@ export function createMockServer({ routingProvider = null } = {}) {
       db.saveOrders?.()
       const { ledger: _ledger, ...customerView } = order
       return customerView
+    },
+
+    /**
+     * Records a delay or operational issue reported by the assigned runner.
+     * Enforces runner assignment and active delivery status (PREPARING, PICKED_UP, ON_THE_WAY).
+     */
+    'runner.order.reportDelay': ({ orderId, reason, note = '' }, { token }) => {
+      const user = requirePermission(token, PERMISSIONS.RUNNER_DELIVER)
+      if (!orderId || !reason) {
+        throw new ApiError('INVALID_INPUT', 'Order ID and delay reason code are required.', 400)
+      }
+
+      for (const sample of SAMPLE_ORDERS) {
+        if (!db.orders.some((o) => o.id === sample.id)) {
+          db.orders.push(structuredClone(sample))
+        }
+      }
+
+      const order = db.orders.find((o) => o.id === orderId)
+      if (!order) {
+        throw new ApiError('ORDER_NOT_FOUND', 'Order not found.', 404)
+      }
+      if (order.runnerId !== user.id) {
+        throw new ApiError('FORBIDDEN', 'You are not assigned to this delivery.', 403)
+      }
+
+      const validStatuses = [ORDER_STATUS.PREPARING, ORDER_STATUS.PICKED_UP, ORDER_STATUS.ON_THE_WAY]
+      if (!validStatuses.includes(order.status)) {
+        throw new ApiError(
+          'INVALID_ORDER_STATE',
+          `Delays can only be reported for active deliveries (current: ${order.status}).`,
+          400,
+        )
+      }
+
+      const delayReport = {
+        reportedAt: new Date().toISOString(),
+        runnerId: user.id,
+        reason,
+        note: String(note || '').slice(0, 500),
+      }
+
+      if (!Array.isArray(order.delayReports)) {
+        order.delayReports = []
+      }
+      order.delayReports.push(delayReport)
+      order.latestDelayReport = delayReport
+
+      db.saveOrders?.()
+      return {
+        success: true,
+        orderId,
+        delayReport,
+      }
     },
 
     // ---- customer order & delivery OTP endpoints ----------------------------

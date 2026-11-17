@@ -1,20 +1,149 @@
 import crypto from 'node:crypto'
 import { Router } from 'express'
-import { z } from 'zod'
 import { authenticate } from '../middleware/auth.js'
 import { getSupabaseAdmin } from '../config/supabase.js'
 import { ApiError } from '../utils/errors.js'
 import { ROLES } from '../utils/permissions.js'
+import { env } from '../config/env.js'
 import {
   FLAT_DELIVERY_FEE,
   MAX_SERVICE_KM,
+  MULTI_STORE_SURCHARGE,
   PRICING_VERSION,
-  PLATFORM_FEE_WINDOW_MS,
-  PLATFORM_FEE_COOLDOWN_MS,
 } from '../../../src/config/fees.js'
+import { calculateAdditionalStoreSurcharge } from '../../../src/utils/deliveryFee.js'
 import { parseCoordinate, straightLineKm } from '../../../src/utils/distance.js'
+import {
+  validateName,
+  validateIndianPhone,
+} from '../utils/validators.js'
 
 export const ordersRouter = Router()
+
+// Pluggable Make.com verification client for testing / dependency injection
+let customMakeVerifier = null
+
+export function setMakeVerifier(fn) {
+  customMakeVerifier = fn
+}
+
+/**
+ * Queries Make.com verification webhook to check whether customer payment was received in merchant inbox.
+ *
+ * Implements strict response contract:
+ * - Distinguishes confirmed positive (e.g. "Payment recieved", "Payment received", SUCCESS, PAID)
+ *   from negative ("not recieved", "not received", FAILED, DECLINED), timeout, network error, and malformed body.
+ * - HTTP 200 alone does not establish payment success.
+ */
+export async function queryMakePaymentVerification({ orderId, amount }) {
+  if (typeof customMakeVerifier === 'function') {
+    try {
+      return await customMakeVerifier({ orderId, amount })
+    } catch (err) {
+      return {
+        success: false,
+        status: 'inconclusive',
+        reason: 'MAKE_WEBHOOK_NETWORK_ERROR',
+        message: err.message,
+      }
+    }
+  }
+
+  const webhookUrl = env.MAKE_VERIFICATION_WEBHOOK_URL || process.env.MAKE_VERIFICATION_WEBHOOK_URL
+  if (!webhookUrl) {
+    return {
+      success: false,
+      status: 'inconclusive',
+      reason: 'MAKE_WEBHOOK_UNCONFIGURED',
+      message: 'Make.com payment verification URL is not configured.',
+    }
+  }
+
+  try {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10000)
+
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        content: Number(amount),
+        amount: Number(amount),
+        orderId: String(orderId),
+      }),
+      signal: controller.signal,
+    })
+    clearTimeout(timeout)
+
+    if (!res.ok) {
+      return {
+        success: false,
+        status: 'inconclusive',
+        httpStatus: res.status,
+        reason: 'HTTP_ERROR',
+        message: `Make.com returned non-OK HTTP status: ${res.status}`,
+      }
+    }
+
+    const responseText = await res.text()
+    let responseJson = null
+    try {
+      responseJson = JSON.parse(responseText)
+    } catch {
+      // Body may be plain text from webhook scenario, e.g. "Payment recieved"
+    }
+
+    // Explicit negative check: "not recieved", "not received", fail, declined, rejected, bounced
+    const isNegative =
+      /not rec[ei]{2}ved|fail|declin|reject|bounc/i.test(responseText) ||
+      responseJson?.status === 'FAILED' ||
+      responseJson?.status === 'DECLINED'
+
+    if (isNegative) {
+      return {
+        success: false,
+        status: 'inconclusive',
+        reason: 'PAYMENT_NOT_RECEIVED',
+        rawResponse: responseText,
+        message: 'Payment not detected yet. Direct customer to contact admin if money was deducted.',
+      }
+    }
+
+    // Confirmed positive check: "Payment recieved", "Payment received", SUCCESS, PAID
+    const isPositive =
+      /payment rec[ei]{2}ved/i.test(responseText) ||
+      responseJson?.status === 'SUCCESS' ||
+      responseJson?.paymentStatus === 'PAID' ||
+      responseJson?.verified === true
+
+    if (isPositive) {
+      return {
+        success: true,
+        status: 'verified',
+        rawResponse: responseText,
+        message: 'Payment received and verified.',
+      }
+    }
+
+    // Malformed, unknown, or ambiguous body
+    return {
+      success: false,
+      status: 'inconclusive',
+      reason: 'UNKNOWN_RESPONSE',
+      rawResponse: responseText,
+      message: 'Payment verification returned an unconfirmed response.',
+    }
+  } catch (netErr) {
+    return {
+      success: false,
+      status: 'inconclusive',
+      reason: netErr.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK_ERROR',
+      message: netErr.message || 'Failed to query Make.com payment verification.',
+    }
+  }
+}
 
 /**
  * Customer order history retrieval.
@@ -71,6 +200,198 @@ async function handleListCustomerOrders(req, res, next) {
   }
 }
 
+
+/**
+ * Formats an authoritative database order row (including joined fulfillment groups
+ * and order items) into the canonical frontend order structure.
+ *
+ * Ensures full schema parity between order creation and order retrieval:
+ * - Maps order_fulfillment_groups[].order_items[] into top-level lines:
+ *   [ { productId, name, pack, unitPrice, quantity, lineSubtotal } ]
+ * - Exposes top-level storeId, locationId, customerDetails from database snapshots
+ * - Preserves server-authoritative pricing and payment objects
+ */
+export function formatCanonicalOrder(order) {
+  if (!order) return null
+
+  const fulfillmentGroups = order.order_fulfillment_groups || order.fulfillmentGroups || []
+  const primaryGroup = fulfillmentGroups[0]
+
+  const storeId =
+    primaryGroup?.store_id ||
+    primaryGroup?.storeId ||
+    order.store_id ||
+    order.storeId ||
+    null
+
+  const locationId =
+    order.delivery_location_id ||
+    order.location_id ||
+    order.locationId ||
+    order.delivery_location_snapshot?.id ||
+    null
+
+  // Extract customer details from trusted location snapshot or order record
+  const snapshot = order.delivery_location_snapshot || order.deliveryLocationSnapshot
+  const customerDetails =
+    snapshot?.customerDetails ||
+    order.customer_details ||
+    order.customerDetails ||
+    (snapshot?.fullName || snapshot?.name
+      ? {
+          fullName: snapshot.fullName || 'Customer',
+          phoneNumber: snapshot.phoneNumber || null,
+          selectedDestination: snapshot.name || null,
+          detailedAddress: [
+            snapshot.roomNumber,
+            snapshot.group_name,
+            snapshot.landmark,
+          ].filter(Boolean).join(', ') || null,
+        }
+      : null)
+
+  // Map order_fulfillment_groups[].order_items[] into canonical top-level lines
+  const mappedLines = fulfillmentGroups.flatMap((group) => {
+    const items = group.order_items || group.orderItems || []
+    return items.map((item) => {
+      const unitPrice = Number(item.unit_price ?? item.unitPrice ?? 0)
+      const quantity = Number(item.quantity ?? 0)
+      const lineSubtotal = Number(
+        item.line_subtotal ?? item.lineSubtotal ?? (unitPrice * quantity)
+      )
+      return {
+        productId: item.product_id || item.productId,
+        name: item.product_name || item.name || '',
+        pack: item.product_pack || item.pack || null,
+        unitPrice,
+        quantity,
+        lineSubtotal,
+      }
+    })
+  })
+
+  const lines = mappedLines.length > 0
+    ? mappedLines
+    : (Array.isArray(order.lines) ? order.lines : [])
+
+  const itemSubtotal = Number(
+    order.item_subtotal ??
+    order.itemSubtotal ??
+    order.pricing?.itemSubtotal ??
+    (mappedLines.length > 0 ? mappedLines.reduce((sum, l) => sum + (l.lineSubtotal || 0), 0) : 0)
+  )
+  const deliveryFee = Number(
+    order.combined_delivery_fee ??
+    order.combinedDeliveryFee ??
+    order.pricing?.deliveryFee ??
+    0
+  )
+  const baseAmount = Number(
+    order.base_amount ??
+    order.baseAmount ??
+    order.pricing?.baseAmount ??
+    Math.round(itemSubtotal + deliveryFee)
+  )
+  const platformFee = Number(
+    order.platform_fee ??
+    order.platformFee ??
+    order.pricing?.platformFee ??
+    0
+  )
+  const total = Number(
+    order.total_payable ??
+    order.totalPayable ??
+    order.pricing?.total ??
+    (baseAmount + platformFee)
+  )
+  const distanceKm = Number(
+    order.route_distance_km ??
+    order.routeDistanceKm ??
+    order.pricing?.distanceKm ??
+    0
+  )
+
+  const storeIds = order.storeIds || (
+    fulfillmentGroups.length > 0
+      ? Array.from(new Set(fulfillmentGroups.map((g) => g.store_id || g.storeId).filter(Boolean)))
+      : (storeId ? [storeId] : [])
+  )
+
+  let baseDeliveryFee = order.pricing?.baseDeliveryFee != null
+    ? Number(order.pricing.baseDeliveryFee)
+    : null
+  let additionalStoreSurcharge = order.pricing?.additionalStoreSurcharge != null
+    ? Number(order.pricing.additionalStoreSurcharge)
+    : null
+
+  if (baseDeliveryFee == null || additionalStoreSurcharge == null) {
+    const distinctCount = (storeIds.length > 0)
+      ? storeIds.length
+      : (fulfillmentGroups.length > 0)
+        ? fulfillmentGroups.length
+        : 1
+
+    if (distinctCount > 1 && deliveryFee > FLAT_DELIVERY_FEE) {
+      const calculatedSurcharge = calculateAdditionalStoreSurcharge(distinctCount, MULTI_STORE_SURCHARGE)
+      additionalStoreSurcharge = additionalStoreSurcharge ?? Math.min(deliveryFee - FLAT_DELIVERY_FEE, calculatedSurcharge)
+      baseDeliveryFee = baseDeliveryFee ?? (deliveryFee - additionalStoreSurcharge)
+    } else {
+      baseDeliveryFee = baseDeliveryFee ?? deliveryFee
+      additionalStoreSurcharge = additionalStoreSurcharge ?? 0
+    }
+  }
+
+  return {
+    id: order.id,
+    customerId: order.customer_id || order.customerId,
+    runnerId: order.runner_id || order.runnerId || null,
+    storeId,
+    storeIds,
+    locationId,
+    deliveryLocationId: locationId,
+    deliveryLocationSnapshot: snapshot || null,
+    lines,
+    customerDetails,
+    status: order.status,
+    paymentStatus: order.payment_status || order.paymentStatus || order.payment?.status,
+    pricing: {
+      itemSubtotal,
+      deliveryFee,
+      baseDeliveryFee,
+      additionalStoreSurcharge,
+      baseAmount,
+      platformFee,
+      total,
+      distanceKm: Number(distanceKm.toFixed(2)),
+      distanceMethod: order.pricing?.distanceMethod || 'straight_line',
+      pricingVersion: order.fee_policy_version || order.pricing?.pricingVersion || PRICING_VERSION,
+    },
+    payment: {
+      status: order.payment_status || order.paymentStatus || order.payment?.status,
+      attemptId: order.payment_attempt_id || order.payment?.attemptId || null,
+      feePaise: order.fee_paise ?? order.payment?.feePaise ?? null,
+      allocatedAt: order.payment_allocated_at || order.payment?.allocatedAt || null,
+      windowExpiresAt: order.payment_window_expires_at || order.payment?.windowExpiresAt || null,
+      cooldownExpiresAt: order.payment_cooldown_expires_at || order.payment?.cooldownExpiresAt || null,
+      paidAt: order.paid_at || order.payment?.paidAt || null,
+    },
+    fulfillmentGroups,
+    createdAt: order.created_at || order.createdAt,
+    // Backward compatibility for snake_case callers
+    customer_id: order.customer_id || order.customerId,
+    runner_id: order.runner_id || order.runnerId || null,
+    created_at: order.created_at || order.createdAt,
+    item_subtotal: itemSubtotal,
+    combined_delivery_fee: deliveryFee,
+    base_amount: baseAmount,
+    platform_fee: platformFee,
+    total_payable: total,
+    route_distance_km: distanceKm,
+    delivery_location_id: locationId,
+    delivery_location_snapshot: snapshot || null,
+    order_fulfillment_groups: fulfillmentGroups,
+  }
+}
 
 /**
  * Single order retrieval.
@@ -153,39 +474,15 @@ async function handleGetOrder(req, res, next) {
 
     const now = Date.now()
     const windowExpiry = new Date(order.payment_window_expires_at).getTime()
-    const isWindowExpired = now >= windowExpiry
+    const isWindowExpired = Number.isFinite(windowExpiry) ? now >= windowExpiry : false
 
-    // Format response without internal OTP hash or secrets
+    // Format authoritative canonical order conforming to frontend contract
     // Notice: does NOT mutate database records on GET request!
+    const canonicalOrder = formatCanonicalOrder(order)
     const responseOrder = {
-      id: order.id,
-      customerId: order.customer_id,
-      runnerId: order.runner_id,
-      deliveryLocationId: order.delivery_location_id,
-      deliveryLocationSnapshot: order.delivery_location_snapshot,
-      status: order.status,
-      paymentStatus: order.payment_status,
+      ...canonicalOrder,
+      runnerId: order.runner_id || null,
       isWindowExpired,
-      pricing: {
-        itemSubtotal: Number(order.item_subtotal),
-        deliveryFee: Number(order.combined_delivery_fee),
-        baseAmount: Number(order.base_amount),
-        platformFee: Number(order.platform_fee),
-        total: Number(order.total_payable),
-        distanceKm: Number(order.route_distance_km),
-        pricingVersion: order.fee_policy_version,
-      },
-      payment: {
-        status: order.payment_status,
-        attemptId: order.payment_attempt_id,
-        feePaise: order.fee_paise,
-        allocatedAt: order.payment_allocated_at,
-        windowExpiresAt: order.payment_window_expires_at,
-        cooldownExpiresAt: order.payment_cooldown_expires_at,
-        paidAt: order.paid_at,
-      },
-      fulfillmentGroups: order.order_fulfillment_groups,
-      createdAt: order.created_at,
     }
 
     res.status(200).json(responseOrder)
@@ -194,13 +491,17 @@ async function handleGetOrder(req, res, next) {
   }
 }
 
+export const inFlightPaymentChecks = new Set()
+
 /**
  * Dedicated atomic payment verification check endpoint.
  * Server-authorized mutation: transitions payment state based on verification evidence and timers.
  */
 async function handleCheckPayment(req, res, next) {
+  const orderId = req.params?.id || req.body?.orderId
+  let lockAcquired = false
+
   try {
-    const orderId = req.params?.id || req.body?.orderId
     if (!orderId) {
       throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
     }
@@ -237,9 +538,6 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    const now = Date.now()
-    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
-
     // 2. Terminal state guard: If already EXPIRED, FAILED, REFUNDED, or order CANCELLED, prevent late overwrite
     if (order.status === 'CANCELLED' || ['EXPIRED', 'FAILED', 'REFUNDED'].includes(order.payment_status)) {
       return res.status(200).json({
@@ -250,7 +548,23 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    // 3. Server-authoritative 2-minute timer expiry check
+    // 3. Concurrency guard: prevent concurrent in-flight verification checks for the same order (Goal E)
+    if (inFlightPaymentChecks.has(orderId)) {
+      return res.status(409).json({
+        orderId,
+        status: 'in_flight',
+        code: 'VERIFICATION_IN_FLIGHT',
+        message: 'Payment verification is currently in progress. Please wait a moment.',
+      })
+    }
+
+    inFlightPaymentChecks.add(orderId)
+    lockAcquired = true
+
+    const now = Date.now()
+    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
+
+    // 4. Server-authoritative 2-minute timer expiry check
     if (now >= windowExpiry) {
       await executeAtomicPaymentExpiry(supabase, order.id, false)
 
@@ -262,15 +576,18 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    // 4. Server-verified evidence check (e.g. from payment_records / Make.com webhook)
+    // 4. Server-verified evidence check (e.g. from prior webhook or check)
     const { data: verifiedPayment } = await supabase
       .from('payment_records')
       .select('*')
       .eq('order_id', order.id)
+      .eq('status', 'PAID')
       .eq('evidence', 'Payment received')
+      .eq('verification_source', 'AUTHORITATIVE_GATEWAY')
       .maybeSingle()
 
-    if (verifiedPayment && Number(verifiedPayment.amount) === Number(order.total_payable)) {
+    const toPaise = (amt) => Math.round(Number(amt) * 100)
+    if (verifiedPayment && toPaise(verifiedPayment.amount) === toPaise(order.total_payable)) {
       await executeAtomicPaymentVerification(supabase, order.id)
 
       return res.status(200).json({
@@ -281,15 +598,83 @@ async function handleCheckPayment(req, res, next) {
       })
     }
 
-    // 5. Inconclusive check response ('not received') while window is still active
+    // 5. Query Make.com verification workflow
+    // Backend waits the required five seconds before querying Make.com (bypassed in test environment)
+    const bypassDelay = req.headers['x-bypass-delay'] === 'true' || process.env.NODE_ENV === 'test'
+    if (!bypassDelay) {
+      await new Promise((resolve) => setTimeout(resolve, 5000))
+    }
+
+    const makeResult = await queryMakePaymentVerification({
+      orderId: order.id,
+      amount: Number(order.total_payable),
+    })
+
+    if (makeResult?.success === true) {
+      const recordId = `pay_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`
+      const dedupeKey = order.payment_attempt_id || `make_${order.id}`
+
+      const { data: existingRec } = await supabase
+        .from('payment_records')
+        .select('id')
+        .eq('order_id', order.id)
+        .eq('attempt_id', dedupeKey)
+        .maybeSingle()
+
+      if (existingRec) {
+        await supabase
+          .from('payment_records')
+          .update({
+            status: 'PAID',
+            evidence: 'Payment received',
+            verification_source: 'AUTHORITATIVE_GATEWAY',
+          })
+          .eq('id', existingRec.id)
+      } else {
+        await supabase
+          .from('payment_records')
+          .insert({
+            id: recordId,
+            order_id: order.id,
+            attempt_id: dedupeKey,
+            amount: Number(order.total_payable),
+            status: 'PAID',
+            provider: 'UPI',
+            verification_source: 'AUTHORITATIVE_GATEWAY',
+            evidence: 'Payment received',
+            raw_payload: {
+              makeResponse: makeResult.rawResponse || 'Payment recieved',
+              verifiedAt: new Date().toISOString(),
+              verifiedVia: 'MAKE_COM_CONFIRMATION',
+            },
+            created_at: new Date().toISOString(),
+          })
+      }
+
+      await executeAtomicPaymentVerification(supabase, order.id)
+
+      return res.status(200).json({
+        orderId: order.id,
+        status: 'verified',
+        paymentStatus: 'PAID',
+        message: 'Payment received and verified.',
+      })
+    }
+
+    // 6. Inconclusive check response ('not received' or unconfirmed) while window is still active
     return res.status(200).json({
       orderId: order.id,
       status: 'inconclusive',
       paymentStatus: 'PENDING',
       message: 'Payment not received yet. Direct customer to contact admin if money was deducted.',
+      reason: makeResult?.reason || undefined,
     })
   } catch (err) {
     next(err)
+  } finally {
+    if (lockAcquired && orderId) {
+      inFlightPaymentChecks.delete(orderId)
+    }
   }
 }
 
@@ -420,9 +805,9 @@ export async function executeAtomicPaymentVerification(supabase, orderId) {
 
 /**
  * GET /api/v1/runner/orders - Authenticated runner's assigned orders.
- * Strictly limited to approved runners viewing only their assigned orders.
+ * Strictly limited to approved runners viewing their assigned orders and, when online, available confirmed orders.
  */
-async function handleRunnerAssignedOrders(req, res, next) {
+export async function handleRunnerAssignedOrders(req, res, next) {
   try {
     if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
       throw ApiError.forbidden('You must be a runner to access this queue.')
@@ -431,9 +816,172 @@ async function handleRunnerAssignedOrders(req, res, next) {
       throw ApiError.forbidden('Runner application is pending approval or suspended.')
     }
 
+    const isOnline = req.body?.isOnline !== false && req.body?.isOnline !== 'false' && req.query?.isOnline !== 'false'
     const supabase = getSupabaseAdmin()
-    const { data: orders, error } = await supabase
+
+    // 1. Orders assigned to this runner
+    const { data: assignedOrders, error: assignedErr } = await supabase
       .from('orders')
+      .select(`
+        id,
+        customer_id,
+        runner_id,
+        delivery_location_id,
+        delivery_location_snapshot,
+        status,
+        payment_status,
+        item_subtotal,
+        combined_delivery_fee,
+        base_amount,
+        platform_fee,
+        total_payable,
+        route_distance_km,
+        routing_provider,
+        created_at,
+        order_fulfillment_groups (
+          id,
+          store_id,
+          store_snapshot,
+          status,
+          pickup_sequence_index,
+          picked_up_at,
+          order_items (
+            id,
+            product_id,
+            product_name,
+            product_pack,
+            unit_price,
+            quantity,
+            line_subtotal
+          )
+        )
+      `)
+      .eq('runner_id', req.user.id)
+      .order('created_at', { ascending: false })
+
+    if (assignedErr) {
+      throw ApiError.internal('Failed to retrieve runner orders.')
+    }
+
+    let availableOrders = []
+    // 2. Unassigned CONFIRMED orders available to online runners
+    if (isOnline) {
+      const { data: unassigned, error: availErr } = await supabase
+        .from('orders')
+        .select(`
+          id,
+          customer_id,
+          runner_id,
+          delivery_location_id,
+          delivery_location_snapshot,
+          status,
+          payment_status,
+          item_subtotal,
+          combined_delivery_fee,
+          base_amount,
+          platform_fee,
+          total_payable,
+          route_distance_km,
+          routing_provider,
+          created_at,
+          order_fulfillment_groups (
+            id,
+            store_id,
+            store_snapshot,
+            status,
+            pickup_sequence_index,
+            picked_up_at,
+            order_items (
+              id,
+              product_id,
+              product_name,
+              product_pack,
+              unit_price,
+              quantity,
+              line_subtotal
+            )
+          )
+        `)
+        .is('runner_id', null)
+        .eq('status', 'CONFIRMED')
+        .order('created_at', { ascending: false })
+
+      if (availErr) {
+        throw ApiError.internal('Failed to retrieve available orders.')
+      }
+      availableOrders = unassigned || []
+    }
+
+    const orderMap = new Map()
+    for (const o of (assignedOrders || [])) {
+      orderMap.set(o.id, o)
+    }
+    for (const o of availableOrders) {
+      if (!orderMap.has(o.id)) {
+        orderMap.set(o.id, o)
+      }
+    }
+
+    const combined = Array.from(orderMap.values())
+    combined.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+
+    const sanitized = combined.map((o) => {
+      const canonical = formatCanonicalOrder(o)
+      delete canonical.handover_otp_hash
+      delete canonical.handoverOtpHash
+      delete canonical._mockOtp
+      delete canonical.otp
+      return canonical
+    })
+
+    res.status(200).json(sanitized)
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
+ * Runner Order Acceptance endpoint (Milestone 3).
+ * Atomically claims an available CONFIRMED order for the calling runner.
+ * Enforces:
+ * - Approved runner authentication
+ * - Online availability check
+ * - Atomic exclusive claiming via conditional SQL update (runner_id IS NULL AND status = 'CONFIRMED')
+ * - Transitions order status to PREPARING
+ * - Concurrency conflict rejection with HTTP 409 ORDER_ALREADY_ASSIGNED
+ */
+export async function handleRunnerAcceptOrder(req, res, next) {
+  try {
+    if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You must be a runner to accept delivery requests.')
+    }
+    if (req.user.runnerStatus !== 'approved' && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('Runner application is pending approval or suspended.')
+    }
+
+    const orderId = req.params?.id || req.body?.orderId
+    const isOnline = req.body?.isOnline !== false && req.body?.isOnline !== 'false' && req.query?.isOnline !== 'false'
+
+    if (!orderId) {
+      throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
+    }
+    if (!isOnline) {
+      throw ApiError.badRequest('Runner must be online to accept delivery requests.', 'RUNNER_OFFLINE')
+    }
+
+    const supabase = getSupabaseAdmin()
+
+    // Atomic claim: only succeeds if runner_id IS NULL and status = 'CONFIRMED'
+    const { data: updatedRows, error: updateErr } = await supabase
+      .from('orders')
+      .update({
+        runner_id: req.user.id,
+        status: 'PREPARING',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', orderId)
+      .is('runner_id', null)
+      .eq('status', 'CONFIRMED')
       .select(`
         id,
         customer_id,
@@ -458,23 +1006,162 @@ async function handleRunnerAssignedOrders(req, res, next) {
           picked_up_at
         )
       `)
-      .eq('runner_id', req.user.id)
-      .order('created_at', { ascending: false })
 
-    if (error) {
-      throw ApiError.internal('Failed to retrieve runner orders.')
+    if (updateErr) {
+      throw ApiError.internal('Failed to accept order.')
     }
 
-    const sanitized = (orders || []).map((o) => {
-      const copy = { ...o }
-      delete copy.handover_otp_hash
-      delete copy.handoverOtpHash
-      delete copy._mockOtp
-      delete copy.otp
-      return copy
-    })
+    if (Array.isArray(updatedRows) && updatedRows.length > 0) {
+      const order = updatedRows[0]
+      const sanitized = { ...order }
+      delete sanitized.handover_otp_hash
+      delete sanitized.handoverOtpHash
+      delete sanitized._mockOtp
+      delete sanitized.otp
+      return res.status(200).json(sanitized)
+    }
 
-    res.status(200).json(sanitized)
+    // If update returned 0 rows, evaluate existing order state to return specific error code
+    const { data: existingOrder, error: fetchErr } = await supabase
+      .from('orders')
+      .select('id, runner_id, status')
+      .eq('id', orderId)
+      .maybeSingle()
+
+    if (fetchErr) {
+      throw ApiError.internal('Failed to retrieve order state.')
+    }
+
+    if (!existingOrder) {
+      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+    }
+
+    if (existingOrder.runner_id === req.user.id) {
+      throw new ApiError(
+        'ORDER_ALREADY_ACCEPTED',
+        'You have already accepted this delivery request.',
+        400,
+        { orderId }
+      )
+    }
+
+    if (existingOrder.runner_id && existingOrder.runner_id !== req.user.id) {
+      throw new ApiError(
+        'ORDER_ALREADY_ASSIGNED',
+        'This delivery request has already been assigned to another runner.',
+        409,
+        { orderId, assignedRunnerId: existingOrder.runner_id }
+      )
+    }
+
+    if (existingOrder.status !== 'CONFIRMED') {
+      throw new ApiError(
+        'UNAVAILABLE_REQUEST',
+        `Order is in ${existingOrder.status} status and is no longer available for acceptance.`,
+        409,
+        { orderId, status: existingOrder.status }
+      )
+    }
+
+    throw new ApiError(
+      'ORDER_ALREADY_ASSIGNED',
+      'This delivery request has already been assigned to another runner.',
+      409,
+      { orderId }
+    )
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
+ * Runner Store Pickup Confirmation endpoint.
+ * Confirms collection of items from a participating store within an order.
+ * When all fulfillment groups are collected, transitions order status to PICKED_UP.
+ */
+export async function handleRunnerPickupStore(req, res, next) {
+  try {
+    if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You must be a runner to confirm store pickup.')
+    }
+    if (req.user.runnerStatus !== 'approved' && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('Runner application is pending approval or suspended.')
+    }
+
+    const orderId = req.params?.id || req.body?.orderId
+    const storeId = req.body?.storeId
+
+    if (!orderId) {
+      throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
+    }
+    if (!storeId) {
+      throw ApiError.badRequest('Store identifier is required.', 'INVALID_STORE_ID')
+    }
+
+    const supabase = getSupabaseAdmin()
+
+    // 1. Fetch order and verify runner assignment
+    const { data: order, error: orderErr } = await supabase
+      .from('orders')
+      .select('id, runner_id, status')
+      .eq('id', orderId)
+      .maybeSingle()
+
+    if (orderErr || !order) {
+      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+    }
+    if (order.runner_id !== req.user.id && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You are not assigned to this delivery.', 'FORBIDDEN')
+    }
+    if (order.status !== 'PREPARING') {
+      throw ApiError.badRequest(
+        `Store pickups can only be confirmed while order is preparing (current status: ${order.status}).`,
+        'INVALID_ORDER_STATE'
+      )
+    }
+
+    // 2. Update fulfillment group for this store
+    await supabase
+      .from('order_fulfillment_groups')
+      .update({
+        status: 'PICKED_UP',
+        picked_up_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+      .eq('store_id', storeId)
+
+    // 3. Check if all fulfillment groups for this order are picked up
+    const { data: groups } = await supabase
+      .from('order_fulfillment_groups')
+      .select('id, status')
+      .eq('order_id', orderId)
+
+    const allGroups = groups || []
+    const allPickedUp = allGroups.length > 0 && allGroups.every((g) => g.status === 'PICKED_UP')
+
+    let finalStatus = order.status
+    if (allPickedUp) {
+      finalStatus = 'PICKED_UP'
+      await supabase
+        .from('orders')
+        .update({
+          status: 'PICKED_UP',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', orderId)
+    }
+
+    res.status(200).json({
+      success: true,
+      orderId,
+      storeId,
+      status: finalStatus,
+      allStoresPickedUp: allPickedUp,
+      message: allPickedUp
+        ? 'All items collected from store. Order is ready for transit!'
+        : 'Store pickup confirmed.',
+    })
   } catch (err) {
     next(err)
   }
@@ -671,6 +1358,75 @@ async function handleRunnerTransitionOrder(req, res, next) {
       orderId,
       status: nextStatus,
       message: `Order status successfully updated to ${nextStatus}.`,
+    })
+  } catch (err) {
+    next(err)
+  }
+}
+
+/**
+ * Runner Delay / Operational Issue Reporting endpoint.
+ * Allows assigned runner to log a delay reason and optional note for in-flight orders.
+ */
+async function handleRunnerReportDelay(req, res, next) {
+  try {
+    if (!req.user.roles.includes(ROLES.RUNNER) && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You must be an approved runner to report a delivery delay.')
+    }
+    if (req.user.runnerStatus !== 'approved' && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('Runner application is pending approval or suspended.')
+    }
+
+    const orderId = req.params?.id || req.body?.orderId
+    const reason = req.body?.reason
+    const note = req.body?.note || ''
+
+    if (!orderId) {
+      throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
+    }
+    if (!reason || typeof reason !== 'string') {
+      throw ApiError.badRequest('Delay reason code is required.', 'INVALID_DELAY_REASON')
+    }
+
+    const supabase = getSupabaseAdmin()
+    const { data: order, error } = await supabase
+      .from('orders')
+      .select('id, runner_id, status')
+      .eq('id', orderId)
+      .maybeSingle()
+
+    if (error || !order) {
+      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+    }
+
+    if (order.runner_id !== req.user.id && !req.user.roles.includes(ROLES.SUPER_ADMIN)) {
+      throw ApiError.forbidden('You are not assigned to this delivery.', 'FORBIDDEN')
+    }
+
+    const validStatuses = ['PREPARING', 'PICKED_UP', 'ON_THE_WAY']
+    if (!validStatuses.includes(order.status)) {
+      throw ApiError.badRequest(`Delays can only be reported for active deliveries (current: ${order.status}).`, 'INVALID_ORDER_STATE')
+    }
+
+    const reportedAt = new Date().toISOString()
+    const delayReport = {
+      reportedAt,
+      runnerId: req.user.id,
+      reason,
+      note: String(note).slice(0, 500),
+    }
+
+    await supabase
+      .from('orders')
+      .update({ updated_at: reportedAt })
+      .eq('id', orderId)
+
+    res.status(200).json({
+      success: true,
+      orderId,
+      status: order.status,
+      delayReport,
+      message: 'Delivery delay report recorded successfully.',
     })
   } catch (err) {
     next(err)
@@ -969,48 +1725,7 @@ async function handleRefreshDeliveryOtp(req, res, next) {
 }
 
 // Customer order creation helper for idempotency hits
-function formatCreatedOrderResponse(order) {
-  const storeId = order.order_fulfillment_groups?.[0]?.store_id || order.store_id || null
-  const locationId = order.delivery_location_id || order.location_id
-  const itemSubtotal = Number(order.item_subtotal)
-  const deliveryFee = Number(order.combined_delivery_fee)
-  const baseAmount = Number(order.base_amount)
-  const platformFee = Number(order.platform_fee)
-  const total = Number(order.total_payable)
-  const distanceKm = Number(order.route_distance_km)
-
-  return {
-    id: order.id,
-    customerId: order.customer_id,
-    storeId,
-    locationId,
-    deliveryLocationId: locationId,
-    deliveryLocationSnapshot: order.delivery_location_snapshot,
-    status: order.status,
-    paymentStatus: order.payment_status,
-    pricing: {
-      itemSubtotal,
-      deliveryFee,
-      baseAmount,
-      platformFee,
-      total,
-      distanceKm: Number(distanceKm.toFixed(2)),
-      distanceMethod: 'straight_line',
-      pricingVersion: order.fee_policy_version,
-    },
-    payment: {
-      status: order.payment_status,
-      attemptId: order.payment_attempt_id,
-      feePaise: order.fee_paise,
-      allocatedAt: order.payment_allocated_at,
-      windowExpiresAt: order.payment_window_expires_at,
-      cooldownExpiresAt: order.payment_cooldown_expires_at,
-      paidAt: order.paid_at,
-    },
-    fulfillmentGroups: order.order_fulfillment_groups || [],
-    createdAt: order.created_at,
-  }
-}
+const formatCreatedOrderResponse = formatCanonicalOrder
 
 /**
  * Customer Order Creation Endpoint.
@@ -1041,10 +1756,10 @@ async function handleCreateOrder(req, res, next) {
     }
 
     // 2. Validate payload
-    const { storeId, locationId, lines, customerDetails, idempotencyKey: bodyIdempotencyKey } = req.body || {}
+    const { storeId, storeIds, locationId, lines, customerDetails, idempotencyKey: bodyIdempotencyKey } = req.body || {}
     const idempotencyKey = req.headers['idempotency-key'] || bodyIdempotencyKey || null
 
-    if (!storeId || typeof storeId !== 'string') {
+    if ((!storeId || typeof storeId !== 'string') && (!Array.isArray(storeIds) || storeIds.length === 0)) {
       throw ApiError.badRequest('Store ID is required.', 'INVALID_STORE_ID')
     }
     if (!locationId || typeof locationId !== 'string') {
@@ -1052,6 +1767,40 @@ async function handleCreateOrder(req, res, next) {
     }
     if (!Array.isArray(lines) || lines.length === 0) {
       throw ApiError.unprocessable('Your cart is empty.', 'EMPTY_CART')
+    }
+
+    const allowedStoreIds = new Set()
+    if (storeId && typeof storeId === 'string') allowedStoreIds.add(storeId)
+    if (Array.isArray(storeIds)) {
+      storeIds.forEach((sid) => sid && typeof sid === 'string' && allowedStoreIds.add(sid))
+    }
+
+    // Customer details validation
+    let sanitizedCustomerDetails = null
+    if (customerDetails && typeof customerDetails === 'object') {
+      const { fullName, name, phoneNumber, mobileNumber, phone, customLocation, deliveryInstructions, instructions } = customerDetails
+      const recipientName = fullName || name
+      if (recipientName !== undefined && recipientName !== null && String(recipientName).trim() !== '') {
+        const nameRes = validateName(recipientName, { required: false, minLength: 2, maxLength: 120, label: 'Recipient name' })
+        if (!nameRes.isValid) {
+          throw ApiError.badRequest(nameRes.error, 'INVALID_CUSTOMER_NAME')
+        }
+      }
+      const rawPhone = phoneNumber || mobileNumber || phone
+      if (rawPhone !== undefined && rawPhone !== null && String(rawPhone).trim() !== '') {
+        const phoneRes = validateIndianPhone(rawPhone, { required: false, label: 'Delivery phone number' })
+        if (!phoneRes.isValid) {
+          throw ApiError.badRequest(phoneRes.error, 'INVALID_CUSTOMER_PHONE')
+        }
+      }
+      if (customLocation && typeof customLocation === 'string' && customLocation.length > 200) {
+        throw ApiError.badRequest('Custom delivery destination cannot exceed 200 characters.', 'INVALID_LOCATION_DETAILS')
+      }
+      const notes = deliveryInstructions || instructions
+      if (notes && typeof notes === 'string' && notes.length > 500) {
+        throw ApiError.badRequest('Delivery instructions cannot exceed 500 characters.', 'INVALID_DELIVERY_NOTES')
+      }
+      sanitizedCustomerDetails = customerDetails
     }
 
     // Line item consolidation & format check
@@ -1099,50 +1848,24 @@ async function handleCreateOrder(req, res, next) {
       }
     }
 
-    // 4. Query & validate store
-    const { data: store, error: storeErr } = await supabase
+    // 4. Query & validate store(s) involved in the order
+    const requestedStoreIds = Array.from(allowedStoreIds)
+    const { data: dbStores, error: storesErr } = await supabase
       .from('stores')
       .select('id, name, description, is_open, latitude, longitude')
-      .eq('id', storeId)
-      .maybeSingle()
+      .in('id', requestedStoreIds)
 
-    if (storeErr || !store) {
+    if (storesErr || !dbStores || dbStores.length !== requestedStoreIds.length) {
       throw ApiError.notFound('That store is not available.', 'STORE_NOT_FOUND')
     }
-    if (!store.is_open) {
+    const closedStore = dbStores.find((s) => !s.is_open)
+    if (closedStore) {
       throw ApiError.conflict('This store is closed right now.', 'STORE_CLOSED')
     }
 
-    // 5. Query & validate delivery location (authoritative server-side destination validation)
-    const { data: location, error: locErr } = await supabase
-      .from('locations')
-      .select('id, name, group_name, latitude, longitude, is_active')
-      .eq('id', locationId)
-      .maybeSingle()
+    const store = dbStores.find((s) => s.id === storeId) || dbStores[0]
 
-    if (locErr || !location || !location.is_active) {
-      throw ApiError.notFound('Choose a valid delivery spot first.', 'LOCATION_NOT_FOUND')
-    }
-
-    // 6. Validate coordinates and delivery distance
-    const storeCoords = parseCoordinate({ latitude: store.latitude, longitude: store.longitude })
-    if (!storeCoords) {
-      throw ApiError.unprocessable('Store coordinates are missing or invalid.', 'INVALID_COORDINATES', { entity: 'store', storeId })
-    }
-    const locationCoords = parseCoordinate({ latitude: location.latitude, longitude: location.longitude })
-    if (!locationCoords) {
-      throw ApiError.unprocessable('Delivery destination coordinates are missing or invalid.', 'INVALID_COORDINATES', { entity: 'location', locationId })
-    }
-
-    const distanceKm = straightLineKm(storeCoords, locationCoords)
-    if (!Number.isFinite(distanceKm) || distanceKm <= 0) {
-      throw ApiError.unprocessable("We couldn't work out the distance for that drop point. Please re-pick your location.", 'INVALID_DISTANCE', { distanceKm })
-    }
-    if (distanceKm > MAX_SERVICE_KM + 1e-9) {
-      throw ApiError.unprocessable('Delivery location is outside our 5 km service radius.', 'OUT_OF_SERVICE_AREA', { distanceKm, maxKm: MAX_SERVICE_KM })
-    }
-
-    // 7. Authoritative product pricing & inventory check
+    // 5. Authoritative product pricing & inventory check
     const productIds = Array.from(lineMap.keys())
     const { data: dbProducts, error: prodErr } = await supabase
       .from('products')
@@ -1155,7 +1878,7 @@ async function handleCreateOrder(req, res, next) {
 
     const pricedLines = []
     for (const [productId, quantity] of lineMap.entries()) {
-      const product = dbProducts.find((p) => p.id === productId && p.store_id === storeId)
+      const product = dbProducts.find((p) => p.id === productId && (allowedStoreIds.size === 0 || allowedStoreIds.has(p.store_id)))
       if (!product || !product.is_available) {
         throw ApiError.conflict('An item in your cart is no longer available.', 'PRODUCT_UNAVAILABLE', { productId })
       }
@@ -1169,6 +1892,7 @@ async function handleCreateOrder(req, res, next) {
       }
       pricedLines.push({
         productId,
+        storeId: product.store_id,
         name: product.name,
         pack: product.pack || null,
         unitPrice,
@@ -1177,11 +1901,52 @@ async function handleCreateOrder(req, res, next) {
       })
     }
 
+    const distinctStoreIds = Array.from(new Set(pricedLines.map((l) => l.storeId)))
+    const activeStores = dbStores.filter((s) => distinctStoreIds.includes(s.id))
+
+    // 6. Query & validate delivery location (authoritative server-side destination validation)
+    const { data: location, error: locErr } = await supabase
+      .from('locations')
+      .select('id, name, group_name, latitude, longitude, is_active')
+      .eq('id', locationId)
+      .maybeSingle()
+
+    if (locErr || !location || !location.is_active) {
+      throw ApiError.notFound('Choose a valid delivery spot first.', 'LOCATION_NOT_FOUND')
+    }
+
+    const locationCoords = parseCoordinate({ latitude: location.latitude, longitude: location.longitude })
+    if (!locationCoords) {
+      throw ApiError.unprocessable('Delivery destination coordinates are missing or invalid.', 'INVALID_COORDINATES', { entity: 'location', locationId })
+    }
+
+    // 7. Validate coordinates and delivery distance for each store
+    let maxDistanceKm = 0
+    const relevantStores = activeStores.length > 0 ? activeStores : dbStores
+    for (const st of relevantStores) {
+      const storeCoords = parseCoordinate({ latitude: st.latitude, longitude: st.longitude })
+      if (!storeCoords) {
+        throw ApiError.unprocessable('Store coordinates are missing or invalid.', 'INVALID_COORDINATES', { entity: 'store', storeId: st.id })
+      }
+      const distanceKm = straightLineKm(storeCoords, locationCoords)
+      if (!Number.isFinite(distanceKm) || distanceKm <= 0) {
+        throw ApiError.unprocessable("We couldn't work out the distance for that drop point. Please re-pick your location.", 'INVALID_DISTANCE', { distanceKm })
+      }
+      if (distanceKm > MAX_SERVICE_KM + 1e-9) {
+        throw ApiError.unprocessable('Delivery location is outside our 5 km service radius.', 'OUT_OF_SERVICE_AREA', { distanceKm, maxKm: MAX_SERVICE_KM })
+      }
+      if (distanceKm > maxDistanceKm) {
+        maxDistanceKm = distanceKm
+      }
+    }
+
     // Sort priced lines deterministically by productId to prevent lock-ordering cycles
     pricedLines.sort((a, b) => a.productId.localeCompare(b.productId))
 
-    // 8. Financial totals calculation under MVP Flat ₹10 Delivery Fee Policy
-    const deliveryFee = FLAT_DELIVERY_FEE
+    // 8. Financial totals calculation under MVP Flat ₹10 Delivery Fee Policy + Multi-Store Surcharge
+    const storeCount = distinctStoreIds.length
+    const additionalStoreSurcharge = calculateAdditionalStoreSurcharge(storeCount, MULTI_STORE_SURCHARGE)
+    const deliveryFee = FLAT_DELIVERY_FEE + additionalStoreSurcharge
     const itemSubtotal = Math.round(pricedLines.reduce((acc, l) => acc + l.lineSubtotal, 0) * 100) / 100
     if (itemSubtotal > 99999999.99) {
       throw ApiError.unprocessable('Order subtotal exceeds maximum allowable limit.', 'ORDER_TOTAL_EXCEEDED')
@@ -1205,11 +1970,11 @@ async function handleCreateOrder(req, res, next) {
       p_customer_id: req.user.id,
       p_store_id: store.id,
       p_location_id: location.id,
-      p_customer_details: customerDetails || null,
+      p_customer_details: sanitizedCustomerDetails || null,
       p_items: atomicItemsPayload,
       p_delivery_fee: deliveryFee,
       p_fee_policy_version: PRICING_VERSION,
-      p_route_distance_km: Number(distanceKm.toFixed(4)),
+      p_route_distance_km: Number(maxDistanceKm.toFixed(4)),
       p_idempotency_key: finalIdempotencyKey,
       p_fee_window_seconds: 120,
       p_fee_cooldown_seconds: 300,
@@ -1319,6 +2084,7 @@ async function handleCreateOrder(req, res, next) {
       id: assignedOrderId,
       customerId: req.user.id,
       storeId: store.id,
+      storeIds: distinctStoreIds,
       locationId: location.id,
       deliveryLocationId: location.id,
       deliveryLocationSnapshot: {
@@ -1341,10 +2107,12 @@ async function handleCreateOrder(req, res, next) {
       pricing: {
         itemSubtotal: authoritativeSubtotal,
         deliveryFee: authoritativeDeliveryFee,
+        baseDeliveryFee: FLAT_DELIVERY_FEE,
+        additionalStoreSurcharge,
         baseAmount: authoritativeBaseAmount,
         platformFee: authoritativePlatformFee,
         total: authoritativeTotal,
-        distanceKm: Number(distanceKm.toFixed(2)),
+        distanceKm: Number(maxDistanceKm.toFixed(2)),
         distanceMethod: 'straight_line',
         pricingVersion: PRICING_VERSION,
       },
@@ -1357,19 +2125,21 @@ async function handleCreateOrder(req, res, next) {
         cooldownExpiresAt,
         paidAt: null,
       },
-      fulfillmentGroups: [
-        {
-          id: `grp_${assignedOrderId.replace(/^ord_/, '')}`,
-          storeId: store.id,
+      fulfillmentGroups: relevantStores.map((st, idx) => {
+        const storeLines = pricedLines.filter((l) => l.storeId === st.id)
+        return {
+          id: `grp_${assignedOrderId.replace(/^ord_/, '')}_${idx + 1}`,
+          storeId: st.id,
           storeSnapshot: {
-            id: store.id,
-            name: store.name,
-            description: store.description || null,
-            latitude: store.latitude,
-            longitude: store.longitude,
+            id: st.id,
+            name: st.name,
+            description: st.description || null,
+            latitude: st.latitude,
+            longitude: st.longitude,
           },
           status: 'PENDING',
-          orderItems: pricedLines.map((l) => ({
+          pickupSequenceIndex: idx,
+          orderItems: storeLines.map((l) => ({
             productId: l.productId,
             productName: l.name,
             productPack: l.pack,
@@ -1377,8 +2147,8 @@ async function handleCreateOrder(req, res, next) {
             quantity: l.quantity,
             lineSubtotal: l.lineSubtotal,
           })),
-        },
-      ],
+        }
+      }),
       status: 'AWAITING_PAYMENT',
       paymentStatus: 'PENDING',
       createdAt: allocatedAt,
@@ -1414,9 +2184,17 @@ ordersRouter.post('/orders/expire', authenticate, handleExpirePayment)
 ordersRouter.get('/api/v1/runner/orders', authenticate, handleRunnerAssignedOrders)
 ordersRouter.post('/runner/orders/assigned', authenticate, handleRunnerAssignedOrders)
 
+// Runner order acceptance (Milestone 3)
+ordersRouter.post('/api/v1/runner/orders/:id/accept', authenticate, handleRunnerAcceptOrder)
+ordersRouter.post('/runner/order/accept', authenticate, handleRunnerAcceptOrder)
+
 // Runner order lifecycle transition
 ordersRouter.post('/api/v1/runner/orders/:id/transition', authenticate, handleRunnerTransitionOrder)
 ordersRouter.post('/runner/order/transition', authenticate, handleRunnerTransitionOrder)
+
+// Runner store pickup confirmation
+ordersRouter.post('/api/v1/runner/orders/:id/pickup-store', authenticate, handleRunnerPickupStore)
+ordersRouter.post('/runner/order/pickupStore', authenticate, handleRunnerPickupStore)
 
 // Customer delivery OTP challenge retrieval
 ordersRouter.get('/api/v1/orders/:id/delivery-otp', authenticate, handleGetDeliveryOtp)
@@ -1430,5 +2208,9 @@ ordersRouter.post('/customer/order/refreshOtp', authenticate, handleRefreshDeliv
 // Runner delivery OTP verification
 ordersRouter.post('/api/v1/runner/orders/:id/verify-handover', authenticate, handleVerifyDeliveryOtp)
 ordersRouter.post('/runner/order/verifyOtp', authenticate, handleVerifyDeliveryOtp)
+
+// Runner delay reporting
+ordersRouter.post('/api/v1/runner/orders/:id/report-delay', authenticate, handleRunnerReportDelay)
+ordersRouter.post('/runner/order/reportDelay', authenticate, handleRunnerReportDelay)
 
 

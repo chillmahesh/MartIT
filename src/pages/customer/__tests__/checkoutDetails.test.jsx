@@ -5,14 +5,12 @@ import { DeliveryDetailsForm } from '@/components/cart/DeliveryDetailsForm'
 import { OrderConfirmationView } from '@/components/cart/OrderConfirmationView'
 import { CustomerPaymentView } from '@/components/payment/CustomerPaymentView'
 import { useCartStore } from '@/stores/cartStore'
-import { useAuthStore } from '@/stores/authStore'
 import { createMockServer } from '@/services/mockServer/handlers'
 import {
   PRESET_CAMPUS_LOCATIONS,
   OTHER_LOCATION_VALUE,
   validateCheckoutDetails,
   mapCampusLocationToDestinationId,
-  CAMPUS_LOCATION_DESTINATION_MAP,
 } from '@/utils/checkoutValidation'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router'
@@ -434,5 +432,91 @@ describe('Checkout Customer Details and Campus Address Selection', () => {
     expect(html).toContain('overscroll-contain')
     expect(html).toContain('overflow-y-auto')
     expect(html).toContain('max-h-48')
+  })
+
+  // 14. Saved campus address preference
+  it('renders save campus address preference button and controls', () => {
+    const html = renderToString(
+      <DeliveryDetailsForm
+        details={{
+          fullName: 'Aarav Patel',
+          mobileNumber: '9876543210',
+          presetLocation: 'Hostel 3',
+          customLocation: '',
+          deliveryInstructions: 'Room 204',
+        }}
+        errors={{}}
+        onChange={vi.fn()}
+      />,
+    )
+
+    expect(html).toContain('data-testid="save-delivery-location-btn"')
+    expect(html).toContain('Save as my default campus address')
+  })
+
+  // 15. Enforces name length constraints and supports Unicode names
+  it('enforces 120 character limit on customer name and supports Unicode names', () => {
+    const longName = 'A'.repeat(121)
+    const resOverlong = validateCheckoutDetails({
+      fullName: longName,
+      mobileNumber: '9876543210',
+      presetLocation: 'A Block',
+    })
+    expect(resOverlong.isValid).toBe(false)
+    expect(resOverlong.errors.fullName).toBe('Full name must not exceed 120 characters.')
+
+    const unicodeName = 'आरव शर्मा'
+    const resUnicode = validateCheckoutDetails({
+      fullName: unicodeName,
+      mobileNumber: '9876543210',
+      presetLocation: 'A Block',
+    })
+    expect(resUnicode.isValid).toBe(true)
+    expect(resUnicode.data.fullName).toBe('आरव शर्मा')
+  })
+
+  // 16. Enforces length constraints on custom location and delivery instructions
+  it('enforces length constraints on custom location (200) and delivery instructions (500)', () => {
+    const resOverlongCustom = validateCheckoutDetails({
+      fullName: 'Aarav Patel',
+      mobileNumber: '9876543210',
+      presetLocation: 'other',
+      customLocation: 'X'.repeat(201),
+      deliveryInstructions: '',
+    })
+    expect(resOverlongCustom.isValid).toBe(false)
+    expect(resOverlongCustom.errors.customLocation).toBe('Destination address must not exceed 200 characters.')
+
+    const resOverlongInstructions = validateCheckoutDetails({
+      fullName: 'Aarav Patel',
+      mobileNumber: '9876543210',
+      presetLocation: 'A Block',
+      deliveryInstructions: 'Y'.repeat(501),
+    })
+    expect(resOverlongInstructions.isValid).toBe(false)
+    expect(resOverlongInstructions.errors.location).toBe('Delivery instructions must not exceed 500 characters.')
+  })
+
+  // 17. DeliveryDetailsForm has HTML constraints (maxLength, inputMode)
+  it('renders inputs with proper maxLength and inputMode constraints for responsive mobile UX', () => {
+    const html = renderToString(
+      <DeliveryDetailsForm
+        details={{
+          fullName: 'Aarav Patel',
+          mobileNumber: '9876543210',
+          presetLocation: 'other',
+          customLocation: 'Mechanical Block',
+          deliveryInstructions: 'Gate 2',
+        }}
+        errors={{}}
+        onChange={vi.fn()}
+      />,
+    )
+
+    expect(html).toContain('maxLength="120"')
+    expect(html).toContain('maxLength="16"')
+    expect(html).toContain('inputMode="tel"')
+    expect(html).toContain('maxLength="200"')
+    expect(html).toContain('maxLength="500"')
   })
 })

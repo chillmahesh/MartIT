@@ -64,6 +64,13 @@ export function validateFullName(raw) {
       value: trimmed,
     }
   }
+  if (trimmed.length > 120) {
+    return {
+      isValid: false,
+      error: 'Full name must not exceed 120 characters.',
+      value: trimmed,
+    }
+  }
   return {
     isValid: true,
     error: null,
@@ -213,7 +220,25 @@ export function validateCampusLocation({
       }
     }
 
+    if (trimmedCustom.length > 200) {
+      return {
+        isValid: false,
+        error: null,
+        customError: 'Destination address must not exceed 200 characters.',
+        data: null,
+      }
+    }
+
     const detailedAddressTrimmed = (deliveryInstructions || '').trim()
+    if (detailedAddressTrimmed.length > 500) {
+      return {
+        isValid: false,
+        error: 'Delivery instructions must not exceed 500 characters.',
+        customError: null,
+        data: null,
+      }
+    }
+
     const formattedAddress = detailedAddressTrimmed
       ? `${trimmedCustom}, ${detailedAddressTrimmed}`
       : trimmedCustom
@@ -237,6 +262,15 @@ export function validateCampusLocation({
 
   // Valid preset location
   const detailedAddressTrimmed = (deliveryInstructions || '').trim()
+  if (detailedAddressTrimmed.length > 500) {
+    return {
+      isValid: false,
+      error: 'Delivery instructions must not exceed 500 characters.',
+      customError: null,
+      data: null,
+    }
+  }
+
   const formattedAddress = detailedAddressTrimmed
     ? `${presetLocation}, ${detailedAddressTrimmed}`
     : presetLocation

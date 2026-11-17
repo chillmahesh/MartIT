@@ -80,6 +80,14 @@ BEGIN
     RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on auth_is_admin';
   END IF;
 
+  -- DDL event-trigger function must not be callable by client API roles.
+  IF has_function_privilege('anon', 'public.rls_auto_enable()', 'EXECUTE') THEN
+    RAISE EXCEPTION 'SECURITY FAIL: anon has EXECUTE on rls_auto_enable';
+  END IF;
+  IF has_function_privilege('authenticated', 'public.rls_auto_enable()', 'EXECUTE') THEN
+    RAISE EXCEPTION 'SECURITY FAIL: authenticated has EXECUTE on rls_auto_enable';
+  END IF;
+
   RAISE NOTICE '✓ TEST 1 PASSED: Client roles cannot execute privileged functions.';
 END;
 $$;
@@ -587,6 +595,44 @@ BEGIN
   PERFORM public.release_platform_fee('ord_alloc_test_1');
 
   RAISE NOTICE '✓ TEST 12 PASSED: allocate_platform_fee executed without column ambiguity.';
+END;
+$$;
+
+-- ------------------------------------------------------------------------------
+-- TEST 13: Foreign Key Index Presence (Supabase Advisor Review)
+-- Verify that foreign key columns on critical tables have supporting indexes
+-- ------------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_missing TEXT[] := ARRAY[]::TEXT[];
+  v_idx RECORD;
+BEGIN
+  FOR v_idx IN
+    SELECT unnest(ARRAY[
+      'idx_stores_owner',
+      'idx_orders_delivery_location',
+      'idx_orders_fee_paise',
+      'idx_order_items_store',
+      'idx_order_items_product',
+      'idx_inventory_reservations_store',
+      'idx_inventory_reservations_product',
+      'idx_platform_fee_reservations_order'
+    ]) AS index_name
+  LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_indexes
+      WHERE schemaname = 'public'
+        AND indexname = v_idx.index_name
+    ) THEN
+      v_missing := array_append(v_missing, v_idx.index_name);
+    END IF;
+  END LOOP;
+
+  IF array_length(v_missing, 1) > 0 THEN
+    RAISE EXCEPTION 'INDEX INTEGRITY FAIL: missing foreign key indexes: %', v_missing;
+  END IF;
+
+  RAISE NOTICE '✓ TEST 13 PASSED: All recommended foreign key indexes are present.';
 END;
 $$;
 

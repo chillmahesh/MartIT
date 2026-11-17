@@ -1,6 +1,13 @@
 import { setSupabaseAdmin } from '../config/supabase.js'
 import { ROLES } from '../utils/permissions.js'
 
+function matchesFilter(rowVal, filterVal) {
+  if (filterVal === null) {
+    return rowVal === null || rowVal === undefined
+  }
+  return rowVal === filterVal
+}
+
 /**
  * Creates an in-memory mock Supabase client for testing Express routes.
  */
@@ -131,20 +138,56 @@ export function createMockSupabaseClient({
         },
         async maybeSingle() {
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value) &&
+            filters.every((f) => matchesFilter(row[f.column], f.value)) &&
             inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
-          return { data: results[0] || null, error: null }
+          let row = results[0] || null
+          if (row && table === 'profiles') {
+            row = { ...row, user_roles: (state.user_roles || []).filter((r) => r.user_id === row.id) }
+          }
+          if (row && table === 'orders') {
+            const fgs = (state.order_fulfillment_groups || [])
+              .filter((g) => g.order_id === row.id)
+              .map((g) => ({
+                ...g,
+                order_items: (state.order_items || []).filter(
+                  (it) => it.order_id === row.id && (it.fulfillment_group_id === g.id || !it.fulfillment_group_id)
+                ),
+              }))
+            row = {
+              ...row,
+              order_fulfillment_groups: fgs.length > 0 ? fgs : (row.order_fulfillment_groups || []),
+            }
+          }
+          return { data: row, error: null }
         },
         async single() {
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value) &&
+            filters.every((f) => matchesFilter(row[f.column], f.value)) &&
             inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
           if (results.length === 0) {
             return { data: null, error: { message: 'No rows found', code: 'PGRST116' } }
           }
-          return { data: results[0], error: null }
+          let row = results[0]
+          if (row && table === 'profiles') {
+            row = { ...row, user_roles: (state.user_roles || []).filter((r) => r.user_id === row.id) }
+          }
+          if (row && table === 'orders') {
+            const fgs = (state.order_fulfillment_groups || [])
+              .filter((g) => g.order_id === row.id)
+              .map((g) => ({
+                ...g,
+                order_items: (state.order_items || []).filter(
+                  (it) => it.order_id === row.id && (it.fulfillment_group_id === g.id || !it.fulfillment_group_id)
+                ),
+              }))
+            row = {
+              ...row,
+              order_fulfillment_groups: fgs.length > 0 ? fgs : (row.order_fulfillment_groups || []),
+            }
+          }
+          return { data: row, error: null }
         },
         insert(values) {
           const arr = Array.isArray(values) ? values : [values]
@@ -200,9 +243,12 @@ export function createMockSupabaseClient({
         },
         then(resolve, reject) {
           if (pendingUpdate) {
+            if (state.updateErrors?.[table]) {
+              return resolve({ data: null, error: { message: state.updateErrors[table] } })
+            }
             const updatedRows = []
             for (let i = 0; i < currentTableData.length; i++) {
-              if (filters.every((f) => currentTableData[i][f.column] === f.value)) {
+              if (filters.every((f) => matchesFilter(currentTableData[i][f.column], f.value))) {
                 currentTableData[i] = { ...currentTableData[i], ...pendingUpdate }
                 updatedRows.push(currentTableData[i])
               }
@@ -212,7 +258,7 @@ export function createMockSupabaseClient({
 
           if (isDelete) {
             const kept = currentTableData.filter(
-              (row) => !filters.every((f) => row[f.column] === f.value),
+              (row) => !filters.every((f) => matchesFilter(row[f.column], f.value)),
             )
             currentTableData.length = 0
             currentTableData.push(...kept)
@@ -221,7 +267,7 @@ export function createMockSupabaseClient({
           }
 
           let results = currentTableData.filter((row) =>
-            filters.every((f) => row[f.column] === f.value) &&
+            filters.every((f) => matchesFilter(row[f.column], f.value)) &&
             inFilters.every((inf) => inf.values.includes(row[inf.column]))
           )
           // Handle relationships in mock if queried
@@ -230,6 +276,22 @@ export function createMockSupabaseClient({
               ...p,
               user_roles: state.user_roles.filter((r) => r.user_id === p.id),
             }))
+          }
+          if (table === 'orders') {
+            results = results.map((o) => {
+              const fgs = (state.order_fulfillment_groups || [])
+                .filter((g) => g.order_id === o.id)
+                .map((g) => ({
+                  ...g,
+                  order_items: (state.order_items || []).filter(
+                    (it) => it.order_id === o.id && (it.fulfillment_group_id === g.id || !it.fulfillment_group_id)
+                  ),
+                }))
+              return {
+                ...o,
+                order_fulfillment_groups: fgs.length > 0 ? fgs : (o.order_fulfillment_groups || []),
+              }
+            })
           }
           resolve({ data: results, error: null })
         },
@@ -395,16 +457,56 @@ export function createMockSupabaseClient({
         state.orders.push(orderRecord)
 
         if (!state.inventory_reservations) state.inventory_reservations = []
+        if (!state.order_fulfillment_groups) state.order_fulfillment_groups = []
+        if (!state.order_items) state.order_items = []
+
+        const distinctStores = Array.from(new Set(
+          sortedProductIds.map((pid) => (state.products || []).find((p) => p.id === pid)?.store_id || args?.p_store_id)
+        ))
+
+        const groupMap = new Map()
+        distinctStores.forEach((sid, idx) => {
+          const groupId = `grp_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`
+          const storeObj = (state.stores || []).find((s) => s.id === sid)
+          groupMap.set(sid, groupId)
+          state.order_fulfillment_groups.push({
+            id: groupId,
+            order_id: orderId,
+            store_id: sid,
+            store_snapshot: storeObj ? { id: storeObj.id, name: storeObj.name } : { id: sid, name: 'Store' },
+            status: 'PENDING',
+            pickup_sequence_index: idx,
+            picked_up_at: null,
+            created_at: nowIso,
+            updated_at: nowIso,
+          })
+        })
+
         for (const pid of sortedProductIds) {
           const qty = aggregatedMap.get(pid)
+          const prod = (state.products || []).find((p) => p.id === pid)
+          const sid = prod?.store_id || args?.p_store_id
+          const groupId = groupMap.get(sid)
           state.inventory_reservations.push({
             id: `res_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
             order_id: orderId,
-            store_id: args?.p_store_id,
+            store_id: sid,
             product_id: pid,
             quantity: qty,
             status: 'HELD',
             expires_at: windowExp,
+            created_at: nowIso,
+          })
+          state.order_items.push({
+            id: `item_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`,
+            order_id: orderId,
+            fulfillment_group_id: groupId,
+            store_id: sid,
+            product_id: pid,
+            product_name: prod?.name || 'Product',
+            unit_price: Number(prod?.price || 0),
+            quantity: qty,
+            line_subtotal: Math.round(Number(prod?.price || 0) * qty * 100) / 100,
             created_at: nowIso,
           })
         }
@@ -1007,6 +1109,47 @@ export function createMockSupabaseClient({
             expires_at: expIso,
             attempts_remaining: Math.max(0, 3 - (order.handover_attempts_count || 0)),
           }],
+          error: null,
+        }
+      }
+
+      if (fn === 'admin_set_runner_status') {
+        const { p_user_id, p_status } = args || {}
+        if (!['approved', 'suspended'].includes(p_status)) {
+          return { data: null, error: { message: 'INVALID_STATUS: Runner status must be either approved or suspended.' } }
+        }
+        const profile = state.profiles.find((p) => p.id === p_user_id)
+        if (!profile) {
+          return { data: null, error: { message: 'USER_NOT_FOUND: Target user profile does not exist.' } }
+        }
+        if (profile.runner_status == null) {
+          return { data: null, error: { message: 'NOT_AN_APPLICANT: This user has not applied to be a runner.' } }
+        }
+
+        profile.runner_status = p_status
+        const roles = state.user_roles || state.userRoles || []
+        if (p_status === 'approved') {
+          if (!roles.some((r) => r.user_id === p_user_id && r.role === ROLES.RUNNER)) {
+            roles.push({ user_id: p_user_id, role: ROLES.RUNNER })
+          }
+        } else if (p_status === 'suspended') {
+          if (state.user_roles) {
+            state.user_roles = state.user_roles.filter((r) => !(r.user_id === p_user_id && r.role === ROLES.RUNNER))
+          }
+          if (state.userRoles) {
+            state.userRoles = state.userRoles.filter((r) => !(r.user_id === p_user_id && r.role === ROLES.RUNNER))
+          }
+        }
+
+        return {
+          data: {
+            success: true,
+            userId: p_user_id,
+            runnerStatus: p_status,
+            name: profile.name,
+            email: profile.email,
+            message: `Runner status updated to ${p_status}.`,
+          },
           error: null,
         }
       }

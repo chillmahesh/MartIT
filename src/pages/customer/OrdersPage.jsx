@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import {
   ShoppingBag,
   Store,
@@ -10,17 +11,23 @@ import {
   CheckCircle2,
   PackageCheck,
   CreditCard,
+  RotateCcw,
+  XCircle,
 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { OrderStatusPill } from '@/components/ui/Badge'
+import { toast } from '@/components/ui/Toaster'
 import { CustomerDeliveryOtpCard } from '@/components/customer/CustomerDeliveryOtpCard'
 import { orderService } from '@/services/orderService'
+import { useCartStore } from '@/stores/cartStore'
 import { ORDER_STATUS } from '@/utils/orderMachine'
 import { formatINR } from '@/utils/currency'
 import { SAMPLE_STORES, SAMPLE_DELIVERY_LOCATIONS } from '@/mocks/campus'
 
 export default function OrdersPage() {
+  const navigate = useNavigate()
+  const [cancellingOrderId, setCancellingOrderId] = useState(null)
   const {
     data: orders = [],
     isLoading,
@@ -37,6 +44,32 @@ export default function OrdersPage() {
     staleTime: 10000,
   })
 
+  const handleCancelOrder = async (orderId) => {
+    try {
+      setCancellingOrderId(orderId)
+      await orderService.expire(orderId)
+      await refetch()
+      toast.success(`Order #${orderId} has been cancelled.`)
+    } catch (err) {
+      toast.error(err.message || 'Failed to cancel order.')
+    } finally {
+      setCancellingOrderId(null)
+    }
+  }
+
+  const handleReorder = (order) => {
+    if (!order.lines || order.lines.length === 0) {
+      toast.error('No items available to reorder.')
+      return
+    }
+    const cart = useCartStore.getState()
+    order.lines.forEach((l) => {
+      cart.setQuantity(l.productId, l.quantity, l.storeId || order.storeId)
+    })
+    toast.success(`Added ${order.lines.length} item(s) to your cart!`)
+    navigate('/app/cart')
+  }
+
   return (
     <div className="mx-auto max-w-4xl space-y-6 px-4 py-6 md:px-6 md:py-8">
       {/* Page Header */}
@@ -52,7 +85,7 @@ export default function OrdersPage() {
 
         <Button
           size="sm"
-          tone="neutral"
+          variant="secondary"
           onClick={() => refetch()}
           loading={isFetching}
           className="text-xs self-start sm:self-auto"
@@ -78,7 +111,7 @@ export default function OrdersPage() {
           <p className="text-xs text-ink-muted">
             {error?.message || 'Could not retrieve your orders. Please try again.'}
           </p>
-          <Button size="sm" tone="danger" onClick={() => refetch()}>
+          <Button size="sm" variant="danger" onClick={() => refetch()}>
             Retry
           </Button>
         </Card>
@@ -95,7 +128,7 @@ export default function OrdersPage() {
             You don&apos;t have any past or active campus delivery orders.
           </p>
           <div className="pt-2">
-            <Button asChild tone="brand">
+            <Button asChild variant="primary">
               <Link to="/app">
                 <span>Start Shopping</span>
                 <ArrowRight className="size-4" aria-hidden="true" />
@@ -110,6 +143,23 @@ export default function OrdersPage() {
         <div className="space-y-6" data-testid="orders-list">
           {orders.map((order) => {
             const store = SAMPLE_STORES.find((s) => s.id === order.storeId)
+            const orderStoreIds = order.storeIds || (
+              order.fulfillmentGroups?.length > 0
+                ? order.fulfillmentGroups.map((g) => g.storeId || g.store_id).filter(Boolean)
+                : (order.storeId ? [order.storeId] : [])
+            )
+            const distinctOrderStoreIds = Array.from(new Set(orderStoreIds))
+            const isMultiStore = distinctOrderStoreIds.length > 1
+            const storeDisplayNames = isMultiStore
+              ? (
+                  order.fulfillmentGroups?.length > 0
+                    ? order.fulfillmentGroups.map((g) => g.storeSnapshot?.name || g.storeId).filter(Boolean).join(', ')
+                    : distinctOrderStoreIds
+                        .map((id) => SAMPLE_STORES.find((s) => s.id === id)?.name || id)
+                        .join(', ')
+                )
+              : (store ? store.name : order.storeId || 'Campus Store')
+
             const location = SAMPLE_DELIVERY_LOCATIONS.find((l) => l.id === order.locationId)
             const destinationName =
               order.customerDetails?.selectedDestination ||
@@ -119,6 +169,7 @@ export default function OrdersPage() {
 
             const isOnTheWay = order.status === ORDER_STATUS.ON_THE_WAY
             const isDelivered = order.status === ORDER_STATUS.DELIVERED
+            const isCancelled = order.status === ORDER_STATUS.CANCELLED
             const isPendingPayment = order.paymentStatus !== 'PAID' && order.status === ORDER_STATUS.AWAITING_PAYMENT
 
             return (
@@ -147,7 +198,14 @@ export default function OrdersPage() {
                   <div className="flex items-start gap-2 text-ink-muted">
                     <Store className="size-4 text-brand shrink-0 mt-0.5" aria-hidden="true" />
                     <div>
-                      <p className="font-semibold text-ink">{store ? store.name : order.storeId}</p>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <p className="font-semibold text-ink">{storeDisplayNames}</p>
+                        {isMultiStore && (
+                          <span className="rounded-full bg-brand/10 text-brand px-1.5 py-0.5 text-[10px] font-semibold">
+                            Multi-Store ({distinctOrderStoreIds.length})
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[11px] text-ink-subtle truncate">
                         {order.lines?.map((l) => `${l.quantity}× ${l.name}`).join(', ') || 'Campus products'}
                       </p>
@@ -167,23 +225,58 @@ export default function OrdersPage() {
                   </div>
                 </div>
 
-                {/* Total and Payment Status */}
-                <div className="flex items-center justify-between pt-1 border-t border-line/40 text-xs">
-                  <span className="text-ink-muted">
-                    Total Amount:{' '}
-                    <strong className="text-ink font-bold font-mono">
-                      {formatINR(order.pricing?.total || 0)}
-                    </strong>
-                  </span>
+                {/* Total, Reorder and Payment Status */}
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-line/40 text-xs">
+                  <div>
+                    <span className="text-ink-muted">
+                      Total Amount:{' '}
+                      <strong className="text-ink font-bold font-mono">
+                        {formatINR(order.pricing?.total || 0)}
+                      </strong>
+                    </span>
+                    {order.pricing?.additionalStoreSurcharge > 0 && (
+                      <span className="text-[11px] text-ink-subtle block">
+                        (Includes {formatINR(order.pricing.additionalStoreSurcharge)} multi-store surcharge)
+                      </span>
+                    )}
+                  </div>
 
-                  {isPendingPayment && (
-                    <Button asChild size="sm" tone="brand" className="text-xs font-semibold">
-                      <Link to={`/app/payment?orderId=${order.id}`} state={{ order }}>
-                        <CreditCard className="size-3.5" aria-hidden="true" />
-                        <span>Pay Now</span>
-                      </Link>
-                    </Button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {isPendingPayment && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={cancellingOrderId === order.id}
+                          onClick={() => handleCancelOrder(order.id)}
+                          className="text-xs text-danger hover:bg-danger-soft hover:text-danger"
+                          data-testid={`cancel-order-${order.id}`}
+                        >
+                          <XCircle className="size-3.5" aria-hidden="true" />
+                          <span>Cancel</span>
+                        </Button>
+                        <Button asChild size="sm" variant="primary" className="text-xs font-semibold">
+                          <Link to={`/app/payment?orderId=${order.id}`} state={{ order }}>
+                            <CreditCard className="size-3.5" aria-hidden="true" />
+                            <span>Pay Now</span>
+                          </Link>
+                        </Button>
+                      </>
+                    )}
+
+                    {(isDelivered || isCancelled) && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => handleReorder(order)}
+                        className="text-xs font-semibold"
+                        data-testid={`reorder-btn-${order.id}`}
+                      >
+                        <RotateCcw className="size-3.5" aria-hidden="true" />
+                        <span>Reorder Items</span>
+                      </Button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Handover OTP Verification Panel for ON_THE_WAY orders */}

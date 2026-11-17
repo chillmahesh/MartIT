@@ -23,7 +23,7 @@ export function RunnerAvailabilityToggle({ isOnline: propOnline, onToggle: propT
         className,
       )}
     >
-      <div className="flex items-start sm:items-center gap-3">
+      <div className="flex items-start sm:items-center gap-3 min-w-0 flex-1">
         <div
           className={cn(
             'grid size-10 shrink-0 place-items-center rounded-tile transition-colors',
@@ -33,11 +33,11 @@ export function RunnerAvailabilityToggle({ isOnline: propOnline, onToggle: propT
           <Radio className={cn('size-5', isOnline && 'animate-pulse')} aria-hidden="true" />
         </div>
 
-        <div>
-          <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
             <span
               className={cn(
-                'inline-flex items-center gap-1.5 text-base font-bold',
+                'inline-flex items-center gap-1.5 text-base font-bold shrink-0',
                 isOnline ? 'text-brand-ink' : 'text-ink-subtle',
               )}
             >
@@ -53,11 +53,11 @@ export function RunnerAvailabilityToggle({ isOnline: propOnline, onToggle: propT
               </span>
             </span>
 
-            <Badge tone={isOnline ? 'brand' : 'neutral'} size="sm">
+            <Badge tone={isOnline ? 'brand' : 'neutral'} size="sm" className="shrink-0">
               {isOnline ? 'Active for pickups' : 'Paused'}
             </Badge>
 
-            <span className="hidden md:inline-block text-[11px] text-ink-subtle border border-line rounded px-1.5 py-0.5">
+            <span className="hidden md:inline-block text-[11px] text-ink-subtle border border-line rounded px-1.5 py-0.5 shrink-0">
               UI state
             </span>
           </div>
@@ -70,7 +70,7 @@ export function RunnerAvailabilityToggle({ isOnline: propOnline, onToggle: propT
         </div>
       </div>
 
-      <div className="flex items-center gap-3 self-end sm:self-center">
+      <div className="flex items-center gap-3 self-end sm:self-center shrink-0">
         <label
           htmlFor="runner-availability-switch"
           className="text-xs font-semibold text-ink cursor-pointer select-none"

@@ -23,7 +23,10 @@ const OrdersPage = lazy(() => import('@/pages/customer/OrdersPage'))
 const ProfilePage = lazy(() => import('@/pages/customer/ProfilePage'))
 const RunnerDashboardPage = lazy(() => import('@/pages/runner/RunnerDashboardPage'))
 const AdminConsolePage = lazy(() => import('@/pages/admin/AdminConsolePage'))
+const AdminLoginPage = lazy(() => import('@/pages/admin/AdminLoginPage'))
 const StyleguidePage = lazy(() => import('@/pages/dev/StyleguidePage'))
+const TermsPage = lazy(() => import('@/pages/legal/TermsPage'))
+const PrivacyPage = lazy(() => import('@/pages/legal/PrivacyPage'))
 
 function Root() {
   return (
@@ -44,6 +47,10 @@ export const routes = [
         element: <MarketingLayout />,
         children: [
           { index: true, element: <LandingPage /> },
+          { path: 'terms-and-conditions', element: <TermsPage /> },
+          { path: 'privacy-policy', element: <PrivacyPage /> },
+          { path: 'terms', element: <TermsPage /> },
+          { path: 'privacy', element: <PrivacyPage /> },
           { path: 'styleguide', element: <StyleguidePage /> },
         ],
       },
@@ -84,6 +91,11 @@ export const routes = [
         path: 'runner',
         element: <RequireRole role="runner" />,
         children: [{ element: <RunnerLayout />, children: [{ index: true, element: <RunnerDashboardPage /> }] }],
+      },
+      {
+        path: 'admin/login',
+        element: <AuthLayout />,
+        children: [{ index: true, element: <AdminLoginPage /> }],
       },
       {
         path: 'admin',

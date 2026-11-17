@@ -16,25 +16,49 @@ export default function OrderConfirmationPage() {
   const [isLoading, setIsLoading] = useState(!orderFromState && Boolean(orderId))
 
   useEffect(() => {
-    if (!orderId || orderFromState) return
+    if (!orderId) return
 
     let isMounted = true
-    setIsLoading(true)
+    const terminalStates = ['DELIVERED', 'CANCELLED', 'EXPIRED']
 
-    orderService
-      .get(orderId)
-      .then((data) => {
-        if (isMounted) setOrder(data)
+    const fetchOrder = () => {
+      orderService
+        .get(orderId)
+        .then((data) => {
+          if (isMounted && data) {
+            setOrder(data)
+          }
+        })
+        .catch(() => {
+          // Keep existing order state on transient poll failures
+        })
+        .finally(() => {
+          if (isMounted) setIsLoading(false)
+        })
+    }
+
+    // Initial fetch if we don't have orderFromState
+    if (!orderFromState) {
+      setIsLoading(true)
+      fetchOrder()
+    }
+
+    // If order is in a non-terminal state, poll every 4 seconds to observe runner acceptance and handover progression
+    const interval = setInterval(() => {
+      if (!isMounted) return
+      setOrder((current) => {
+        if (!current || terminalStates.includes(current.status)) {
+          clearInterval(interval)
+          return current
+        }
+        fetchOrder()
+        return current
       })
-      .catch(() => {
-        if (isMounted) setOrder(null)
-      })
-      .finally(() => {
-        if (isMounted) setIsLoading(false)
-      })
+    }, 4000)
 
     return () => {
       isMounted = false
+      clearInterval(interval)
     }
   }, [orderId, orderFromState])
 

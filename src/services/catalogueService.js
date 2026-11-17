@@ -16,4 +16,9 @@ export const catalogueService = {
    * List available product categories.
    */
   listCategories: () => request('catalogue.categories'),
+
+  /**
+   * Update product stock or availability.
+   */
+  updateProduct: (productId, updates) => request('catalogue.products.update', { productId, ...updates }),
 }

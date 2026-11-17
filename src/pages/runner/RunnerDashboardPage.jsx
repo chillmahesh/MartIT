@@ -20,6 +20,8 @@ import { useRunnerStore } from '@/stores/runnerStore'
 import { useAuthStore } from '@/stores/authStore'
 import { runnerService } from '@/services/runnerService'
 import { ORDER_STATUS } from '@/utils/orderMachine'
+import { splitDeliveryFee } from '@/utils/deliveryFee'
+import { isMockBackend } from '@/config/env'
 
 /**
  * RunnerDashboardPage Component
@@ -79,7 +81,20 @@ export default function RunnerDashboardPage() {
   const activeCount = assignedOrders.length + inProgressOrders.length
   const completedCount = completedOrders.length
 
-  // Action handler for Milestone 2 (Acceptance, Pickups, State Transitions)
+  // Derived earnings for payout ledger
+  const earnedTotal = completedOrders.reduce((sum, o) => {
+    const fee = Number(o.deliveryFee || o.delivery_fee || 10)
+    const split = splitDeliveryFee(fee)
+    return sum + (split.runnerPayout ?? 0)
+  }, 0)
+
+  const activeEstimatedTotal = [...assignedOrders, ...inProgressOrders].reduce((sum, o) => {
+    const fee = Number(o.deliveryFee || o.delivery_fee || 10)
+    const split = splitDeliveryFee(fee)
+    return sum + (split.runnerPayout ?? 0)
+  }, 0)
+
+  // Action handler for Runner Actions (Acceptance, Pickups, State Transitions, Delay Reporting)
   const handleOrderAction = async (order, actionType, payload = {}) => {
     if (actionInProgress) return
     setActionInProgress(true)
@@ -127,6 +142,14 @@ export default function RunnerDashboardPage() {
         refetch()
         return verified
       }
+
+      if (actionType === 'report-delay') {
+        await runnerService.reportDelay(order.id, { reason: payload.reason, note: payload.note })
+        toast.success(`Delay report recorded for delivery #${order.id}.`)
+        await queryClient.invalidateQueries({ queryKey: ['runner-orders'] })
+        refetch()
+        return
+      }
     } catch (err) {
       toast.error(err.message || 'Operation failed. Please try again.')
       throw err
@@ -168,13 +191,22 @@ export default function RunnerDashboardPage() {
         </div>
       </div>
 
-      {/* Mock Data Information Banner */}
-      <div className="flex items-start gap-2.5 rounded-tile border border-info/30 bg-info/10 p-3 text-xs text-info">
-        <Info className="size-4 shrink-0 mt-0.5" aria-hidden="true" />
-        <p>
-          <strong>Mock Environment:</strong> Runner assignment, multi-store pickup, and customer delivery OTP verification are backed by mock server state in this milestone. Driver wallet and earnings will connect in subsequent phases.
-        </p>
-      </div>
+      {/* Environment Notice Banner */}
+      {isMockBackend ? (
+        <div className="flex items-start gap-2.5 rounded-tile border border-info/30 bg-info/10 p-3 text-xs text-info">
+          <Info className="size-4 shrink-0 mt-0.5" aria-hidden="true" />
+          <p>
+            <strong>Mock Environment:</strong> Runner assignment, multi-store pickup, and customer delivery OTP verification are backed by mock server state in this milestone. Driver wallet and earnings will connect in subsequent phases.
+          </p>
+        </div>
+      ) : (
+        <div className="flex items-start gap-2.5 rounded-tile border border-brand/30 bg-brand/10 p-3 text-xs text-brand">
+          <Info className="size-4 shrink-0 mt-0.5" aria-hidden="true" />
+          <p>
+            <strong>Live / Staging Environment:</strong> Connected to authoritative MartIT API. Deliveries, store pickups, and customer handover OTP verification are synchronized with the PostgreSQL database.
+          </p>
+        </div>
+      )}
 
 
       {/* 1. Runner Availability Toggle */}
@@ -204,6 +236,8 @@ export default function RunnerDashboardPage() {
         availableCount={availableCount}
         activeCount={activeCount}
         completedCount={completedCount}
+        earnedTotal={earnedTotal}
+        activeEstimatedTotal={activeEstimatedTotal}
         selectedTab={activeTab}
         onSelectTab={setActiveTab}
       />
@@ -213,7 +247,7 @@ export default function RunnerDashboardPage() {
         <button
           type="button"
           onClick={() => setActiveTab('all')}
-          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors shrink-0 ${
             activeTab === 'all'
               ? 'bg-brand text-white shadow-1'
               : 'bg-surface-2 text-ink hover:bg-surface-2/80'
@@ -230,7 +264,7 @@ export default function RunnerDashboardPage() {
         <button
           type="button"
           onClick={() => setActiveTab('available')}
-          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors shrink-0 ${
             activeTab === 'available'
               ? 'bg-brand text-white shadow-1'
               : 'bg-surface-2 text-ink hover:bg-surface-2/80'
@@ -247,7 +281,7 @@ export default function RunnerDashboardPage() {
         <button
           type="button"
           onClick={() => setActiveTab('active')}
-          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors shrink-0 ${
             activeTab === 'active'
               ? 'bg-brand text-white shadow-1'
               : 'bg-surface-2 text-ink hover:bg-surface-2/80'
@@ -264,7 +298,7 @@ export default function RunnerDashboardPage() {
         <button
           type="button"
           onClick={() => setActiveTab('completed')}
-          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors ${
+          className={`flex items-center gap-1.5 rounded-tile px-3 py-1.5 text-xs font-semibold transition-colors shrink-0 ${
             activeTab === 'completed'
               ? 'bg-brand text-white shadow-1'
               : 'bg-surface-2 text-ink hover:bg-surface-2/80'

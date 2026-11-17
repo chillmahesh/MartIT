@@ -529,11 +529,11 @@ describe('Signup & Role Selection Enforcement in Auth Store', () => {
   })
 
   it('signs up runner and hydrates runner applicant profile', async () => {
-    const mockRunner = {
+    const mockApplicant = {
       id: 'usr_new_run',
       email: 'runner@campus.edu',
       name: 'Bob Runner',
-      roles: ['customer', 'runner'],
+      roles: ['customer'],
       runnerStatus: 'applicant',
     }
     const mockSession = { access_token: 'jwt_runner_token' }
@@ -543,7 +543,8 @@ describe('Signup & Role Selection Enforcement in Auth Store', () => {
       authUser: { id: 'usr_new_run', email: 'runner@campus.edu' },
       needsConfirmation: false,
     })
-    vi.spyOn(authService, 'me').mockResolvedValue(mockRunner)
+    vi.spyOn(authService, 'applyRunner').mockResolvedValue(mockApplicant)
+    vi.spyOn(authService, 'me').mockResolvedValue(mockApplicant)
 
     const result = await useAuthStore.getState().signup('runner@campus.edu', 'secret123', {
       name: 'Bob Runner',
@@ -551,9 +552,68 @@ describe('Signup & Role Selection Enforcement in Auth Store', () => {
       role: 'runner',
     })
 
-    expect(result.user).toEqual(mockRunner)
+    expect(result.user).toEqual(mockApplicant)
     expect(useAuthStore.getState().user.runnerStatus).toBe('applicant')
-    expect(useAuthStore.getState().hasRole('runner')).toBe(true)
+    expect(useAuthStore.getState().hasRole('customer')).toBe(true)
+    expect(useAuthStore.getState().hasRole('runner')).toBe(false)
+  })
+
+  it('propagates errors when runner application fails during signup', async () => {
+    const mockSession = { access_token: 'jwt_runner_token' }
+
+    vi.spyOn(authService, 'signup').mockResolvedValue({
+      session: mockSession,
+      authUser: { id: 'usr_new_run', email: 'runner@campus.edu' },
+      needsConfirmation: false,
+    })
+    vi.spyOn(authService, 'applyRunner').mockRejectedValue(
+      new Error('Failed to submit runner application: Database error')
+    )
+
+    await expect(
+      useAuthStore.getState().signup('runner@campus.edu', 'secret123', {
+        name: 'Bob Runner',
+        phone: '9876543210',
+        role: 'runner',
+      })
+    ).rejects.toThrow('Failed to submit runner application: Database error')
+  })
+
+  it('submits runner application after login if email confirmation was required during signup', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const mockSession = { access_token: 'jwt_confirmed_token' }
+    const authUser = {
+      id: 'usr_confirmed_run',
+      email: 'runner@campus.edu',
+      user_metadata: { role: 'runner' },
+    }
+    const initialCustomerProfile = {
+      id: 'usr_confirmed_run',
+      email: 'runner@campus.edu',
+      name: 'Bob Runner',
+      roles: ['customer'],
+      runnerStatus: null,
+    }
+    const updatedApplicantProfile = {
+      ...initialCustomerProfile,
+      runnerStatus: 'applicant',
+    }
+
+    vi.spyOn(authService, 'login').mockResolvedValue({
+      session: mockSession,
+      authUser,
+    })
+    const meSpy = vi.spyOn(authService, 'me')
+      .mockResolvedValueOnce(initialCustomerProfile)
+      .mockResolvedValueOnce(updatedApplicantProfile)
+    const applySpy = vi.spyOn(authService, 'applyRunner').mockResolvedValue(updatedApplicantProfile)
+
+    const user = await useAuthStore.getState().login('runner@campus.edu', 'secret123')
+
+    expect(applySpy).toHaveBeenCalledTimes(1)
+    expect(user.runnerStatus).toBe('applicant')
+    expect(user.roles).toEqual(['customer'])
+    expect(useAuthStore.getState().hasRole('runner')).toBe(false)
   })
 
   it('rejects attempted admin signup and prevents privilege escalation', async () => {
@@ -570,5 +630,113 @@ describe('Signup & Role Selection Enforcement in Auth Store', () => {
 
     expect(useAuthStore.getState().user).toBeNull()
     expect(useAuthStore.getState().token).toBeNull()
+  })
+
+  it('manages activeMode for dual-role users and clears on logout', async () => {
+    useAuthStore.setState({ activeMode: null })
+    useAuthStore.getState().setActiveMode('runner')
+    expect(useAuthStore.getState().activeMode).toBe('runner')
+
+    useAuthStore.getState().setActiveMode('customer')
+    expect(useAuthStore.getState().activeMode).toBe('customer')
+
+    await useAuthStore.getState().logout()
+    expect(useAuthStore.getState().activeMode).toBeNull()
+  })
+
+  it('re-syncs stale persisted auth state with authoritative backend profile via refreshProfile', async () => {
+    // Simulated stale state from localStorage prior to external SQL promotion
+    useAuthStore.setState({
+      token: 'tok_active',
+      user: {
+        id: 'usr_promoted',
+        email: 'promoted@campus.edu',
+        name: 'Promoted Runner',
+        roles: ['customer'],
+        runnerStatus: null,
+      },
+    })
+
+    // Authoritative backend response reflecting manual SQL promotion
+    const authoritativeProfile = {
+      id: 'usr_promoted',
+      email: 'promoted@campus.edu',
+      name: 'Promoted Runner',
+      roles: ['customer', 'runner'],
+      runnerStatus: 'approved',
+    }
+    vi.spyOn(authService, 'me').mockResolvedValue(authoritativeProfile)
+
+    const refreshed = await useAuthStore.getState().refreshProfile()
+
+    expect(refreshed.roles).toEqual(['customer', 'runner'])
+    expect(refreshed.runnerStatus).toBe('approved')
+    expect(useAuthStore.getState().user.roles).toContain('runner')
+    expect(useAuthStore.getState().user.runnerStatus).toBe('approved')
+  })
+
+  it('does not auto-apply runner if user already has runner role assigned in SQL without approval', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const mockSession = { access_token: 'jwt_sql_promoted' }
+    const authUser = {
+      id: 'usr_sql_promoted',
+      email: 'sqlrunner@campus.edu',
+      user_metadata: { role: 'runner' },
+    }
+    // Profile where user_roles has runner, but runner_status in profiles is null
+    const sqlPromotedUnapproved = {
+      id: 'usr_sql_promoted',
+      email: 'sqlrunner@campus.edu',
+      name: 'SQL Runner',
+      roles: ['customer', 'runner'],
+      runnerStatus: null,
+    }
+
+    vi.spyOn(authService, 'login').mockResolvedValue({
+      session: mockSession,
+      authUser,
+    })
+    vi.spyOn(authService, 'me').mockResolvedValue(sqlPromotedUnapproved)
+    const applySpy = vi.spyOn(authService, 'applyRunner')
+
+    const user = await useAuthStore.getState().login('sqlrunner@campus.edu', 'secret123')
+
+    // applyRunner should NOT be triggered because roles already includes runner
+    expect(applySpy).not.toHaveBeenCalled()
+    expect(user.roles).toContain('runner')
+    expect(user.runnerStatus).toBeNull()
+  })
+
+  it('delegates signInWithGoogle to authService in remote mode', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const googleSpy = vi.spyOn(authService, 'signInWithGoogle').mockResolvedValue({
+      ok: true,
+      data: { provider: 'google', url: 'https://accounts.google.com/o/oauth2/v2/auth?...' },
+    })
+
+    const res = await useAuthStore.getState().signInWithGoogle({ redirectTo: 'http://localhost:5173' })
+
+    expect(googleSpy).toHaveBeenCalledWith({ redirectTo: 'http://localhost:5173' })
+    expect(res.ok).toBe(true)
+  })
+
+  it('signs in demo customer via signInWithGoogle in mock mode', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(true)
+    const mockUser = {
+      id: 'usr_demo_cust',
+      name: 'Alice Customer',
+      email: 'customer@campus.edu',
+      roles: ['customer'],
+    }
+    vi.spyOn(authService, 'signInWithGoogle').mockResolvedValue({
+      token: 'tok_demo_google',
+      user: mockUser,
+    })
+
+    const user = await useAuthStore.getState().signInWithGoogle({ role: 'customer' })
+
+    expect(user).toEqual(mockUser)
+    expect(useAuthStore.getState().token).toBe('tok_demo_google')
+    expect(useAuthStore.getState().user).toEqual(mockUser)
   })
 })

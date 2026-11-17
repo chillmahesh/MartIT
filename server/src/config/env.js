@@ -27,6 +27,7 @@ export function validateEnv(raw = process.env) {
       ROUTING_MODE: raw.ROUTING_MODE || 'walking',
       MAKE_VERIFICATION_WEBHOOK_URL: raw.MAKE_VERIFICATION_WEBHOOK_URL || '',
       MAKE_WEBHOOK_SECRET: raw.MAKE_WEBHOOK_SECRET || 'test-make-webhook-secret-min-16-chars',
+      MULTI_STORE_SURCHARGE: raw.MULTI_STORE_SURCHARGE !== undefined ? Number(raw.MULTI_STORE_SURCHARGE) : 10,
     }
   }
 
@@ -96,13 +97,8 @@ export function validateEnv(raw = process.env) {
         ROUTING_PROVIDER: z.string().optional().default(''),
         ROUTING_MODE: z.string().default('walking'),
         MAKE_VERIFICATION_WEBHOOK_URL: z.string().optional().default(''),
-        MAKE_WEBHOOK_SECRET: z
-          .string()
-          .optional()
-          .default('')
-          .refine((s) => !s || (!isPlaceholder(s) && s.length >= 16), {
-            message: 'MAKE_WEBHOOK_SECRET must be at least 16 characters and not a placeholder in production',
-          }),
+        MAKE_WEBHOOK_SECRET: z.string().optional().default(''),
+        MULTI_STORE_SURCHARGE: z.coerce.number().nonnegative().default(10),
       })
       .refine((data) => data.SUPABASE_ANON_KEY !== data.SUPABASE_SERVICE_ROLE_KEY, {
         message: 'SUPABASE_SERVICE_ROLE_KEY must not be identical to SUPABASE_ANON_KEY',
@@ -125,6 +121,7 @@ export function validateEnv(raw = process.env) {
     ROUTING_MODE: z.string().default('walking'),
     MAKE_VERIFICATION_WEBHOOK_URL: z.string().optional().default(''),
     MAKE_WEBHOOK_SECRET: z.string().optional().default('dev-make-webhook-secret-min-16-chars'),
+    MULTI_STORE_SURCHARGE: z.coerce.number().nonnegative().default(10),
   })
 
   return devSchema.parse(raw)

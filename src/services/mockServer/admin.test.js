@@ -42,9 +42,24 @@ describe('admin endpoints', () => {
     expect(u.runnerStatus).toBe('approved')
   })
 
+  it('super admin suspends an approved runner, which revokes the runner role', async () => {
+    const token = await login('super_admin')
+    // First approve
+    await server.handle('admin.runners.setStatus', { userId: 'u_applicant_1', status: 'approved' }, { token })
+    // Then suspend
+    const suspended = await server.handle('admin.runners.setStatus', { userId: 'u_applicant_1', status: 'suspended' }, { token })
+    expect(suspended.roles).not.toContain('runner')
+    expect(suspended.runnerStatus).toBe('suspended')
+  })
+
   it('cannot approve someone who never applied', async () => {
     const token = await login('super_admin')
     await expect(server.handle('admin.runners.setStatus', { userId: 'u_customer_1', status: 'approved' }, { token })).rejects.toMatchObject({ code: 'NOT_AN_APPLICANT' })
+  })
+
+  it('cannot grant runner role to someone who never applied', async () => {
+    const token = await login('super_admin')
+    await expect(server.handle('admin.roles.set', { userId: 'u_customer_1', role: 'runner', granted: true }, { token })).rejects.toMatchObject({ code: 'NOT_AN_APPLICANT' })
   })
 
   it('super admin can grant admin roles but cannot remove the last super admin', async () => {
@@ -60,5 +75,124 @@ describe('admin endpoints', () => {
     const adminToken = await login('customer') // same account, now with admin
     await expect(server.handle('admin.users.list', {}, { token: adminToken })).resolves.toBeTruthy()
     await expect(server.handle('admin.roles.set', { userId: 'u_customer_1', role: 'super_admin', granted: true }, { token: adminToken })).rejects.toMatchObject({ code: 'FORBIDDEN' })
+  })
+
+  it('runner signup creates an applicant with only customer role until approved', async () => {
+    const signupRes = await server.handle('auth.signup', {
+      name: 'Applicant Jane',
+      email: 'jane.applicant@campus.edu',
+      password: 'password123',
+      role: 'runner',
+    })
+
+    expect(signupRes.user.roles).toEqual(['customer'])
+    expect(signupRes.user.runnerStatus).toBe('applicant')
+    expect(signupRes.user.roles).not.toContain('runner')
+
+    // Applicant cannot access delivery endpoints
+    await expect(
+      server.handle('runner.orders.assigned', {}, { token: signupRes.token })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' })
+
+    // Applicant appears in the admin user list
+    const adminToken = await login('super_admin')
+    const users = await server.handle('admin.users.list', {}, { token: adminToken })
+    const applicantUser = users.find((u) => u.email === 'jane.applicant@campus.edu')
+    expect(applicantUser).toBeDefined()
+    expect(applicantUser.runnerStatus).toBe('applicant')
+    expect(applicantUser.roles).toEqual(['customer'])
+
+    // Admin approves applicant
+    const approved = await server.handle(
+      'admin.runners.setStatus',
+      { userId: applicantUser.id, status: 'approved' },
+      { token: adminToken }
+    )
+    expect(approved.runnerStatus).toBe('approved')
+    expect(approved.roles).toContain('customer')
+    expect(approved.roles).toContain('runner')
+
+    // Dual-role user can now access runner endpoints
+    const runnerOrders = await server.handle(
+      'runner.orders.assigned',
+      {},
+      { token: signupRes.token }
+    )
+    expect(Array.isArray(runnerOrders)).toBe(true)
+
+    // Admin suspends runner
+    const suspended = await server.handle(
+      'admin.runners.setStatus',
+      { userId: applicantUser.id, status: 'suspended' },
+      { token: adminToken }
+    )
+    expect(suspended.runnerStatus).toBe('suspended')
+    expect(suspended.roles).not.toContain('runner')
+    expect(suspended.roles).toContain('customer')
+
+    // Suspended runner is blocked from delivery endpoints
+    await expect(
+      server.handle('runner.orders.assigned', {}, { token: signupRes.token })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' })
+
+    // But customer shopping remains intact
+    const me = await server.handle('auth.me', {}, { token: signupRes.token })
+    expect(me.roles).toContain('customer')
+  })
+
+  it('admin can list all orders across the campus platform, while non-admins are blocked', async () => {
+    const custToken = await login('customer')
+    await expect(
+      server.handle('admin.orders.list', {}, { token: custToken })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 })
+
+    const adminToken = await login('super_admin')
+    const allOrders = await server.handle('admin.orders.list', {}, { token: adminToken })
+    expect(Array.isArray(allOrders)).toBe(true)
+    expect(allOrders.length).toBeGreaterThan(0)
+
+    // Supports status filtering
+    const delivered = await server.handle(
+      'admin.orders.list',
+      { status: 'DELIVERED' },
+      { token: adminToken }
+    )
+    expect(Array.isArray(delivered)).toBe(true)
+    for (const o of delivered) {
+      expect(o.status).toBe('DELIVERED')
+    }
+  })
+
+  it('admin can update store operational status and description', async () => {
+    const custToken = await login('customer')
+    await expect(
+      server.handle('stores.update', { storeId: 'store_campus_mart', isOpen: false }, { token: custToken })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 })
+
+    const adminToken = await login('super_admin')
+    const updated = await server.handle(
+      'stores.update',
+      { storeId: 'store_campus_mart', isOpen: false, description: 'Temporarily closed for inventory' },
+      { token: adminToken }
+    )
+    expect(updated.isOpen).toBe(false)
+    expect(updated.description).toBe('Temporarily closed for inventory')
+  })
+
+  it('admin can update product stock and availability via catalogue.products.update', async () => {
+    const custToken = await login('customer')
+    await expect(
+      server.handle('catalogue.products.update', { productId: 'p_milk_500', stock: 100 }, { token: custToken })
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 })
+
+    const adminToken = await login('super_admin')
+    const updated = await server.handle(
+      'catalogue.products.update',
+      { productId: 'p_maggi', stock: 50, isAvailable: true },
+      { token: adminToken }
+    )
+    expect(updated.id).toBe('p_maggi')
+    expect(updated.stock).toBe(50)
+    expect(updated.isAvailable).toBe(true)
   })
 })

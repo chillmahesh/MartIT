@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { env, isMockBackend, isSupabaseConfigured } from './env'
+import { env, isMockBackend } from './env'
 
 let cachedClient = null
 

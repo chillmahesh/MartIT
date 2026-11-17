@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
   User,
   Phone,
@@ -8,6 +8,9 @@ import {
   Check,
   ChevronDown,
   Navigation,
+  Bookmark,
+  BookmarkCheck,
+  X,
 } from 'lucide-react'
 import { Field } from '@/components/ui/Field'
 import { Input } from '@/components/ui/Input'
@@ -31,6 +34,8 @@ import { cn } from '@/utils/cn'
  *    - Destination Address (Revealed when Other / Enter address is selected, required free-text)
  *    - Detailed address / landmark (Optional text input for extra directions: hostel name, floor, room, landmark)
  */
+export const SAVED_LOCATION_STORAGE_KEY = 'martit_saved_delivery_location'
+
 export function DeliveryDetailsForm({
   details,
   errors = {},
@@ -42,6 +47,73 @@ export function DeliveryDetailsForm({
   const [isDropdownOpen, setIsDropdownOpen] = useState(initialDropdownOpen)
   const dropdownRef = useRef(null)
   const listboxRef = useRef(null)
+
+  const [savedLocation, setSavedLocation] = useState(() => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const item = window.localStorage.getItem(SAVED_LOCATION_STORAGE_KEY)
+        return item ? JSON.parse(item) : null
+      }
+    } catch {
+      // Ignore localStorage read error
+    }
+    return null
+  })
+  const [saveFeedback, setSaveFeedback] = useState('')
+
+  const handleApplySavedLocation = () => {
+    if (!savedLocation) return
+    if (savedLocation.presetLocation) {
+      onChange('presetLocation', savedLocation.presetLocation)
+    }
+    if (savedLocation.customLocation) {
+      onChange('customLocation', savedLocation.customLocation)
+    }
+    if (savedLocation.deliveryInstructions) {
+      onChange('deliveryInstructions', savedLocation.deliveryInstructions)
+    }
+    if (savedLocation.fullName && !details.fullName) {
+      onChange('fullName', savedLocation.fullName)
+    }
+    if (savedLocation.phoneNumber && !(details.phoneNumber || details.mobileNumber)) {
+      onChange('phoneNumber', savedLocation.phoneNumber)
+      onChange('mobileNumber', savedLocation.phoneNumber)
+    }
+  }
+
+  const handleSaveLocation = () => {
+    if (!details.presetLocation) return
+    try {
+      const payload = {
+        presetLocation: details.presetLocation,
+        customLocation: details.customLocation || '',
+        deliveryInstructions: details.deliveryInstructions || '',
+        fullName: details.fullName || '',
+        phoneNumber: details.phoneNumber || details.mobileNumber || '',
+        savedAt: new Date().toISOString(),
+      }
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem(SAVED_LOCATION_STORAGE_KEY, JSON.stringify(payload))
+      }
+      setSavedLocation(payload)
+      setSaveFeedback('Address saved!')
+      setTimeout(() => setSaveFeedback(''), 3000)
+    } catch (err) {
+      console.warn('Could not save location preference:', err)
+    }
+  }
+
+  const handleClearSavedLocation = () => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem(SAVED_LOCATION_STORAGE_KEY)
+      }
+      setSavedLocation(null)
+      setSaveFeedback('')
+    } catch (err) {
+      console.warn('Could not clear location preference:', err)
+    }
+  }
 
   const isOtherSelected =
     details.presetLocation === OTHER_LOCATION_VALUE ||
@@ -137,6 +209,7 @@ export function DeliveryDetailsForm({
               icon={User}
               placeholder="e.g. Aarav Patel"
               autoComplete="name"
+              maxLength={120}
               value={details.fullName || ''}
               onChange={(e) => onChange('fullName', e.target.value)}
               disabled={disabled}
@@ -156,6 +229,8 @@ export function DeliveryDetailsForm({
               data-testid="checkout-phone-number"
               name="mobileNumber"
               type="tel"
+              inputMode="tel"
+              maxLength={16}
               icon={Phone}
               placeholder="e.g. 9876543210"
               autoComplete="tel"
@@ -184,6 +259,44 @@ export function DeliveryDetailsForm({
             </p>
           </div>
         </div>
+
+        {/* Saved Campus Address Quick-Fill Banner */}
+        {savedLocation && (
+          <div
+            className="flex items-center justify-between gap-2 rounded-tile border border-brand/30 bg-brand-soft/40 p-2.5 text-xs animate-fade-in"
+            data-testid="saved-location-banner"
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <BookmarkCheck className="size-4 text-brand shrink-0" aria-hidden="true" />
+              <div className="min-w-0">
+                <p className="font-semibold text-ink leading-tight">Saved Campus Address</p>
+                <p className="text-[11px] text-ink-muted truncate">
+                  {savedLocation.presetLocation === OTHER_LOCATION_VALUE ? savedLocation.customLocation : savedLocation.presetLocation}
+                  {savedLocation.deliveryInstructions ? ` • ${savedLocation.deliveryInstructions}` : ''}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                data-testid="use-saved-location-btn"
+                onClick={handleApplySavedLocation}
+                className="rounded-full bg-brand px-2.5 py-1 text-[11px] font-bold text-white shadow-1 hover:bg-brand/90 transition-colors cursor-pointer"
+              >
+                Apply
+              </button>
+              <button
+                type="button"
+                data-testid="clear-saved-location-btn"
+                onClick={handleClearSavedLocation}
+                aria-label="Forget saved campus address"
+                className="p-1 text-ink-subtle hover:text-danger rounded-full hover:bg-surface-2 transition-colors cursor-pointer"
+              >
+                <X className="size-3.5" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Campus Destination Selector */}
         <div className="space-y-1.5">
@@ -351,6 +464,7 @@ export function DeliveryDetailsForm({
               name="customLocation"
               type="text"
               icon={Building}
+              maxLength={200}
               placeholder="e.g. Science Block, Old Workshop, Mechanical Dept"
               value={details.customLocation || ''}
               onChange={(e) => onChange('customLocation', e.target.value)}
@@ -372,12 +486,33 @@ export function DeliveryDetailsForm({
             name="deliveryInstructions"
             type="text"
             icon={Compass}
+            maxLength={500}
             placeholder="e.g. Hostel 3, 2nd floor, Room 204, near the entrance"
             value={details.deliveryInstructions || ''}
             onChange={(e) => onChange('deliveryInstructions', e.target.value)}
             disabled={disabled}
           />
         </Field>
+
+        {/* Save Campus Address Preference */}
+        <div className="flex items-center justify-between pt-1">
+          <button
+            type="button"
+            data-testid="save-delivery-location-btn"
+            onClick={handleSaveLocation}
+            disabled={!details.presetLocation || disabled}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-brand hover:underline disabled:opacity-40 disabled:no-underline cursor-pointer"
+          >
+            <Bookmark className="size-3.5" aria-hidden="true" />
+            <span>Save as my default campus address</span>
+          </button>
+          {saveFeedback && (
+            <span className="text-[11px] font-medium text-fresh-ink flex items-center gap-1" role="status">
+              <Check className="size-3 text-fresh" aria-hidden="true" />
+              <span>{saveFeedback}</span>
+            </span>
+          )}
+        </div>
       </div>
     </section>
   )

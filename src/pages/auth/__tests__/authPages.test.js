@@ -29,6 +29,7 @@ describe('Auth UI Components (LoginPage & SignupPage)', () => {
     )
 
     expect(html).toContain('Log in')
+    expect(html).toContain('Sign in with Google')
     expect(html).toContain('Demo Mock Mode')
     expect(html).toContain('Sample customer')
     expect(html).toContain('Sample runner')
@@ -65,6 +66,7 @@ describe('Auth UI Components (LoginPage & SignupPage)', () => {
     )
 
     expect(html).toContain('Create an account')
+    expect(html).toContain('Sign up with Google')
     expect(html).toContain('Full Name')
     expect(html).toContain('Campus Email')
     expect(html).toContain('Phone Number')
@@ -116,6 +118,103 @@ describe('Auth UI Components (LoginPage & SignupPage)', () => {
     )
 
     expect(html).toContain('Your password has been successfully reset. Please log in with your new password.')
+  })
+
+  it('redirects dual-role user according to activeMode in RedirectIfAuthed', async () => {
+    const { targetPathForAuthed } = await import('@/app/RouteGuards')
+
+    const dualUser = {
+      id: 'usr_dual',
+      name: 'Dual User',
+      email: 'dual@campus.edu',
+      roles: ['customer', 'runner'],
+      runnerStatus: 'approved',
+    }
+
+    expect(targetPathForAuthed(dualUser, 'runner')).toBe('/runner')
+    expect(targetPathForAuthed(dualUser, 'customer')).toBe('/app')
+    expect(targetPathForAuthed(dualUser, null)).toBe('/app')
+  })
+
+  it('redirects runner-only and customer-only users correctly in targetPathForAuthed', async () => {
+    const { targetPathForAuthed } = await import('@/app/RouteGuards')
+
+    const runnerOnly = {
+      id: 'usr_run',
+      name: 'Runner',
+      email: 'runner@campus.edu',
+      roles: ['runner'],
+      runnerStatus: 'approved',
+    }
+    const customerOnly = {
+      id: 'usr_cust',
+      name: 'Customer',
+      email: 'customer@campus.edu',
+      roles: ['customer'],
+      runnerStatus: null,
+    }
+    const unapprovedRunner = {
+      id: 'usr_unapproved',
+      name: 'Unapproved',
+      email: 'unapproved@campus.edu',
+      roles: ['customer', 'runner'],
+      runnerStatus: null,
+    }
+
+    expect(targetPathForAuthed(runnerOnly, null)).toBe('/runner')
+    expect(targetPathForAuthed(customerOnly, null)).toBe('/app')
+    expect(targetPathForAuthed(unapprovedRunner, null)).toBe('/app')
+  })
+
+  it('calls supabase.auth.signInWithOAuth with google provider and redirectTo origin in authService', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const mockSupabase = {
+      auth: {
+        signInWithOAuth: vi.fn().mockResolvedValue({
+          data: { provider: 'google', url: 'https://supabase.co/oauth' },
+          error: null,
+        }),
+      },
+    }
+    const supabaseModule = await import('@/config/supabaseClient')
+    vi.spyOn(supabaseModule, 'getSupabaseClient').mockReturnValue(mockSupabase)
+
+    const { authService } = await import('@/services/authService')
+    const result = await authService.signInWithGoogle({
+      redirectTo: 'http://localhost:5173',
+      data: { role: 'customer' },
+    })
+
+    expect(mockSupabase.auth.signInWithOAuth).toHaveBeenCalledWith({
+      provider: 'google',
+      options: {
+        redirectTo: 'http://localhost:5173',
+        data: { role: 'customer' },
+      },
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it('handles and logs error when supabase.auth.signInWithOAuth fails', async () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const mockSupabase = {
+      auth: {
+        signInWithOAuth: vi.fn().mockResolvedValue({
+          data: null,
+          error: { code: 'OAUTH_FAILED', message: 'Popup blocked by browser' },
+        }),
+      },
+    }
+    const supabaseModule = await import('@/config/supabaseClient')
+    vi.spyOn(supabaseModule, 'getSupabaseClient').mockReturnValue(mockSupabase)
+
+    const { authService } = await import('@/services/authService')
+    await expect(authService.signInWithGoogle()).rejects.toMatchObject({
+      code: 'OAUTH_FAILED',
+      message: 'Popup blocked by browser',
+    })
+    expect(consoleErrorSpy).toHaveBeenCalledWith('Google sign-in failed:', 'Popup blocked by browser')
   })
 })
 
@@ -197,5 +296,53 @@ describe('Password Recovery UI (ResetPasswordPage)', () => {
 
     // Initially checks session or displays recovery state
     expect(html).toContain('Password Recovery')
+  })
+
+  it('renders SignupPage with responsive mobile constraints and maxLength attributes', () => {
+    const html = renderToString(
+      React.createElement(
+        MemoryRouter,
+        null,
+        React.createElement(SignupPage, null)
+      )
+    )
+
+    // Name field constraints
+    expect(html).toContain('maxLength="120"')
+    // Email field constraints
+    expect(html).toContain('maxLength="255"')
+    // Phone field constraints (16 chars allows formatted "+91 98765 43210")
+    expect(html).toContain('maxLength="16"')
+    expect(html).toContain('inputMode="tel"')
+    // Password constraints
+    expect(html).toContain('maxLength="72"')
+  })
+
+  it('renders LoginPage with maxLength constraints to prevent overlong inputs', () => {
+    const html = renderToString(
+      React.createElement(
+        MemoryRouter,
+        null,
+        React.createElement(LoginPage, null)
+      )
+    )
+
+    expect(html).toContain('maxLength="255"')
+    expect(html).toContain('maxLength="72"')
+  })
+
+  it('renders ResetPasswordPage with maxLength constraints on passwords', async () => {
+    const ResetPasswordPage = (await import('../ResetPasswordPage')).default
+    useAuthStore.setState({ isPasswordRecovery: true })
+
+    const html = renderToString(
+      React.createElement(
+        MemoryRouter,
+        null,
+        React.createElement(ResetPasswordPage, null)
+      )
+    )
+
+    expect(html).toContain('maxLength="72"')
   })
 })

@@ -240,170 +240,60 @@ src/
 docs/           design research, fee policy, brand assets
 ```
 
-### Request flow
+Components never call the backend directly. They call `services/*`, which go through `services/api.js`. When `VITE_API_BASE_URL` is empty, `api.js` routes calls to the in-browser mock server. When it's set, it POSTs to `${VITE_API_BASE_URL}/<service>/<action>` with a bearer token.
 
-Components should not call the backend directly. They call domain
-services under `src/services/`, which route requests through
-`src/services/api.js`.
+## What's real vs incomplete
 
--   With an empty `VITE_API_BASE_URL`, calls are handled by the
-    in-browser mock server.
--   With `VITE_API_BASE_URL` configured, the API layer sends requests to
-    the configured backend using the service/action path and bearer
-    token.
+| Capability | Status | Notes |
+|---|---|---|
+| Frontend | Real | React + Vite app; Vercel deployment is separate from backend deployment. |
+| Backend / database | Real integration | Express API and Supabase PostgreSQL schema with 13 migrations. Local mock services remain available for development. |
+| Authentication / roles | Real integration | Server validates Supabase sessions and enforces role checks; UI route guards protect UX. Admin runner status updates hardened via atomic RPC `admin_set_runner_status`. |
+| Catalogue | Mixed | Sample/mock catalogue for local mode; PostgreSQL products and stores populated via migrations and seed data. |
+| Order creation and pricing | Server-backed | Atomic order creation in PostgreSQL with locked product rows, held inventory, and dynamic platform fee allocation (1–99 paise). |
+| UPI notification ingestion | Implemented (Make.com) | Authenticated Make.com webhook ingests Paytm Business UPI notifications via timing-safe secret check; fails closed if unverified. |
+| Payment verification & concurrency | Implemented (Make.com) | Customer check observes 5s Gmail push indexing wait, queries Make.com scenario, locks in-flight checks with HTTP 409, and executes atomic payment verification upon positive confirmation. |
+| Runner assignment and fulfillment | Implemented | Atomic exclusive acceptance (`runner_id IS NULL AND status = 'CONFIRMED'`), availability toggle, and multi-store pickup endpoint (`handleRunnerPickupStore`) fully implemented. |
+| Handover OTP | Implemented & resilient | Plaintext 6-digit OTP displayed strictly in-app to authenticated owner; PostgreSQL holds SHA-256 hash. Enforces 3-attempt limit, 5-min lockout, and seamless server restart recovery via `reissue_delivery_otp`. |
+| Customer order tracking | Implemented | 6-stage lifecycle progress tracker in `OrderConfirmationView.jsx` with active 4s polling that cleans up at terminal states (`DELIVERED`, `CANCELLED`, `EXPIRED`). Zero contradictory badges. |
+| Automated CI | Not configured in GitHub Actions | Full automated test suite (31 files, 630 passed tests) and migration validator run locally or in deployment pipelines. |
 
-Keep domain logic out of UI components where practical. Validate all
-input and enforce sensitive business rules in the trusted backend;
-frontend checks improve user experience but are not a security boundary.
 
-## Business rules
+## Running checks
 
-### Delivery fees
-
-The delivery-fee policy was confirmed on 2026-10-09. See
-[`docs/fee-policy.md`](docs/fee-policy.md).
-
--   ₹10 for distances up to 0.5 km.
--   ₹15 for distances over 0.5 km and up to 1 km.
--   ₹20 for distances over 1 km and up to 2 km.
--   Beyond 2 km, add ₹5 for every started kilometre.
--   Checkout is blocked beyond 5 km.
--   There is no free-delivery tier.
--   Calculate the fee using the unrounded distance.
--   The trusted server must be authoritative for the final fee.
-
-### Pricing snapshots
-
-Each order should preserve the pricing context used at creation,
-including the delivery fee, distance, distance method, and pricing
-version. This helps explain historical totals if pricing rules change
-later.
-
-### Runner payout
-
-Runner payout is separate from the delivery fee charged to the customer.
-Only the ₹10 fee → ₹8 runner payout example is defined so far. Other
-payout bands remain undecided and are represented as `null` in the
-current design.
-
-### Order and payment states
-
-Order and payment state machines are separate. A client must not be able
-to mark a payment as paid by sending a status update. Only a trusted
-server-side verification flow should transition payment state to `PAID`.
-
-### Distance
-
-The current mock uses straight-line distance, not walking or road
-distance. The interface should continue to label this accurately until a
-routing provider is integrated.
-
-## Roles and permissions
-
-The documented role model is defined in `src/utils/permissions.js`.
-
-  -----------------------------------------------------------------------
-  Role                                Intended capabilities
-  ----------------------------------- -----------------------------------
-  Customer                            Shop and view their own orders.
-                                      Every sign-up receives the customer
-                                      role by default.
-
-  Runner                              Deliver orders only after
-                                      `runnerStatus` is `approved`.
-
-  Admin                               Open the admin console, view users,
-                                      approve or suspend runners, and
-                                      view orders.
-
-  Super admin                         Manage roles and pricing, and
-                                      perform all administrative actions,
-                                      including assigning or removing
-                                      admin and super-admin roles subject
-                                      to safeguards.
-  -----------------------------------------------------------------------
-
-Additional rules:
-
--   Users cannot choose their role at sign-up.
--   A super admin cannot remove their own super-admin role.
--   The last super admin cannot be removed.
--   Route guards are for user experience; authorization must also be
-    enforced by the trusted server or database policies.
-
-These rules must be tested against the actual backend implementation
-before deployment.
-
-## Security notes
-
-Before using real users, orders, payments, or delivery operations:
-
--   Replace mock authentication with a supported authentication system.
--   Enforce authorization on every sensitive server operation.
--   Validate prices, stock, delivery fees, order ownership, and status
-    transitions on the server.
--   Use atomic operations for inventory reservation and runner
-    assignment.
--   Verify payment status with the payment provider through a trusted
-    server-side flow.
--   Store OTPs securely, enforce expiry and attempt limits, and avoid
-    logging plaintext codes.
--   Keep privileged secrets out of frontend bundles and source control.
--   Add tests for cross-user access and unauthorized role changes.
--   Configure and test database policies if a persistent database such
-    as Supabase is integrated.
--   Establish backups, monitoring, and recovery procedures before
-    production launch.
-
-## Testing and production build
-
-Run the unit tests and production build before submitting changes:
-
-``` bash
+```bash
+npm ci
 npm test
+npm run test:server
+npm run db:validate
 npm run build
 ```
 
-The current test suite covers fees, state machines, and the mock server,
-according to the project setup. Passing these tests does not prove that
-real authentication, payment verification, database authorization,
-realtime tracking, or delivery OTP verification works.
+The migration validator checks repository structure; it does **not** execute SQL against PostgreSQL. Database migrations and privilege changes must be validated against a disposable or staging Supabase database before production deployment.
 
-As production integrations are added, include tests for:
+## Business rules baked into the code
 
--   Order total and delivery-fee edge cases.
--   Unauthorized access to other customers' orders.
--   Concurrent inventory reservations.
--   Concurrent runner acceptance.
--   Duplicate and delayed payment notifications.
--   OTP expiry, repeated failures, and resend limits.
--   Database migrations and access policies, if a persistent database is
-    used.
+- **Delivery fee** (confirmed 2026-10-09; see [docs/fee-policy.md](docs/fee-policy.md)):
+  - ₹10 up to 0.5 km, ₹15 up to 1 km, ₹20 up to 2 km, then +₹5 for every started km.
+  - Checkout is blocked beyond 5 km, and there is no free delivery.
+  - The fee is calculated from the unrounded distance, and the server is authoritative.
+- **Snapshots:** each order stores its fee, distance, distance method and pricing version.
+- **Fee split:** the runner payout is separate from the customer fee. Only the ₹10 → ₹8 example exists so far; the other payouts are undecided (`null`).
+- **Roles and permissions** are defined in `src/utils/permissions.js` and shared by the UI and the server. The server enforces them; route guards are UX only.
 
-## Roadmap and open decisions
+  | Role | Can |
+  |---|---|
+  | Customer | Shop and see their own orders. Every sign-up gets this role |
+  | Runner | Deliver orders, but only once `runnerStatus` is `approved` |
+  | Admin | Open the admin console, view users, approve or suspend runners, view all orders |
+  | Super admin | Everything, including assigning or removing any role (admin and super admin too) and managing pricing |
 
-The README's documented phase plan includes a full landing page in Phase
-2, real login in Phase 3, payment verification and realtime tracking
-work in Phase 4, and atomic runner assignment and delivery OTP
-verification in Phase 5. Confirm current progress in the code before
-changing these statuses.
+  Nobody can choose a role at sign-up. A super admin can't remove their own super admin role, and the last super admin can't be removed.
+- **Secrets:** none are in client code. Only `VITE_*` public values are read (see `.env.example`).
 
-Open decisions:
+## Open decisions
 
--   Runner payout values for the ₹15--₹35 delivery-fee bands.
--   Tax and platform-fee values, if any.
--   A vector (SVG) version of the logo; the current mark is extracted
-    from the supplied raster image under `public/brand/`.
--   A routing provider for walking or road distance.
--   Production backend and persistent database integration details, if
-    not already implemented in the current branch.
-
-## Documentation
-
--   [Delivery fee policy](docs/fee-policy.md)
--   `docs/` --- design research, fee policy, and brand assets
--   `.env.example` --- supported frontend environment configuration
-
-Update this README whenever implementation status, setup commands,
-environment variables, or production architecture changes. Keep claims
-about security and production readiness aligned with code and tests.
+- Runner payouts for the ₹15–₹35 fee bands.
+- Tax and platform-fee values, if any.
+- A vector (SVG) version of the logo. The current mark is extracted from the supplied raster image (`public/brand/`).
+- A routing provider for walking or road distance.

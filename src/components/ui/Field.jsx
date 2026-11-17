@@ -18,7 +18,7 @@ export function Field({ label, hint, error, optional, className, children }) {
     : children
 
   return (
-    <div className={cn('grid gap-1.5', className)}>
+    <div className={cn('grid gap-1.5 min-w-0', className)}>
       <label htmlFor={id} className="text-sm font-medium text-ink">
         {label}
         {optional && <span className="ml-1 font-normal text-ink-subtle">(optional)</span>}
@@ -30,9 +30,9 @@ export function Field({ label, hint, error, optional, className, children }) {
         </p>
       )}
       {error && (
-        <p id={errorId} role="alert" className="flex items-center gap-1.5 text-[13px] font-medium text-danger">
-          <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
-          {error}
+        <p id={errorId} role="alert" className="flex items-start gap-1.5 text-[13px] font-medium text-danger break-words">
+          <CircleAlert className="size-3.5 shrink-0 mt-0.5" aria-hidden="true" />
+          <span>{error}</span>
         </p>
       )}
     </div>

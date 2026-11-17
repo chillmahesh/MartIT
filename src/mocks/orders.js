@@ -180,6 +180,7 @@ export const SAMPLE_ORDERS = [
     status: ORDER_STATUS.DELIVERED,
     paymentStatus: PAYMENT_STATUS.PAID,
     createdAt: '2026-10-14T00:30:00.000Z',
+    deliveredAt: '2026-10-14T00:48:00.000Z',
   },
   {
     id: 'ord_sample_multi_5',

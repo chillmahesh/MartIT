@@ -11,8 +11,6 @@ import { calculateDeliveryFee, splitDeliveryFee, DELIVERY_FEE_MESSAGES } from '@
 import { buildUpiPayload } from '@/utils/upi'
 import { FLAT_DELIVERY_FEE, FLAT_DELIVERY_FEE_LABEL, MAX_SERVICE_KM, PRICING_VERSION } from '@/config/fees'
 import CartPage from '../CartPage'
-import { OrderConfirmationView } from '@/components/cart/OrderConfirmationView'
-import { PaymentQr } from '@/components/payment/PaymentQr'
 
 describe('MartIT — Flat ₹10 Delivery Fee for MVP (Authoritative Policy Tests)', () => {
   let server, token

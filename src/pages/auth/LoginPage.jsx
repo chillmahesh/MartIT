@@ -1,17 +1,20 @@
 import { useState } from 'react'
 import { Link, useNavigate, useLocation, useSearchParams } from 'react-router'
-import { AlertCircle, Bike, CheckCircle2, Mail, Lock, ShieldCheck, ShoppingBasket, RefreshCw } from 'lucide-react'
+import { AlertCircle, Bike, CheckCircle2, Mail, ShieldCheck, ShoppingBasket } from 'lucide-react'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Dialog, DialogContent } from '@/components/ui/Dialog'
 import { Field } from '@/components/ui/Field'
+import { GoogleIcon } from '@/components/ui/GoogleIcon'
 import { Input, PasswordInput } from '@/components/ui/Input'
 import { Spinner } from '@/components/ui/Spinner'
 import { toast } from '@/components/ui/Toaster'
 import { useAuthStore } from '@/stores/authStore'
 import { env, isMockBackend } from '@/config/env'
-import { homePathFor } from '@/utils/permissions'
+import { getSupabaseClient } from '@/config/supabaseClient'
+import { homePathFor, hasPermission, PERMISSIONS, ROLES } from '@/utils/permissions'
+import { validateEmail } from '@/utils/validators'
 
 /** Only allow same-site relative redirects (prevents open-redirects via ?next=). */
 function safeNext(next) {
@@ -31,11 +34,20 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [fieldErrors, setFieldErrors] = useState({})
+  const [touched, setTouched] = useState({})
   const [submitting, setSubmitting] = useState(false)
+  const [googleSubmitting, setGoogleSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
   const [hydrationError, setHydrationError] = useState(null)
   const [retryingHydration, setRetryingHydration] = useState(false)
   const [pendingDemo, setPendingDemo] = useState(null)
+
+  // Mode selection and runner diagnostic modal state
+  const [modeModalOpen, setModeModalOpen] = useState(false)
+  const [modeModalUser, setModeModalUser] = useState(null)
+  const [diagnosticOpen, setDiagnosticOpen] = useState(false)
+  const [diagnosticUser, setDiagnosticUser] = useState(null)
 
   const noticeMessage = location.state?.notice || params.get('notice')
 
@@ -56,19 +68,15 @@ export default function LoginPage() {
   const handleForgotSubmit = async (e) => {
     e.preventDefault()
     setForgotError(null)
-    const clean = forgotEmail.trim()
-    if (!clean) {
-      setForgotError('Please enter your email address.')
-      return
-    }
-    if (!clean.includes('@')) {
-      setForgotError('Please enter a valid email address.')
+    const emailRes = validateEmail(forgotEmail, { required: true, label: 'Campus email' })
+    if (!emailRes.isValid) {
+      setForgotError(emailRes.error)
       return
     }
 
     setForgotSubmitting(true)
     try {
-      await forgotPassword(clean)
+      await forgotPassword(emailRes.value)
       setForgotSuccess(true)
       toast.success('Password recovery email sent!')
     } catch (err) {
@@ -78,26 +86,77 @@ export default function LoginPage() {
     }
   }
 
+  const handlePostLoginRouting = (authenticatedUser) => {
+    const canShop = hasPermission(authenticatedUser, PERMISSIONS.SHOP)
+    const canDeliver = hasPermission(authenticatedUser, PERMISSIONS.RUNNER_DELIVER)
+    const hasRunnerRole = authenticatedUser?.roles?.includes(ROLES.RUNNER)
+
+    if (canShop && canDeliver) {
+      // Dual-role approved: show mode-selection dialog
+      setModeModalUser(authenticatedUser)
+      setModeModalOpen(true)
+      return
+    }
+
+    if (canDeliver && !canShop) {
+      // Runner-only approved: route to /runner
+      useAuthStore.getState().setActiveMode('runner')
+      navigate(safeNext(params.get('next')) ?? '/runner', { replace: true })
+      return
+    }
+
+    if (hasRunnerRole && authenticatedUser?.runnerStatus !== 'approved') {
+      // Runner role assigned, but runnerStatus is not approved:
+      // Show diagnostic status modal explaining why runner delivery access is not active.
+      setDiagnosticUser(authenticatedUser)
+      setDiagnosticOpen(true)
+      return
+    }
+
+    // Customer-only or default role: preserve /app (or next)
+    useAuthStore.getState().setActiveMode('customer')
+    navigate(safeNext(params.get('next')) ?? homePathFor(authenticatedUser), { replace: true })
+  }
+
+  const handleEmailBlur = () => {
+    setTouched((prev) => ({ ...prev, email: true }))
+    const res = validateEmail(email, { required: true, label: 'Email' })
+    setFieldErrors((prev) => ({ ...prev, email: res.error }))
+  }
+
+  const handlePasswordBlur = () => {
+    setTouched((prev) => ({ ...prev, password: true }))
+    if (!password) {
+      setFieldErrors((prev) => ({ ...prev, password: 'Please enter your password.' }))
+    } else {
+      setFieldErrors((prev) => ({ ...prev, password: null }))
+    }
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     setFormError(null)
     setHydrationError(null)
 
-    const cleanEmail = email.trim()
-    if (!cleanEmail) {
-      setFormError('Please enter your email address.')
-      return
-    }
-    if (!password) {
-      setFormError('Please enter your password.')
+    setTouched({ email: true, password: true })
+    const emailRes = validateEmail(email, { required: true, label: 'Email' })
+    const passwordError = !password ? 'Please enter your password.' : null
+
+    const errors = {}
+    if (!emailRes.isValid) errors.email = emailRes.error
+    if (passwordError) errors.password = passwordError
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors)
+      setFormError(errors.email || errors.password)
       return
     }
 
     setSubmitting(true)
     try {
-      const user = await login(cleanEmail, password)
+      const user = await login(emailRes.value, password)
       toast.success(`Welcome back, ${user.name}!`)
-      navigate(safeNext(params.get('next')) ?? homePathFor(user), { replace: true })
+      handlePostLoginRouting(user)
     } catch (err) {
       if (err.authStage === 'profile_hydration') {
         setHydrationError(err)
@@ -109,13 +168,50 @@ export default function LoginPage() {
     }
   }
 
+  const handleGoogleSignIn = async () => {
+    setFormError(null)
+    setHydrationError(null)
+    setGoogleSubmitting(true)
+
+    try {
+      if (isMockMode) {
+        const user = await demoLogin('customer')
+        toast.success(`Welcome back, ${user.name}!`)
+        handlePostLoginRouting(user)
+        return
+      }
+
+      const supabase = getSupabaseClient()
+      if (!supabase) {
+        throw new Error('Supabase client is not configured.')
+      }
+
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        },
+      })
+
+      if (error) {
+        console.error('Google sign-in failed:', error.message)
+        setFormError(error.message || 'Google sign-in failed. Please try again.')
+      }
+    } catch (err) {
+      console.error('Google sign-in failed:', err.message)
+      setFormError(err.message || 'Google sign-in failed. Please try again.')
+    } finally {
+      setGoogleSubmitting(false)
+    }
+  }
+
   const handleRetryHydration = async () => {
     setRetryingHydration(true)
     try {
       const user = await hydrateProfile()
       toast.success(`Welcome back, ${user.name}!`)
       setHydrationError(null)
-      navigate(safeNext(params.get('next')) ?? homePathFor(user), { replace: true })
+      handlePostLoginRouting(user)
     } catch (err) {
       setHydrationError(err)
       toast.error(err.message || 'Retry failed. Server may still be waking up.')
@@ -137,7 +233,7 @@ export default function LoginPage() {
     try {
       const user = await demoLogin(role)
       toast.success(`Signed in as ${user.name}`)
-      navigate(safeNext(params.get('next')) ?? homePathFor(user), { replace: true })
+      handlePostLoginRouting(user)
     } catch (e) {
       toast.error(e.message)
     } finally {
@@ -270,16 +366,51 @@ export default function LoginPage() {
         </div>
       )}
 
+      {/* Google Sign-in Button */}
+      <div className="mt-8">
+        <Button
+          type="button"
+          variant="secondary"
+          size="lg"
+          block
+          loading={googleSubmitting}
+          disabled={Boolean(hasConfigError) || submitting}
+          onClick={handleGoogleSignIn}
+          className="font-medium"
+        >
+          <GoogleIcon className="size-5 shrink-0" />
+          <span>Sign in with Google</span>
+        </Button>
+      </div>
+
+      {/* Divider */}
+      <div className="relative my-6 flex items-center justify-center">
+        <div className="absolute inset-0 flex items-center">
+          <div className="w-full border-t border-line" />
+        </div>
+        <div className="relative bg-bg px-3 text-xs font-semibold uppercase tracking-wider text-ink-subtle">
+          or continue with email
+        </div>
+      </div>
+
       {/* Standard Email/Password Form */}
-      <form onSubmit={handleSubmit} className="mt-8 grid gap-4" noValidate>
-        <Field label="Email" error={undefined}>
+      <form onSubmit={handleSubmit} className="grid gap-4" noValidate>
+        <Field label="Email" error={touched.email ? fieldErrors.email : undefined}>
           <Input
             type="email"
             name="email"
             autoComplete="username"
             required
+            maxLength={255}
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => {
+              setEmail(e.target.value)
+              if (touched.email) {
+                const res = validateEmail(e.target.value, { required: true, label: 'Email' })
+                setFieldErrors((prev) => ({ ...prev, email: res.error }))
+              }
+            }}
+            onBlur={handleEmailBlur}
             placeholder="you@campus.edu"
             icon={Mail}
             disabled={submitting}
@@ -304,11 +435,25 @@ export default function LoginPage() {
             name="password"
             autoComplete="current-password"
             required
+            maxLength={72}
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => {
+              setPassword(e.target.value)
+              if (touched.password) {
+                setFieldErrors((prev) => ({ ...prev, password: !e.target.value ? 'Please enter your password.' : null }))
+              }
+            }}
+            onBlur={handlePasswordBlur}
             placeholder="Enter your password"
             disabled={submitting}
+            aria-invalid={touched.password && fieldErrors.password ? true : undefined}
           />
+          {touched.password && fieldErrors.password && (
+            <p role="alert" className="flex items-center gap-1.5 text-[13px] font-medium text-danger">
+              <AlertCircle className="size-3.5 shrink-0" aria-hidden="true" />
+              <span>{fieldErrors.password}</span>
+            </p>
+          )}
         </div>
 
         <Button
@@ -444,6 +589,119 @@ export default function LoginPage() {
               </div>
             </form>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Mode Selection Dialog for Dual-Role Approved Users */}
+      <Dialog open={modeModalOpen} onOpenChange={setModeModalOpen}>
+        <DialogContent
+          title="Choose your mode"
+          description="Your account is approved for both customer orders and runner deliveries. Choose where you would like to start:"
+        >
+          <div className="mt-4 grid gap-3">
+            <Card
+              as="button"
+              type="button"
+              id="mode-select-customer"
+              interactive
+              onClick={() => {
+                useAuthStore.getState().setActiveMode('customer')
+                setModeModalOpen(false)
+                navigate(safeNext(params.get('next')) ?? '/app', { replace: true })
+              }}
+              className="flex w-full items-center gap-4 p-4 text-left transition-all hover:border-brand"
+            >
+              <span className="grid size-12 shrink-0 place-items-center rounded-tile bg-surface-2 text-ink">
+                <ShoppingBasket className="size-6 text-brand" aria-hidden="true" />
+              </span>
+              <span className="flex-1">
+                <span className="block font-semibold text-base text-ink">Customer Dashboard</span>
+                <span className="block text-xs text-ink-muted mt-0.5">
+                  Browse campus food &amp; groceries, build carts, and place delivery orders
+                </span>
+              </span>
+            </Card>
+
+            <Card
+              as="button"
+              type="button"
+              id="mode-select-runner"
+              interactive
+              onClick={() => {
+                useAuthStore.getState().setActiveMode('runner')
+                setModeModalOpen(false)
+                navigate(safeNext(params.get('next')) ?? '/runner', { replace: true })
+              }}
+              className="flex w-full items-center gap-4 p-4 text-left transition-all hover:border-brand"
+            >
+              <span className="grid size-12 shrink-0 place-items-center rounded-tile bg-brand-soft text-fresh-ink">
+                <Bike className="size-6 text-fresh-ink" aria-hidden="true" />
+              </span>
+              <span className="flex-1">
+                <span className="block font-semibold text-base text-ink">Runner Dashboard</span>
+                <span className="block text-xs text-ink-muted mt-0.5">
+                  Accept pending delivery requests, manage pickups, and deliver across campus
+                </span>
+              </span>
+            </Card>
+          </div>
+          <p className="mt-4 text-center text-xs text-ink-subtle">
+            You can switch between Customer Mode and Runner Mode anytime using the button in the header.
+          </p>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diagnostic Dialog for Runner Role without Approved Status */}
+      <Dialog open={diagnosticOpen} onOpenChange={setDiagnosticOpen}>
+        <DialogContent
+          title="Runner Account Status Notice"
+          description="Your account has the runner role assigned, but runner delivery privileges are not yet active."
+        >
+          <div className="space-y-4">
+            <div
+              role="alert"
+              id="login-runner-diagnostic-alert"
+              className="rounded-card border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-900 dark:text-amber-200"
+            >
+              <div className="flex items-start gap-3">
+                <AlertCircle className="size-5 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" aria-hidden="true" />
+                <div className="flex-1 space-y-1.5">
+                  <p className="font-semibold">
+                    {diagnosticUser?.runnerStatus === 'suspended'
+                      ? 'Runner Privileges Suspended'
+                      : diagnosticUser?.runnerStatus === 'applicant' || diagnosticUser?.runnerStatus === 'pending'
+                      ? 'Runner Application Pending Review'
+                      : 'Runner Approval Required'}
+                  </p>
+                  <p className="text-xs text-ink">
+                    {diagnosticUser?.runnerStatus === 'suspended'
+                      ? 'Your runner delivery privileges are currently suspended by platform administrators. You can continue shopping in Customer Mode.'
+                      : diagnosticUser?.runnerStatus === 'applicant' || diagnosticUser?.runnerStatus === 'pending'
+                      ? 'Your runner application is under review by campus administrators. Once approved, the Runner Dashboard will become available. In the meantime, you can use Customer Mode.'
+                      : 'Your user profile in the database has role "runner", but runner_status is currently unapproved (null or not approved). An administrator must set runner_status = \'approved\' in the profiles table to activate delivery permissions.'}
+                  </p>
+                  <div className="mt-2 text-[11px] font-mono text-ink-muted">
+                    Assigned Role: runner | Profile Status: {diagnosticUser?.runnerStatus ?? 'unapproved (null)'}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="primary"
+                id="diagnostic-continue-customer"
+                onClick={() => {
+                  setDiagnosticOpen(false)
+                  useAuthStore.getState().setActiveMode('customer')
+                  navigate(safeNext(params.get('next')) ?? '/app', { replace: true })
+                }}
+              >
+                Continue to Customer Dashboard
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </section>

@@ -4,10 +4,17 @@ import { sumRupees } from './currency'
 /**
  * Customer total = item subtotal + delivery fee + platform fee.
  * Taxes and discounts are excluded until explicitly defined in config/fees.js.
+ * Supports multi-store fee breakdown (baseDeliveryFee + additionalStoreSurcharge).
  *
- * @param {{ lines: Array<{ unitPrice: number, quantity: number }>, deliveryFee: number, platformFee?: number }} input
+ * @param {{
+ *   lines: Array<{ unitPrice: number, quantity: number }>,
+ *   deliveryFee: number,
+ *   platformFee?: number,
+ *   baseDeliveryFee?: number,
+ *   additionalStoreSurcharge?: number
+ * }} input
  */
-export function calculateOrderTotals({ lines, deliveryFee, platformFee }) {
+export function calculateOrderTotals({ lines, deliveryFee, platformFee, baseDeliveryFee, additionalStoreSurcharge }) {
   if (TAX_RATE != null) {
     // Guard so that defining a value in config can't silently skip the totals logic.
     throw new Error('Tax defined in config but not implemented in calculateOrderTotals')
@@ -23,23 +30,27 @@ export function calculateOrderTotals({ lines, deliveryFee, platformFee }) {
   const itemSubtotal = sumRupees(lines.map((l) => l.unitPrice * l.quantity))
   const baseAmount = Math.round(itemSubtotal + deliveryFee)
 
-  if (hasPlatformFee) {
-    const basePaise = Math.round(baseAmount * 100)
-    const feePaise = Math.round(platformFee * 100)
-    const total = (basePaise + feePaise) / 100
-    return {
-      itemSubtotal,
-      deliveryFee,
-      baseAmount,
-      platformFee,
-      total,
-    }
-  }
-
-  return {
+  const result = {
     itemSubtotal,
     deliveryFee,
     total: sumRupees([itemSubtotal, deliveryFee]),
   }
+
+  if (hasPlatformFee) {
+    const basePaise = Math.round(baseAmount * 100)
+    const feePaise = Math.round(platformFee * 100)
+    result.baseAmount = baseAmount
+    result.platformFee = platformFee
+    result.total = (basePaise + feePaise) / 100
+  }
+
+  if (typeof baseDeliveryFee === 'number') {
+    result.baseDeliveryFee = baseDeliveryFee
+  }
+  if (typeof additionalStoreSurcharge === 'number') {
+    result.additionalStoreSurcharge = additionalStoreSurcharge
+  }
+
+  return result
 }
 

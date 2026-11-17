@@ -35,5 +35,11 @@ export const runnerService = {
    */
   verifyOtp: (orderId, otp) =>
     request('runner.order.verifyOtp', { orderId, otp }),
+
+  /**
+   * Records a delay or operational issue reported by the assigned runner.
+   */
+  reportDelay: (orderId, { reason, note = '' } = {}) =>
+    request('runner.order.reportDelay', { orderId, reason, note }),
 }
 

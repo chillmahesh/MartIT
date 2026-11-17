@@ -7,7 +7,7 @@
  * they were priced with, so later changes never alter existing orders.
  */
 
-export const PRICING_VERSION = '2026-10-16.1'
+export const PRICING_VERSION = '2026-11-17.1'
 
 /**
  * MVP Flat Delivery Fee Policy.
@@ -15,6 +15,43 @@ export const PRICING_VERSION = '2026-10-16.1'
  */
 export const FLAT_DELIVERY_FEE = 10
 export const FLAT_DELIVERY_FEE_LABEL = 'Flat campus delivery'
+
+/**
+ * Multi-store delivery surcharge policy.
+ * Each additional distinct store in the cart incurs a fixed surcharge S.
+ * Formula:
+ *   N = number of distinct stores
+ *   S = MULTI_STORE_SURCHARGE (approved default: ₹10 per additional distinct store)
+ *   Additional surcharge A = max(0, N - 1) * S
+ *   Total delivery fee D = B + A (where B is base delivery fee)
+ * Authoritative default: ₹10 per additional distinct store.
+ */
+export const DEFAULT_MULTI_STORE_SURCHARGE = 10
+
+export function resolveMultiStoreSurcharge(rawEnvVal) {
+  const envVal =
+    rawEnvVal !== undefined
+      ? rawEnvVal
+      : (typeof process !== 'undefined' && process.env?.MULTI_STORE_SURCHARGE) ||
+        (typeof import.meta !== 'undefined' && import.meta.env?.VITE_MULTI_STORE_SURCHARGE)
+
+  if (envVal === undefined || envVal === null || envVal === '') {
+    return DEFAULT_MULTI_STORE_SURCHARGE
+  }
+
+  const parsed = Number(envVal)
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(
+      `Invalid MULTI_STORE_SURCHARGE configuration: "${envVal}". Surcharge must be a non-negative finite number.`
+    )
+  }
+
+  return parsed
+}
+
+export const MULTI_STORE_SURCHARGE = resolveMultiStoreSurcharge()
+
+export const MULTI_STORE_SURCHARGE_LABEL = 'Additional store surcharge'
 
 /**
  * Maximum delivery radius. Beyond this, checkout is blocked.

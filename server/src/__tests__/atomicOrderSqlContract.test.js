@@ -232,3 +232,50 @@ describe.skip('PENDING: Live PostgreSQL Concurrent Transaction Lock-Ordering Cyc
     // Concurrency verification is formally specified here for execution against disposable Supabase/Postgres test instances.
   })
 })
+
+
+describe('Authoritative payment verification trust contract', () => {
+  const feeMigrationSql = fs.readFileSync(
+    path.resolve(process.cwd(), 'supabase/migrations/20261022150000_require_authoritative_payment_verification.sql'),
+    'utf8',
+  )
+  const ordersRouteCode = fs.readFileSync(
+    path.resolve(process.cwd(), 'server/src/routes/orders.js'),
+    'utf8',
+  )
+  const webhookRouteCode = fs.readFileSync(
+    path.resolve(process.cwd(), 'server/src/routes/webhooks.js'),
+    'utf8',
+  )
+
+  it('requires paid status, exact evidence, and an authoritative verification source in the database transition', () => {
+    expect(feeMigrationSql).toMatch(/AND status = 'PAID'[\s\S]*?AND evidence = 'Payment received'[\s\S]*?AND verification_source = 'AUTHORITATIVE_GATEWAY'/)
+    expect(feeMigrationSql).not.toContain("(status = 'PAID' OR evidence IS NOT NULL)")
+  })
+
+  it('requires authoritative verification fields in the customer payment-check query', () => {
+    expect(ordersRouteCode).toMatch(/\.eq\('status', 'PAID'\)[\s\S]*?\.eq\('evidence', 'Payment received'\)[\s\S]*?\.eq\('verification_source', 'AUTHORITATIVE_GATEWAY'\)/)
+  })
+
+  it('sets the authoritative verification marker only after the gateway verifier returns verified', () => {
+    const verifiedBranch = webhookRouteCode.indexOf('// 12. Authoritative Gateway Confirmed')
+    const markerWrite = webhookRouteCode.indexOf("verification_source: 'AUTHORITATIVE_GATEWAY'", verifiedBranch)
+    expect(verifiedBranch).toBeGreaterThan(-1)
+    expect(markerWrite).toBeGreaterThan(verifiedBranch)
+    expect(webhookRouteCode).toContain('if (gatewayVerification?.verified !== true)')
+  })
+})
+
+
+describe('Payment transition RPC execute privileges', () => {
+  it('revokes SECURITY DEFINER payment transition from public client roles and grants service role only', () => {
+    const sql = fs.readFileSync(
+      path.resolve(process.cwd(), 'supabase/migrations/20261022160000_restrict_payment_transition_rpc.sql'),
+      'utf8',
+    )
+    expect(sql).toContain('FROM PUBLIC')
+    expect(sql).toContain('FROM anon')
+    expect(sql).toContain('FROM authenticated')
+    expect(sql).toContain('TO service_role')
+  })
+})

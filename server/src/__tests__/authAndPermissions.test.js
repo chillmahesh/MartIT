@@ -98,6 +98,8 @@ describe('Authentication & Authorization Endpoints', () => {
 
     expect(res.status).toBe(200)
     expect(res.body.runnerStatus).toBe('approved')
+    expect(res.body.name).toBe('Eve Applicant')
+    expect(res.body.roles).toContain(ROLES.RUNNER)
 
     const updatedProfile = state.profiles.find((p) => p.id === 'usr_applicant')
     expect(updatedProfile.runner_status).toBe('approved')
@@ -108,11 +110,99 @@ describe('Authentication & Authorization Endpoints', () => {
     expect(hasRunnerRole).toBe(true)
   })
 
+  it('rejects a runner applicant (status suspended) and ensures runner role is not granted', async () => {
+    const res = await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_applicant', status: 'suspended' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.runnerStatus).toBe('suspended')
+    expect(res.body.roles).not.toContain(ROLES.RUNNER)
+
+    const updatedProfile = state.profiles.find((p) => p.id === 'usr_applicant')
+    expect(updatedProfile.runner_status).toBe('suspended')
+
+    const hasRunnerRole = (state.user_roles || state.userRoles).some(
+      (r) => r.user_id === 'usr_applicant' && r.role === ROLES.RUNNER,
+    )
+    expect(hasRunnerRole).toBe(false)
+  })
+
+  it('suspends an approved runner and revokes runner role', async () => {
+    const res = await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_runner', status: 'suspended' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.runnerStatus).toBe('suspended')
+    expect(res.body.roles).not.toContain(ROLES.RUNNER)
+
+    const updatedProfile = state.profiles.find((p) => p.id === 'usr_runner')
+    expect(updatedProfile.runner_status).toBe('suspended')
+
+    const hasRunnerRole = (state.user_roles || state.userRoles).some(
+      (r) => r.user_id === 'usr_runner' && r.role === ROLES.RUNNER,
+    )
+    expect(hasRunnerRole).toBe(false)
+  })
+
   it('prevents approving a user who never applied', async () => {
     const res = await request(app)
       .post('/admin/runners/setStatus')
       .set('Authorization', 'Bearer tok_admin')
       .send({ userId: 'usr_customer', status: 'approved' })
+
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('NOT_AN_APPLICANT')
+  })
+
+  it('supports idempotent approval of an already approved runner', async () => {
+    // Eve is approved first
+    await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_applicant', status: 'approved' })
+
+    // Repeated approval succeeds idempotently without duplicate role entries
+    const res = await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_applicant', status: 'approved' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.runnerStatus).toBe('approved')
+    const runnerRoles = (state.user_roles || state.userRoles).filter(
+      (r) => r.user_id === 'usr_applicant' && r.role === ROLES.RUNNER,
+    )
+    expect(runnerRoles.length).toBe(1)
+  })
+
+  it('rejects runner status update for non-existent user with 404', async () => {
+    const res = await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_non_existent', status: 'approved' })
+
+    expect(res.status).toBe(404)
+    expect(res.body.code).toBe('USER_NOT_FOUND')
+  })
+
+  it('rejects runner status update with invalid status with 422', async () => {
+    const res = await request(app)
+      .post('/admin/runners/setStatus')
+      .set('Authorization', 'Bearer tok_admin')
+      .send({ userId: 'usr_applicant', status: 'invalid_status' })
+
+    expect(res.status).toBe(422)
+  })
+
+  it('prevents granting runner role to a user who never applied', async () => {
+    const res = await request(app)
+      .post('/admin/roles/set')
+      .set('Authorization', 'Bearer tok_super')
+      .send({ userId: 'usr_customer', role: ROLES.RUNNER, granted: true })
 
     expect(res.status).toBe(409)
     expect(res.body.code).toBe('NOT_AN_APPLICANT')
@@ -289,11 +379,11 @@ describe('Public Registration & Role Assignment Enforcement', () => {
     expect(res.body.success).toBe(true)
     expect(res.body.user.email).toBe('newrunner@campus.edu')
     expect(res.body.user.roles).toContain(ROLES.CUSTOMER)
-    expect(res.body.user.roles).toContain(ROLES.RUNNER)
+    expect(res.body.user.roles).not.toContain(ROLES.RUNNER)
     expect(res.body.user.runnerStatus).toBe('applicant')
     expect(res.body.message).toContain('application is pending review')
 
-    // Verify DB state: runner_status must be 'applicant' (NOT approved)
+    // Verify DB state: runner_status must be 'applicant' (NOT approved) and only customer role granted
     const createdProfile = state.profiles.find((p) => p.email === 'newrunner@campus.edu')
     expect(createdProfile).toBeDefined()
     expect(createdProfile.runner_status).toBe('applicant')
@@ -301,7 +391,30 @@ describe('Public Registration & Role Assignment Enforcement', () => {
     const createdRoles = state.user_roles.filter((r) => r.user_id === createdProfile.id)
     const rolesList = createdRoles.map((r) => r.role)
     expect(rolesList).toContain(ROLES.CUSTOMER)
-    expect(rolesList).toContain(ROLES.RUNNER)
+    expect(rolesList).not.toContain(ROLES.RUNNER)
+  })
+
+  it('allows authenticated customer to submit runner application via /api/v1/auth/apply-runner', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/apply-runner')
+      .set('Authorization', 'Bearer tok_existing')
+
+    expect(res.status).toBe(200)
+    expect(res.body.runnerStatus).toBe('applicant')
+    expect(res.body.roles).toContain(ROLES.CUSTOMER)
+    expect(res.body.roles).not.toContain(ROLES.RUNNER)
+
+    const updatedProfile = state.profiles.find((p) => p.id === 'usr_existing')
+    expect(updatedProfile.runner_status).toBe('applicant')
+  })
+
+  it('allows authenticated customer to submit runner application via RPC /auth/applyRunner', async () => {
+    const res = await request(app)
+      .post('/auth/applyRunner')
+      .set('Authorization', 'Bearer tok_existing')
+
+    expect(res.status).toBe(200)
+    expect(res.body.runnerStatus).toBe('applicant')
   })
 
   it('strictly rejects attempted public registration as admin with 403 PRIVILEGE_ESCALATION_FORBIDDEN', async () => {
@@ -393,6 +506,74 @@ describe('Public Registration & Role Assignment Enforcement', () => {
       .send({ email: 'valid@campus.edu', password: 'short', name: 'Valid Name', role: 'customer' })
     expect(res3.status).toBe(400)
     expect(res3.body.code).toBe('INVALID_PASSWORD')
+  })
+
+  it('rejects overlong name, email with spaces, and invalid phone number on signup', async () => {
+    // Overlong name > 120 characters
+    const resOverlongName = await request(app)
+      .post('/api/v1/auth/signup')
+      .send({
+        email: 'valid2@campus.edu',
+        password: 'password123',
+        name: 'A'.repeat(121),
+        role: 'customer',
+      })
+    expect(resOverlongName.status).toBe(400)
+    expect(resOverlongName.body.code).toBe('INVALID_NAME')
+
+    // Email with internal spaces
+    const resEmailSpace = await request(app)
+      .post('/api/v1/auth/signup')
+      .send({
+        email: 'user name@campus.edu',
+        password: 'password123',
+        name: 'Valid Name',
+        role: 'customer',
+      })
+    expect(resEmailSpace.status).toBe(400)
+    expect(resEmailSpace.body.code).toBe('INVALID_EMAIL')
+
+    // Phone with > 10 digits
+    const resPhoneLong = await request(app)
+      .post('/api/v1/auth/signup')
+      .send({
+        email: 'valid3@campus.edu',
+        password: 'password123',
+        name: 'Valid Name',
+        phone: '987654321012345',
+        role: 'customer',
+      })
+    expect(resPhoneLong.status).toBe(400)
+    expect(resPhoneLong.body.code).toBe('INVALID_PHONE')
+
+    // Phone with invalid starting digit (e.g. starts with 1)
+    const resPhoneInvalidStart = await request(app)
+      .post('/api/v1/auth/signup')
+      .send({
+        email: 'valid4@campus.edu',
+        password: 'password123',
+        name: 'Valid Name',
+        phone: '1234567890',
+        role: 'customer',
+      })
+    expect(resPhoneInvalidStart.status).toBe(400)
+    expect(resPhoneInvalidStart.body.code).toBe('INVALID_PHONE')
+  })
+
+  it('accepts valid 10-digit Indian mobile number and Unicode Indian names on signup', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/signup')
+      .send({
+        email: 'aarav.sharma@campus.edu',
+        password: 'securePassword123',
+        name: 'आरव शर्मा',
+        phone: '+91 98765 43210',
+        role: 'customer',
+      })
+
+    expect(res.status).toBe(201)
+    expect(res.body.user.name).toBe('आरव शर्मा')
+    expect(res.body.user.phone).toBe('+919876543210')
   })
 
   it('also supports RPC POST /auth/signup endpoint', async () => {

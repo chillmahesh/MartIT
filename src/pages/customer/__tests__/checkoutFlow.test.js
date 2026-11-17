@@ -31,7 +31,7 @@ describe('Cart Store & Multi-Store Protection', () => {
 
     const state = useCartStore.getState()
     expect(state.storeId).toBe('store_campus_mart')
-    expect(state.lines).toEqual([{ productId: 'p_milk_500', quantity: 2 }])
+    expect(state.lines).toEqual([{ productId: 'p_milk_500', quantity: 2, storeId: 'store_campus_mart' }])
     expect(selectCartCount(state)).toBe(2)
   })
 
@@ -57,7 +57,7 @@ describe('Cart Store & Multi-Store Protection', () => {
 
     // Remove p_milk_500
     store.setQuantity('p_milk_500', 0, 'store_campus_mart')
-    expect(useCartStore.getState().lines).toEqual([{ productId: 'p_bread', quantity: 1 }])
+    expect(useCartStore.getState().lines).toEqual([{ productId: 'p_bread', quantity: 1, storeId: 'store_campus_mart' }])
 
     // Remove p_bread (resets storeId when empty)
     store.setQuantity('p_bread', 0, 'store_campus_mart')
@@ -74,13 +74,50 @@ describe('Cart Store & Multi-Store Protection', () => {
     expect(useCartStore.getState().storeId).toBe('store_campus_mart')
     expect(useCartStore.getState().lines.length).toBe(1)
 
-    // Attempting to add from Night Canteen does not silently wipe via setQuantity
     // Store switch is explicit via replaceCart
     store.replaceCart('p_nc_maggi', 1, 'store_night_canteen')
 
     const newState = useCartStore.getState()
     expect(newState.storeId).toBe('store_night_canteen')
-    expect(newState.lines).toEqual([{ productId: 'p_nc_maggi', quantity: 1 }])
+    expect(newState.lines).toEqual([{ productId: 'p_nc_maggi', quantity: 1, storeId: 'store_night_canteen' }])
+  })
+
+  it('supports multi-store shopping with first-add warning trigger and dismissal', () => {
+    const store = useCartStore.getState()
+    // 1. Add item from Campus Mart
+    store.setQuantity('p_milk_500', 2, 'store_campus_mart')
+    expect(useCartStore.getState().lines.length).toBe(1)
+    expect(useCartStore.getState().showMultiStoreWarning).toBe(false)
+
+    // 2. Add item from Night Canteen (transitions from 1 store to 2 stores)
+    store.setQuantity('p_nc_maggi', 1, 'store_night_canteen')
+    const multiState = useCartStore.getState()
+    expect(multiState.lines.length).toBe(2)
+    // Warning modal is triggered
+    expect(multiState.showMultiStoreWarning).toBe(true)
+    expect(multiState.warningDismissed).toBe(false)
+
+    // 3. Dismiss warning without wiping cart
+    store.dismissMultiStoreWarning()
+    expect(useCartStore.getState().showMultiStoreWarning).toBe(false)
+    expect(useCartStore.getState().warningDismissed).toBe(true)
+    expect(useCartStore.getState().lines.length).toBe(2)
+
+    // 4. Adding more items to an already multi-store cart does NOT re-trigger modal
+    store.setQuantity('p_nc_soda', 1, 'store_night_canteen')
+    expect(useCartStore.getState().showMultiStoreWarning).toBe(false)
+    expect(useCartStore.getState().lines.length).toBe(3)
+
+    // 5. Removing Night Canteen items drops cart back to single-store (Campus Mart only)
+    store.setQuantity('p_nc_maggi', 0, 'store_night_canteen')
+    store.setQuantity('p_nc_soda', 0, 'store_night_canteen')
+    expect(useCartStore.getState().lines.length).toBe(1)
+    // Warning dismissal state is reset
+    expect(useCartStore.getState().warningDismissed).toBe(false)
+
+    // 6. Adding Night Canteen again re-triggers the warning
+    store.setQuantity('p_nc_maggi', 1, 'store_night_canteen')
+    expect(useCartStore.getState().showMultiStoreWarning).toBe(true)
   })
 })
 

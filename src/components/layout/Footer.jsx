@@ -18,13 +18,20 @@ const COLUMNS = [
       { to: '/signup', label: 'Create account' },
     ],
   },
+  {
+    title: 'Legal',
+    links: [
+      { to: '/terms-and-conditions', label: 'Terms & Conditions' },
+      { to: '/privacy-policy', label: 'Privacy Policy' },
+    ],
+  },
 ]
 
-/** Footer with internal links only — no placeholder social or legal links until they exist. */
+/** Footer with internal navigation and transparent compliance links. */
 export function Footer() {
   return (
     <footer className="mt-24 border-t border-line bg-surface">
-      <div className="mx-auto grid max-w-6xl gap-10 px-4 py-12 md:grid-cols-[1.4fr_1fr_1fr] md:px-6">
+      <div className="mx-auto grid max-w-6xl gap-10 px-4 py-12 md:grid-cols-[1.3fr_1fr_1fr_1fr] md:px-6">
         <div className="max-w-xs">
           <Logo />
           <p className="mt-4 text-sm text-ink-muted">
@@ -47,9 +54,18 @@ export function Footer() {
         ))}
       </div>
       <div className="border-t border-line">
-        <p className="mx-auto max-w-6xl px-4 py-5 text-[13px] text-ink-subtle md:px-6">
-          © {new Date().getFullYear()} MartIT. Prices and products shown in this build are sample data.
-        </p>
+        <div className="mx-auto flex max-w-6xl flex-col sm:flex-row items-center justify-between gap-3 px-4 py-5 text-[13px] text-ink-subtle md:px-6">
+          <p>© {new Date().getFullYear()} MartIT. Prices and products shown in this build are sample data.</p>
+          <div className="flex items-center gap-4 text-xs font-medium">
+            <Link to="/terms-and-conditions" className="hover:text-ink transition-colors">
+              Terms &amp; Conditions
+            </Link>
+            <span className="text-line-strong">•</span>
+            <Link to="/privacy-policy" className="hover:text-ink transition-colors">
+              Privacy Policy
+            </Link>
+          </div>
+        </div>
       </div>
     </footer>
   )

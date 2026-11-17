@@ -20,10 +20,16 @@ export const useAuthStore = create(
       token: null,
       session: null,
       user: null,
+      activeMode: null,
       isInitialized: false,
       configError: null,
       isPasswordRecovery: false,
       recoveryEmail: null,
+
+      /**
+       * Updates the active UI mode ('customer' | 'runner') for dual-role sessions.
+       */
+      setActiveMode: (mode) => set({ activeMode: mode }),
 
       /**
        * Initializes session state on application mount or refresh.
@@ -33,6 +39,14 @@ export const useAuthStore = create(
 
         // 1. Mock Mode
         if (isMockBackend) {
+          if (get().token) {
+            try {
+              const profileUser = await authService.me()
+              set({ user: profileUser })
+            } catch {
+              // ignore stale session
+            }
+          }
           set({ isInitialized: true, configError: null })
           return
         }
@@ -46,6 +60,7 @@ export const useAuthStore = create(
             token: null,
             session: null,
             user: null,
+            activeMode: null,
             isPasswordRecovery: false,
             recoveryEmail: null,
           })
@@ -66,7 +81,15 @@ export const useAuthStore = create(
             if (!isRecoveryPath && !get().isPasswordRecovery) {
               // Authoritative profile & role hydration from backend
               try {
-                const profileUser = await authService.me()
+                let profileUser = await authService.me()
+                if (
+                  session?.user?.user_metadata?.role === 'runner' &&
+                  profileUser?.runnerStatus == null &&
+                  !profileUser?.roles?.includes('runner')
+                ) {
+                  await authService.applyRunner()
+                  profileUser = await authService.me()
+                }
                 set({ user: profileUser })
               } catch (err) {
                 if (
@@ -77,7 +100,7 @@ export const useAuthStore = create(
                   err.code === 'ROLE_NOT_FOUND'
                 ) {
                   await authService.logout().catch(() => {})
-                  set({ session: null, token: null, user: null })
+                  set({ session: null, token: null, user: null, activeMode: null })
                 }
               }
             } else {
@@ -88,10 +111,10 @@ export const useAuthStore = create(
               })
             }
           } else {
-            set({ session: null, token: null, user: null })
+            set({ session: null, token: null, user: null, activeMode: null })
           }
         } catch {
-          set({ session: null, token: null, user: null })
+          set({ session: null, token: null, user: null, activeMode: null })
         }
 
         // 4. Set up onAuthStateChange listener
@@ -114,7 +137,15 @@ export const useAuthStore = create(
                 set({ session: newSession, token: newSession.access_token })
                 if (event === 'SIGNED_IN' || !get().user) {
                   try {
-                    const profileUser = await authService.me()
+                    let profileUser = await authService.me()
+                    if (
+                      newSession?.user?.user_metadata?.role === 'runner' &&
+                      profileUser?.runnerStatus == null &&
+                      !profileUser?.roles?.includes('runner')
+                    ) {
+                      await authService.applyRunner()
+                      profileUser = await authService.me()
+                    }
                     set({ user: profileUser })
                   } catch {
                     // Handled by 401 interceptor
@@ -126,6 +157,7 @@ export const useAuthStore = create(
                 session: null,
                 token: null,
                 user: null,
+                activeMode: null,
                 isPasswordRecovery: false,
                 recoveryEmail: null,
               })
@@ -162,7 +194,19 @@ export const useAuthStore = create(
 
         // Stage 2: Authoritative profile & role hydration from backend
         try {
-          const profileUser = await authService.me()
+          let profileUser = await authService.me()
+          if (
+            authResult?.authUser?.user_metadata?.role === 'runner' &&
+            profileUser?.runnerStatus == null &&
+            !profileUser?.roles?.includes('runner')
+          ) {
+            try {
+              await authService.applyRunner()
+              profileUser = await authService.me()
+            } catch {
+              // ignore
+            }
+          }
           set({ user: profileUser })
           return profileUser
         } catch (hydrationErr) {
@@ -173,10 +217,24 @@ export const useAuthStore = create(
             hydrationErr.code === 'UNAUTHENTICATED'
           ) {
             await authService.logout().catch(() => {})
-            set({ session: null, token: null, user: null })
+            set({ session: null, token: null, user: null, activeMode: null })
           }
           throw hydrationErr
         }
+      },
+
+      /**
+       * Initiates Google OAuth sign-in flow.
+       * In mock mode: signs in using demo customer/runner profile.
+       * In remote mode: triggers Supabase OAuth redirect.
+       */
+      async signInWithGoogle(options = {}) {
+        if (isMockBackend) {
+          const res = await authService.signInWithGoogle(options)
+          set({ token: res.token, user: res.user, session: null })
+          return res.user
+        }
+        return authService.signInWithGoogle(options)
       },
 
       /**
@@ -213,11 +271,23 @@ export const useAuthStore = create(
         const result = await authService.signup(email, password, metadata)
         if (result.session) {
           set({ session: result.session, token: result.session.access_token })
+          if (metadata?.role === 'runner') {
+            await authService.applyRunner()
+          }
           const profileUser = await authService.me()
           set({ user: profileUser })
           return { user: profileUser, needsConfirmation: false }
         }
         return { user: result.authUser, needsConfirmation: result.needsConfirmation }
+      },
+
+      /**
+       * Submits runner application for current user and updates local user state.
+       */
+      async applyForRunner() {
+        const updated = await authService.applyRunner()
+        set({ user: updated })
+        return updated
       },
 
       /**
@@ -251,6 +321,28 @@ export const useAuthStore = create(
       },
 
       /**
+       * Forces a re-fetch of the authoritative profile from authService.me()
+       * to pick up external SQL role or status promotions without re-login.
+       */
+      async refreshProfile() {
+        try {
+          const profileUser = await authService.me()
+          set({ user: profileUser })
+          return profileUser
+        } catch (err) {
+          if (
+            err.status === 401 ||
+            err.statusCode === 401 ||
+            err.code === 'UNAUTHENTICATED'
+          ) {
+            await authService.logout().catch(() => {})
+            set({ session: null, token: null, user: null, activeMode: null })
+          }
+          throw err
+        }
+      },
+
+      /**
        * Sign-out.
        */
       async logout() {
@@ -263,6 +355,7 @@ export const useAuthStore = create(
           token: null,
           session: null,
           user: null,
+          activeMode: null,
           isPasswordRecovery: false,
           recoveryEmail: null,
         })
@@ -280,7 +373,10 @@ export const useAuthStore = create(
     }),
     {
       name: 'martit-session',
-      partialize: (s) => (isMockBackend ? { token: s.token, user: s.user } : { user: s.user }),
+      partialize: (s) =>
+        isMockBackend
+          ? { token: s.token, user: s.user, activeMode: s.activeMode }
+          : { user: s.user, activeMode: s.activeMode },
       storage: createJSONStorage(() => zustandSafeStorage),
     },
   ),

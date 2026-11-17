@@ -5,12 +5,21 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { Card } from '@/components/ui/Card'
 import { Field } from '@/components/ui/Field'
+import { GoogleIcon } from '@/components/ui/GoogleIcon'
 import { Input, PasswordInput } from '@/components/ui/Input'
 import { toast } from '@/components/ui/Toaster'
 import { useAuthStore } from '@/stores/authStore'
 import { isMockBackend } from '@/config/env'
+import { getSupabaseClient } from '@/config/supabaseClient'
 import { homePathFor } from '@/utils/permissions'
 import { cn } from '@/utils/cn'
+import {
+  validateName,
+  validateEmail,
+  validateIndianPhone,
+  validatePassword,
+  validatePasswordConfirmation,
+} from '@/utils/validators'
 
 /** Only allow same-site relative redirects (prevents open-redirects via ?next=). */
 function safeNext(next) {
@@ -19,6 +28,7 @@ function safeNext(next) {
 
 export default function SignupPage() {
   const signup = useAuthStore((s) => s.signup)
+  const demoLogin = useAuthStore((s) => s.demoLogin)
   const configError = useAuthStore((s) => s.configError) || useAuthStore.getState().configError
   const navigate = useNavigate()
   const [params] = useSearchParams()
@@ -30,49 +40,107 @@ export default function SignupPage() {
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
 
+  const [fieldErrors, setFieldErrors] = useState({})
+  const [touched, setTouched] = useState({})
   const [submitting, setSubmitting] = useState(false)
+  const [googleSubmitting, setGoogleSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
   const [confirmationNotice, setConfirmationNotice] = useState(null)
+
+  const validateSingleField = (fieldName, val, extra = {}) => {
+    switch (fieldName) {
+      case 'name':
+        return validateName(val, { required: true, label: 'Full name' }).error
+      case 'email':
+        return validateEmail(val, { required: true, label: 'Campus email' }).error
+      case 'phone':
+        return validateIndianPhone(val, { required: false, label: 'Phone number' }).error
+      case 'password':
+        return validatePassword(val, { minLength: 8, maxLength: 72, label: 'Password' }).error
+      case 'confirmPassword':
+        return validatePasswordConfirmation(extra.password ?? password, val).error
+      default:
+        return null
+    }
+  }
+
+  const handleBlur = (fieldName) => {
+    setTouched((prev) => ({ ...prev, [fieldName]: true }))
+    let val = ''
+    if (fieldName === 'name') val = name
+    else if (fieldName === 'email') val = email
+    else if (fieldName === 'phone') val = phone
+    else if (fieldName === 'password') val = password
+    else if (fieldName === 'confirmPassword') val = confirmPassword
+
+    const err = validateSingleField(fieldName, val)
+    setFieldErrors((prev) => ({ ...prev, [fieldName]: err }))
+  }
+
+  const handleChange = (fieldName, val) => {
+    if (fieldName === 'name') setName(val)
+    else if (fieldName === 'email') setEmail(val)
+    else if (fieldName === 'phone') setPhone(val)
+    else if (fieldName === 'password') {
+      setPassword(val)
+      if (touched.confirmPassword) {
+        setFieldErrors((prev) => ({
+          ...prev,
+          confirmPassword: validateSingleField('confirmPassword', confirmPassword, { password: val }),
+        }))
+      }
+    } else if (fieldName === 'confirmPassword') {
+      setConfirmPassword(val)
+    }
+
+    if (touched[fieldName]) {
+      const err = validateSingleField(fieldName, val)
+      setFieldErrors((prev) => ({ ...prev, [fieldName]: err }))
+    }
+  }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setFormError(null)
 
-    const cleanName = name.trim()
-    const cleanEmail = email.trim()
-    const cleanPhone = phone.trim()
+    // Mark all fields touched
+    setTouched({
+      name: true,
+      email: true,
+      phone: true,
+      password: true,
+      confirmPassword: true,
+    })
 
-    // Client-side validations
+    const nameRes = validateName(name, { required: true, label: 'Full name' })
+    const emailRes = validateEmail(email, { required: true, label: 'Campus email' })
+    const phoneRes = validateIndianPhone(phone, { required: false, label: 'Phone number' })
+    const passwordRes = validatePassword(password, { minLength: 8, maxLength: 72, label: 'Password' })
+    const confirmRes = validatePasswordConfirmation(password, confirmPassword)
+
+    const errors = {}
+    if (!nameRes.isValid) errors.name = nameRes.error
+    if (!emailRes.isValid) errors.email = emailRes.error
+    if (!phoneRes.isValid) errors.phone = phoneRes.error
+    if (!passwordRes.isValid) errors.password = passwordRes.error
+    if (!confirmRes.isValid) errors.confirmPassword = confirmRes.error
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors)
+      setFormError('Please resolve the highlighted errors before continuing.')
+      return
+    }
+
     if (!role || (role !== 'customer' && role !== 'runner')) {
       setFormError('Please select a valid account role (Customer or Runner).')
       return
     }
 
-    if (!cleanName || cleanName.length < 2) {
-      setFormError('Please enter your full name (minimum 2 characters).')
-      return
-    }
-
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setFormError('Please enter a valid campus or personal email address.')
-      return
-    }
-
-    if (!password || password.length < 8) {
-      setFormError('Password must be at least 8 characters long.')
-      return
-    }
-
-    if (password !== confirmPassword) {
-      setFormError('Passwords do not match. Please re-enter to confirm.')
-      return
-    }
-
     setSubmitting(true)
     try {
-      const result = await signup(cleanEmail, password, {
-        name: cleanName,
-        phone: cleanPhone || undefined,
+      const result = await signup(emailRes.value, passwordRes.value, {
+        name: nameRes.value,
+        phone: phoneRes.national ? phoneRes.national : undefined,
         role,
       })
 
@@ -81,12 +149,12 @@ export default function SignupPage() {
       setConfirmPassword('')
 
       if (result.needsConfirmation) {
-        setConfirmationNotice(cleanEmail)
+        setConfirmationNotice(emailRes.value)
       } else {
         if (role === 'runner') {
-          toast.success(`Runner account created! Welcome, ${result.user?.name || cleanName}! Review is pending.`)
+          toast.success(`Runner account created! Welcome, ${result.user?.name || nameRes.value}! Review is pending.`)
         } else {
-          toast.success(`Account created! Welcome, ${result.user?.name || cleanName}!`)
+          toast.success(`Account created! Welcome, ${result.user?.name || nameRes.value}!`)
         }
         navigate(safeNext(params.get('next')) ?? homePathFor(result.user), { replace: true })
       }
@@ -94,6 +162,49 @@ export default function SignupPage() {
       setFormError(err.message || 'Failed to create account. Please try again.')
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  const handleGoogleSignUp = async () => {
+    setFormError(null)
+    setGoogleSubmitting(true)
+
+    try {
+      if (isMockMode) {
+        const result = await demoLogin(role === 'runner' ? 'runner' : 'customer')
+        if (role === 'runner') {
+          toast.success(`Runner account created! Welcome, ${result.name}! Review is pending.`)
+        } else {
+          toast.success(`Account created! Welcome, ${result.name}!`)
+        }
+        navigate(safeNext(params.get('next')) ?? homePathFor(result), { replace: true })
+        return
+      }
+
+      const supabase = getSupabaseClient()
+      if (!supabase) {
+        throw new Error('Supabase client is not configured.')
+      }
+
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+          data: {
+            role,
+          },
+        },
+      })
+
+      if (error) {
+        console.error('Google sign-in failed:', error.message)
+        setFormError(error.message || 'Google sign-in failed. Please try again.')
+      }
+    } catch (err) {
+      console.error('Google sign-in failed:', err.message)
+      setFormError(err.message || 'Google sign-in failed. Please try again.')
+    } finally {
+      setGoogleSubmitting(false)
     }
   }
 
@@ -286,66 +397,110 @@ export default function SignupPage() {
           </div>
         )}
 
-        <Field label="Full Name">
+        {/* Google Sign-up Button */}
+        <div className="pt-2">
+          <Button
+            type="button"
+            variant="secondary"
+            size="lg"
+            block
+            loading={googleSubmitting}
+            disabled={Boolean(hasConfigError) || submitting}
+            onClick={handleGoogleSignUp}
+            className="font-medium"
+          >
+            <GoogleIcon className="size-5 shrink-0" />
+            <span>Sign up with Google</span>
+          </Button>
+        </div>
+
+        {/* Divider */}
+        <div className="relative my-2 flex items-center justify-center">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-line" />
+          </div>
+          <div className="relative bg-bg px-3 text-xs font-semibold uppercase tracking-wider text-ink-subtle">
+            or register with email
+          </div>
+        </div>
+
+        <Field label="Full Name" error={touched.name ? fieldErrors.name : undefined}>
           <Input
             type="text"
             name="name"
             autoComplete="name"
             required
+            maxLength={120}
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => handleChange('name', e.target.value)}
+            onBlur={() => handleBlur('name')}
             placeholder="Alice Customer"
             icon={User}
             disabled={submitting}
           />
         </Field>
 
-        <Field label="Campus Email">
+        <Field label="Campus Email" error={touched.email ? fieldErrors.email : undefined}>
           <Input
             type="email"
+            inputMode="email"
             name="email"
             autoComplete="email"
             required
+            maxLength={255}
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => handleChange('email', e.target.value)}
+            onBlur={() => handleBlur('email')}
             placeholder="you@campus.edu"
             icon={Mail}
             disabled={submitting}
           />
         </Field>
 
-        <Field label="Phone Number" optional hint="Used by runners during delivery handover">
+        <Field
+          label="Phone Number"
+          optional
+          hint="10-digit Indian mobile number (e.g. 9876543210 or +91 98765 43210)"
+          error={touched.phone ? fieldErrors.phone : undefined}
+        >
           <Input
             type="tel"
+            inputMode="tel"
             name="phone"
             autoComplete="tel"
+            maxLength={16}
             value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="+91 98765 43210"
+            onChange={(e) => handleChange('phone', e.target.value)}
+            onBlur={() => handleBlur('phone')}
+            placeholder="e.g. 9876543210"
             icon={Phone}
             disabled={submitting}
           />
         </Field>
 
-        <Field label="Password" hint="At least 8 characters">
+        <Field label="Password" hint="At least 8 characters" error={touched.password ? fieldErrors.password : undefined}>
           <PasswordInput
             name="password"
             autoComplete="new-password"
             required
+            maxLength={72}
             value={password}
-            onChange={(e) => setPassword(e.target.value)}
+            onChange={(e) => handleChange('password', e.target.value)}
+            onBlur={() => handleBlur('password')}
             placeholder="Create password"
             disabled={submitting}
           />
         </Field>
 
-        <Field label="Confirm Password">
+        <Field label="Confirm Password" error={touched.confirmPassword ? fieldErrors.confirmPassword : undefined}>
           <PasswordInput
             name="confirmPassword"
             autoComplete="new-password"
             required
+            maxLength={72}
             value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
+            onChange={(e) => handleChange('confirmPassword', e.target.value)}
+            onBlur={() => handleBlur('confirmPassword')}
             placeholder="Repeat password"
             disabled={submitting}
           />
@@ -362,6 +517,17 @@ export default function SignupPage() {
         >
           Create account
         </Button>
+
+        <p className="mt-3 text-xs text-center text-ink-subtle leading-relaxed">
+          By creating an account, you agree to MartIT&apos;s{' '}
+          <Link to="/terms-and-conditions" target="_blank" className="font-medium text-ink underline hover:text-brand">
+            Terms &amp; Conditions
+          </Link>{' '}
+          and acknowledge our{' '}
+          <Link to="/privacy-policy" target="_blank" className="font-medium text-ink underline hover:text-brand">
+            Privacy Policy
+          </Link>.
+        </p>
       </form>
 
       <p className="mt-8 text-sm text-ink-muted">
