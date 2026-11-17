@@ -80,7 +80,7 @@ The migration validator checks repository structure; it does **not** execute SQL
 ## Business rules baked into the code
 
 - **Delivery fee** (confirmed 2026-10-09; see [docs/fee-policy.md](docs/fee-policy.md)):
-  - ₹10 up to 0.5 km, ₹15 up to 1 km, ₹20 up to 2 km, then +₹5 for every started km.
+  - ₹10 for every started delivery.
   - Checkout is blocked beyond 5 km, and there is no free delivery.
   - The fee is calculated from the unrounded distance, and the server is authoritative.
 - **Snapshots:** each order stores its fee, distance, distance method and pricing version.
