@@ -509,17 +509,29 @@ describe('Public Registration & Role Assignment Enforcement', () => {
   })
 
   it('rejects overlong name, email with spaces, and invalid phone number on signup', async () => {
-    // Overlong name > 120 characters
+    // Overlong name > 100 characters
     const resOverlongName = await request(app)
       .post('/api/v1/auth/signup')
       .send({
         email: 'valid2@campus.edu',
         password: 'password123',
-        name: 'A'.repeat(121),
+        name: 'A'.repeat(51) + ' ' + 'B'.repeat(49), // 101 characters
         role: 'customer',
       })
     expect(resOverlongName.status).toBe(400)
     expect(resOverlongName.body.code).toBe('INVALID_NAME')
+
+    // Accepts exact 100 character name
+    const resExact100Name = await request(app)
+      .post('/api/v1/auth/signup')
+      .send({
+        email: 'valid100@campus.edu',
+        password: 'password123',
+        name: 'A'.repeat(50) + ' ' + 'B'.repeat(49), // 100 characters
+        role: 'customer',
+      })
+    expect(resExact100Name.status).toBe(201)
+    expect(resExact100Name.body.user.name).toBe('A'.repeat(50) + ' ' + 'B'.repeat(49))
 
     // Email with internal spaces
     const resEmailSpace = await request(app)

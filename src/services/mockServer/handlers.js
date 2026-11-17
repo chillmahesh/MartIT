@@ -126,7 +126,7 @@ export function createMockServer({ routingProvider = null } = {}) {
       return { token, user: publicUser(user) }
     },
     'auth.signup': ({ email, password, name, phone, role = 'customer' }) => {
-      const nameRes = validateName(name, { required: true, minLength: 2, maxLength: 120, label: 'Full name' })
+      const nameRes = validateName(name, { required: true, minLength: 2, maxLength: 100, label: 'Full name' })
       if (!nameRes.isValid) {
         throw new ApiError('INVALID_NAME', nameRes.error, 400)
       }
