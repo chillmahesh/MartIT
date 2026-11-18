@@ -119,13 +119,22 @@ export const authService = {
       throw new ApiError('INVALID_ROLE', 'Valid role selection (customer or runner) is required.', 400)
     }
 
+    const cleanEmail = email?.trim().toLowerCase() || ''
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      throw new ApiError('INVALID_EMAIL', 'Please enter a valid email address.', 400)
+    }
+
     if (isMockBackend) {
-      return request('auth.signup', { email, password, name, phone, role: cleanRole })
+      return request('auth.signup', { email: cleanEmail, password, name, phone, role: cleanRole })
     }
 
     const supabase = getSupabaseClient()
+    if (!supabase) {
+      throw new ApiError('CONFIG_ERROR', 'Supabase client is not configured.')
+    }
+
     const { data, error } = await supabase.auth.signUp({
-      email: email.trim(),
+      email: cleanEmail,
       password,
       options: {
         data: {
@@ -137,20 +146,130 @@ export const authService = {
     })
 
     if (error) {
-      const msg = error.message?.toLowerCase() || ''
-      if (msg.includes('already registered') || msg.includes('user already exists') || error.status === 422) {
+      const code = (error.code || '').toLowerCase()
+      const msg = error.message || ''
+      const lower = msg.toLowerCase()
+      const status = error.status || 400
+
+      // 1. True Duplicate Email detection
+      // Only classify as duplicate email when the error explicitly indicates an existing account.
+      // Never treat generic 422 (Unprocessable Entity) as a duplicate email error!
+      if (
+        code === 'user_already_exists' ||
+        code === 'email_exists' ||
+        lower.includes('already registered') ||
+        lower.includes('already been registered') ||
+        lower.includes('user already exists') ||
+        lower.includes('email already exists')
+      ) {
         throw new ApiError(
           'DUPLICATE_EMAIL',
           'An account with this email already exists. Please log in instead.',
           409
         )
       }
-      throw new ApiError(error.code || 'SIGNUP_ERROR', error.message, error.status || 400)
+
+      // 2. Weak Password or password validation failure
+      if (
+        code === 'weak_password' ||
+        lower.includes('password should') ||
+        lower.includes('weak password') ||
+        lower.includes('password is too weak') ||
+        lower.includes('password must') ||
+        lower.includes('pwned')
+      ) {
+        throw new ApiError(
+          'WEAK_PASSWORD',
+          msg || 'Password does not meet strength requirements. Please choose a stronger password.',
+          422
+        )
+      }
+
+      // 3. Email format validation failure
+      if (
+        code === 'validation_failed' ||
+        code === 'email_address_invalid' ||
+        lower.includes('invalid email') ||
+        lower.includes('validate email') ||
+        lower.includes('email address is invalid')
+      ) {
+        throw new ApiError(
+          'INVALID_EMAIL',
+          msg || 'Please enter a valid email address.',
+          400
+        )
+      }
+
+      // 4. Rate limit
+      if (
+        status === 429 ||
+        code === 'over_email_send_rate_limit' ||
+        code === 'over_request_rate_limit' ||
+        lower.includes('rate limit') ||
+        lower.includes('too many requests') ||
+        lower.includes('for security purposes, you can only request this once')
+      ) {
+        throw new ApiError(
+          'RATE_LIMITED',
+          'Too many signup attempts. Please wait a moment and try again.',
+          429
+        )
+      }
+
+      // 5. Signup disabled on server
+      if (
+        code === 'signup_disabled' ||
+        code === 'email_provider_disabled' ||
+        lower.includes('signups not allowed') ||
+        lower.includes('signups are disabled') ||
+        lower.includes('sign up is disabled')
+      ) {
+        throw new ApiError(
+          'SIGNUP_DISABLED',
+          'New account registration is currently disabled. Please contact support.',
+          403
+        )
+      }
+
+      // 6. Database / trigger errors
+      if (
+        code === 'unexpected_failure' ||
+        lower.includes('database error') ||
+        lower.includes('saving new user') ||
+        lower.includes('profile creation') ||
+        lower.includes('trigger')
+      ) {
+        throw new ApiError(
+          'DATABASE_ERROR',
+          'A database error occurred while creating your account. Please try again or contact support.',
+          500
+        )
+      }
+
+      // 7. Network / connection errors
+      if (
+        lower.includes('failed to fetch') ||
+        lower.includes('network') ||
+        error.name === 'TypeError'
+      ) {
+        throw new ApiError(
+          'NETWORK_ERROR',
+          'Unable to reach authentication server. Please check your internet connection and try again.',
+          0
+        )
+      }
+
+      // 8. General fallback: Preserve actual server error message and code
+      throw new ApiError(
+        error.code || 'SIGNUP_ERROR',
+        msg || 'Failed to create account. Please try again.',
+        status
+      )
     }
 
     // Detect duplicate signup obfuscation when email confirmation is enabled:
     // Supabase returns an empty identities array for existing users when identity enumeration protection is on.
-    if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+    if (!data?.session && data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
       throw new ApiError(
         'DUPLICATE_EMAIL',
         'An account with this email already exists. Please log in instead.',

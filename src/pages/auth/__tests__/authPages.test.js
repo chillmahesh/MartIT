@@ -382,3 +382,58 @@ describe('Password Recovery UI (ResetPasswordPage)', () => {
     expect(html).toContain('maxLength="72"')
   })
 })
+
+describe('SignupPage Error Classification & Workflow Verification', () => {
+  beforeEach(() => {
+    useAuthStore.setState({
+      token: null,
+      session: null,
+      user: null,
+      isInitialized: true,
+      configError: null,
+    })
+    vi.restoreAllMocks()
+  })
+
+  it('renders phone number and name with length constraints', () => {
+    const html = renderToString(
+      React.createElement(
+        MemoryRouter,
+        null,
+        React.createElement(SignupPage, null)
+      )
+    )
+
+    expect(html).toContain('maxLength="100"')
+    expect(html).toContain('maxLength="255"')
+    expect(html).toContain('maxLength="16"')
+    expect(html).toContain('maxLength="72"')
+  })
+
+  it('authenticates customer role in mock mode and provides immediate access', async () => {
+    const uniqueEmail = `cust_${Date.now()}@campus.edu`
+    const user = await useAuthStore.getState().signup(uniqueEmail, 'SecretPass123', {
+      name: 'Customer Guy',
+      role: 'customer',
+    })
+
+    expect(user.user).toBeDefined()
+    expect(user.user.email).toBe(uniqueEmail)
+    expect(useAuthStore.getState().hasRole('customer')).toBe(true)
+    expect(useAuthStore.getState().hasRole('runner')).toBe(false)
+  })
+
+  it('authenticates runner applicant role in mock mode with pending applicant status', async () => {
+    const uniqueEmail = `run_${Date.now()}@campus.edu`
+    const user = await useAuthStore.getState().signup(uniqueEmail, 'SecretPass123', {
+      name: 'Runner Guy',
+      role: 'runner',
+    })
+
+    expect(user.user).toBeDefined()
+    expect(user.user.email).toBe(uniqueEmail)
+    expect(user.user.runnerStatus).toBe('applicant')
+    expect(useAuthStore.getState().hasRole('customer')).toBe(true)
+    expect(useAuthStore.getState().hasRole('runner')).toBe(false)
+  })
+})
