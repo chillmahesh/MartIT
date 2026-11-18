@@ -888,6 +888,85 @@ describe('Explicit Payment Retry Flow', () => {
     expect(retried.payment.history.length).toBe(1)
     expect(retried.payment.history[0].feePaise).toBe(1)
   })
+
+  it('CustomerPaymentView displays expired state and recovers immediately when provided with retried order', async () => {
+    const expiredOrder = {
+      id: 'ord_test_view_expired',
+      status: ORDER_STATUS.AWAITING_PAYMENT,
+      paymentStatus: PAYMENT_STATUS.EXPIRED,
+      storeId: 'store_campus_mart',
+      locationId: 'loc_hostel_b',
+      lines: [{ productId: 'p_milk_500', name: 'Toned Milk', quantity: 1, unitPrice: 28, lineSubtotal: 28 }],
+      pricing: {
+        itemSubtotal: 28,
+        deliveryFee: 10,
+        baseAmount: 38,
+        platformFee: 0.01,
+        total: 38.01,
+      },
+      payment: {
+        status: PAYMENT_STATUS.EXPIRED,
+        attemptId: 'att_1',
+        feePaise: 1,
+        windowExpiresAt: new Date(Date.now() - 10000).toISOString(),
+      },
+    }
+
+    const htmlExpired = renderToString(
+      React.createElement(
+        MemoryRouter,
+        null,
+        React.createElement(
+          QueryClientProvider,
+          { client: new QueryClient() },
+          React.createElement(CustomerPaymentView, { initialOrder: expiredOrder })
+        )
+      )
+    )
+
+    // Displays expired banners, buttons, and inactive QR notice
+    expect(htmlExpired).toContain('Payment Window Expired')
+    expect(htmlExpired).toContain('Retry Payment Allocation')
+    expect(htmlExpired).toContain('Return to Shopping')
+    expect(htmlExpired).toContain('QR Code Expired')
+    expect(htmlExpired).toContain('Retry Payment')
+    expect(htmlExpired).toContain('Authoritative Pricing Snapshot')
+
+    // Now render with retried order (pending and active 5-minute window)
+    const retriedOrder = {
+      ...expiredOrder,
+      paymentStatus: PAYMENT_STATUS.PENDING,
+      pricing: {
+        ...expiredOrder.pricing,
+        platformFee: 0.04,
+        total: 38.04,
+      },
+      payment: {
+        status: PAYMENT_STATUS.PENDING,
+        attemptId: 'att_retried_2',
+        feePaise: 4,
+        windowExpiresAt: new Date(Date.now() + 300000).toISOString(),
+      },
+    }
+
+    const htmlRetried = renderToString(
+      React.createElement(
+        MemoryRouter,
+        null,
+        React.createElement(
+          QueryClientProvider,
+          { client: new QueryClient() },
+          React.createElement(CustomerPaymentView, { initialOrder: retriedOrder })
+        )
+      )
+    )
+
+    // Expired banners suppressed, active QR displayed with updated total
+    expect(htmlRetried).not.toContain('QR Code Expired')
+    expect(htmlRetried).toContain('data-testid="genuine-upi-qr"')
+    expect(htmlRetried).toContain('₹38.04')
+    expect(htmlRetried).toContain('Confirm Payment')
+  })
 })
 
 describe('Secret Protection and Build Integrity', () => {

@@ -89,16 +89,16 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
   const store = SAMPLE_STORES.find((s) => s.id === order?.storeId)
   const location = locations.find((l) => l.id === order?.locationId)
 
-  // Authoritative window expiry timestamp: derives from windowExpiresAt, or allocatedAt/createdAt + 2 min
+  // Authoritative window expiry timestamp: derives from windowExpiresAt, or allocatedAt/createdAt + 5 min
   const windowExpiresAt = useMemo(() => {
     const directExpiry = parseTimestampMs(order?.payment?.windowExpiresAt)
     if (directExpiry) return directExpiry
 
     const allocatedAt = parseTimestampMs(order?.payment?.allocatedAt)
-    if (allocatedAt) return allocatedAt + 2 * 60 * 1000
+    if (allocatedAt) return allocatedAt + 5 * 60 * 1000
 
     const createdAt = parseTimestampMs(order?.createdAt)
-    if (createdAt) return createdAt + 2 * 60 * 1000
+    if (createdAt) return createdAt + 5 * 60 * 1000
 
     return null
   }, [order?.payment?.windowExpiresAt, order?.payment?.allocatedAt, order?.createdAt])
@@ -259,7 +259,7 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
 
   // Explicit retry payment allocation for expired orders
   const handleRetryPayment = async () => {
-    if (!order?.id) return
+    if (!order?.id || isRetrying) return
     setIsRetrying(true)
     setActionError(null)
     setInconclusiveFeedback(null)
@@ -271,6 +271,8 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
       const newExpiry = parseTimestampMs(updatedOrder?.payment?.windowExpiresAt)
       if (newExpiry) {
         setRemainingMs(Math.max(0, newExpiry - Date.now()))
+      } else {
+        setRemainingMs(5 * 60 * 1000)
       }
     } catch (err) {
       setActionError(err.message || 'Could not retry payment allocation. Please try again.')
@@ -400,16 +402,17 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
           >
             <div className="flex items-center gap-2 text-danger font-bold">
               <AlertCircle className="size-5" />
-              <span>The 2-Minute Payment Verification Window Has Expired</span>
+              <span>Payment Window Expired</span>
             </div>
             <p className="text-xs text-ink-muted max-w-xl">
-              To guarantee that dynamic decimal fee slots remain distinct and safe, unverified payment attempts expire after 2 minutes. The previous fee reservation will remain protected during its 5-minute cooldown.
+              To guarantee that dynamic decimal fee slots remain distinct and safe, unverified payment attempts expire after 5 minutes. The previous fee reservation will remain protected during its 5-minute cooldown.
             </p>
             <div className="flex flex-wrap items-center gap-3 pt-1">
               <Button
                 variant="primary"
                 size="md"
                 loading={isRetrying}
+                disabled={isRetrying}
                 onClick={handleRetryPayment}
                 className="font-semibold shadow-1"
               >
@@ -474,6 +477,7 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
                   orderId={order.id}
                   paymentStatus={order.paymentStatus}
                   isExpired={isExpired}
+                  qrCode={order.qrCode}
                   className="py-2"
                 />
 
@@ -520,6 +524,7 @@ export function CustomerPaymentView({ initialOrder, onOrderUpdate }) {
                   variant="primary"
                   size="md"
                   loading={isRetrying}
+                  disabled={isRetrying}
                   onClick={handleRetryPayment}
                   className="mx-auto"
                 >

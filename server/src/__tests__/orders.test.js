@@ -2454,3 +2454,220 @@ describe('Milestone 3 — Runner Order Availability & Exclusive Acceptance', () 
   })
 })
 
+describe('Payment Retry & QR Regeneration Endpoints (RPC and REST)', () => {
+  let app
+  let mockState
+
+  const expiredOrder = {
+    id: 'ord_expired_1',
+    customer_id: 'usr_alice',
+    runner_id: null,
+    delivery_location_id: 'loc_hostel_a',
+    delivery_location_snapshot: { name: 'Hostel A' },
+    status: 'AWAITING_PAYMENT',
+    payment_status: 'EXPIRED',
+    item_subtotal: '104.00',
+    combined_delivery_fee: '10.00',
+    base_amount: '114.00',
+    platform_fee: '0.04',
+    total_payable: '114.04',
+    route_distance_km: '0.5000',
+    route_stop_sequence: [],
+    routing_provider: 'straight_line',
+    routing_mode: 'walking',
+    fee_policy_version: '2026-10-09.1',
+    payment_attempt_id: 'att_orig_1',
+    fee_paise: 4,
+    payment_allocated_at: new Date(Date.now() - 600000).toISOString(),
+    payment_window_expires_at: new Date(Date.now() - 300000).toISOString(),
+    payment_cooldown_expires_at: new Date(Date.now() + 300000).toISOString(),
+    paid_at: null,
+    created_at: new Date(Date.now() - 600000).toISOString(),
+    order_fulfillment_groups: [
+      {
+        id: 'grp_1',
+        store_id: 'store_campus_mart',
+        store_snapshot: { name: 'Campus Mart' },
+        status: 'PENDING',
+        pickup_sequence_index: 0,
+        order_items: [
+          {
+            id: 'item_1',
+            product_id: 'p_eggs',
+            product_name: 'Farm Fresh Eggs',
+            product_pack: '6 pcs',
+            unit_price: '52.00',
+            quantity: 2,
+            line_subtotal: '104.00',
+          },
+        ],
+      },
+    ],
+  }
+
+  const activeOrder = {
+    ...expiredOrder,
+    id: 'ord_active_1',
+    payment_status: 'PENDING',
+    payment_window_expires_at: new Date(Date.now() + 180000).toISOString(),
+  }
+
+  const paidOrder = {
+    ...expiredOrder,
+    id: 'ord_paid_1',
+    status: 'CONFIRMED',
+    payment_status: 'PAID',
+    paid_at: new Date().toISOString(),
+  }
+
+  beforeEach(() => {
+    const mock = createMockSupabaseClient({
+      users: [
+        { id: 'usr_alice', token: 'tok_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
+        { id: 'usr_bob', token: 'tok_bob', email: 'bob@campus.edu', name: 'Bob Intruder' },
+        { id: 'usr_admin', token: 'tok_admin', email: 'admin@campus.edu', name: 'Admin Adam' },
+      ],
+      profiles: [
+        { id: 'usr_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
+        { id: 'usr_bob', email: 'bob@campus.edu', name: 'Bob Intruder' },
+        { id: 'usr_admin', email: 'admin@campus.edu', name: 'Admin Adam' },
+      ],
+      userRoles: [
+        { user_id: 'usr_alice', role: ROLES.CUSTOMER },
+        { user_id: 'usr_bob', role: ROLES.CUSTOMER },
+        { user_id: 'usr_admin', role: ROLES.ADMIN },
+      ],
+      orders: [expiredOrder, activeOrder, paidOrder],
+      platform_fee_reservations: [
+        // slot 4 in cooldown for ord_expired_1
+        {
+          fee_paise: 4,
+          active_order_id: 'ord_expired_1',
+          attempt_id: 'att_orig_1',
+          cooldown_expires_at: new Date(Date.now() + 300000).toISOString(),
+          is_paid: false,
+        },
+        // slot 7 available
+        {
+          fee_paise: 7,
+          active_order_id: null,
+          attempt_id: null,
+          cooldown_expires_at: null,
+          is_paid: false,
+        },
+      ],
+    })
+    mockState = mock.state
+    app = createApp()
+  })
+
+  it('rejects unauthenticated retry request with 401', async () => {
+    const res = await request(app)
+      .post('/orders/retryPayment')
+      .send({ orderId: 'ord_expired_1' })
+    expect(res.status).toBe(401)
+  })
+
+  it('rejects missing orderId with 400 INVALID_ORDER_ID', async () => {
+    const res = await request(app)
+      .post('/orders/retryPayment')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({})
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('INVALID_ORDER_ID')
+  })
+
+  it('returns 404 ORDER_NOT_FOUND when retrying non-existent order', async () => {
+    const res = await request(app)
+      .post('/orders/retryPayment')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({ orderId: 'ord_nonexistent' })
+    expect(res.status).toBe(404)
+    expect(res.body.code).toBe('ORDER_NOT_FOUND')
+  })
+
+  it('forbids unauthorized customer with 403 FORBIDDEN', async () => {
+    const res = await request(app)
+      .post('/orders/retryPayment')
+      .set('Authorization', 'Bearer tok_bob')
+      .send({ orderId: 'ord_expired_1' })
+    expect(res.status).toBe(403)
+  })
+
+  it('rejects retrying an already PAID order with 409 ALREADY_PAID', async () => {
+    const res = await request(app)
+      .post('/orders/retryPayment')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({ orderId: 'ord_paid_1' })
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('ALREADY_PAID')
+  })
+
+  it('rejects retrying when the payment window is still actively running with 409 PAYMENT_ACTIVE', async () => {
+    const res = await request(app)
+      .post('/orders/retryPayment')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({ orderId: 'ord_active_1' })
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('PAYMENT_ACTIVE')
+  })
+
+  it('successfully retries payment via POST /orders/retryPayment (RPC endpoint)', async () => {
+    const res = await request(app)
+      .post('/orders/retryPayment')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({ orderId: 'ord_expired_1' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.id).toBe('ord_expired_1')
+    expect(res.body.status).toBe('AWAITING_PAYMENT')
+    expect(res.body.paymentStatus).toBe('PENDING')
+    expect(res.body.payment.status).toBe('PENDING')
+    expect(res.body.payment.attemptId).toMatch(/^att_/)
+    expect(res.body.payment.attemptId).not.toBe('att_orig_1')
+    // Slot 4 was in cooldown, so slot 7 was allocated
+    expect(res.body.payment.feePaise).toBe(7)
+    expect(res.body.pricing.platformFee).toBe(0.07)
+    // Base amount preserved
+    expect(res.body.pricing.itemSubtotal).toBe(104)
+    expect(res.body.pricing.deliveryFee).toBe(10)
+    expect(res.body.pricing.baseAmount).toBe(114)
+    expect(res.body.pricing.total).toBe(114.07)
+    // Dynamic UPI deep link URI and SVG QR code generated
+    expect(res.body.upiUri).toContain('upi://pay?')
+    expect(res.body.upiUri).toContain('am=114.07')
+    expect(res.body.upiUri).toContain('tr=ord_expired_1')
+    expect(res.body.qrCode).toContain('<svg')
+    // History contains previous attempt
+    expect(res.body.payment.history).toBeDefined()
+    expect(res.body.payment.history.length).toBe(1)
+    expect(res.body.payment.history[0].attemptId).toBe('att_orig_1')
+    expect(res.body.payment.history[0].feePaise).toBe(4)
+  })
+
+  it('successfully retries payment via POST /api/v1/orders/:id/retry-payment (REST endpoint)', async () => {
+    const res = await request(app)
+      .post('/api/v1/orders/ord_expired_1/retry-payment')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({})
+
+    expect(res.status).toBe(200)
+    expect(res.body.id).toBe('ord_expired_1')
+    expect(res.body.paymentStatus).toBe('PENDING')
+    expect(res.body.pricing.total).toBe(114.07)
+    expect(res.body.qrCode).toContain('<svg')
+  })
+
+  it('fails gracefully with 503 when all platform fee slots are busy', async () => {
+    mockState.rpcErrors = { allocate_platform_fee: 'ALL_PLATFORM_FEE_SLOTS_BUSY' }
+
+    const res = await request(app)
+      .post('/orders/retryPayment')
+      .set('Authorization', 'Bearer tok_alice')
+      .send({ orderId: 'ord_expired_1' })
+
+    expect(res.status).toBe(503)
+    expect(res.body.code).toBe('ALL_PLATFORM_FEE_SLOTS_BUSY')
+  })
+})
+

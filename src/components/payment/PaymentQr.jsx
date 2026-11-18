@@ -29,12 +29,19 @@ export function PaymentQr({
   isExpired = false,
   className,
   isMobile,
+  qrCode,
 }) {
-  const [svgString, setSvgString] = useState('')
+  const [svgString, setSvgString] = useState(qrCode || '')
   const [qrError, setQrError] = useState(null)
   const [launchNotice, setLaunchNotice] = useState(false)
   const detectedIsMobile = useIsMobilePhone()
   const showMobileUpi = typeof isMobile === 'boolean' ? isMobile : detectedIsMobile
+
+  useEffect(() => {
+    if (qrCode) {
+      setSvgString(qrCode)
+    }
+  }, [qrCode])
 
   // 1. Guard: Only generate QR when order payment is pending
   const isPending =
@@ -83,7 +90,7 @@ export function PaymentQr({
   })
 
   useEffect(() => {
-    if (!upiPayload.ok) return
+    if (!upiPayload.ok || isExpired) return
 
     let isMounted = true
     QRCode.toString(upiPayload.uri, {
@@ -105,7 +112,7 @@ export function PaymentQr({
     return () => {
       isMounted = false
     }
-  }, [upiPayload.ok, upiPayload.uri])
+  }, [upiPayload.ok, upiPayload.uri, isExpired])
 
   // Safe failure: Missing UPI Payee configuration
   if (!upiPayload.ok) {
