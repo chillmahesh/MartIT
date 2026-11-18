@@ -130,13 +130,20 @@ export const authService = {
 
     const supabase = getSupabaseClient()
     if (!supabase) {
-      throw new ApiError('CONFIG_ERROR', 'Supabase client is not configured.')
+      throw new ApiError('CONFIG_ERROR', 'Supabase client is not configured.', 500)
     }
+
+    const origin =
+      typeof window !== 'undefined' && window.location?.origin
+        ? window.location.origin
+        : 'https://martit.vercel.app'
+    const emailRedirectTo = `${origin}/login`
 
     const { data, error } = await supabase.auth.signUp({
       email: cleanEmail,
       password,
       options: {
+        emailRedirectTo,
         data: {
           name: name?.trim() || '',
           ...(phone ? { phone: phone.trim() } : {}),
@@ -146,21 +153,33 @@ export const authService = {
     })
 
     if (error) {
+      const msg = (error.message || '').toLowerCase()
       const code = (error.code || '').toLowerCase()
-      const msg = error.message || ''
-      const lower = msg.toLowerCase()
-      const status = error.status || 400
+      const status = error.status
 
-      // 1. True Duplicate Email detection
-      // Only classify as duplicate email when the error explicitly indicates an existing account.
-      // Never treat generic 422 (Unprocessable Entity) as a duplicate email error!
+      // 1. Rate limits
+      if (
+        status === 429 ||
+        code === 'over_email_send_rate_limit' ||
+        code === 'over_request_rate_limit' ||
+        msg.includes('rate limit') ||
+        msg.includes('too many requests')
+      ) {
+        throw new ApiError(
+          'RATE_LIMITED',
+          'Too many signup attempts. Please wait a few minutes and try again.',
+          429
+        )
+      }
+
+      // 2. Duplicate email collisions (explicitly signaled by code or message)
       if (
         code === 'user_already_exists' ||
         code === 'email_exists' ||
-        lower.includes('already registered') ||
-        lower.includes('already been registered') ||
-        lower.includes('user already exists') ||
-        lower.includes('email already exists')
+        msg.includes('already registered') ||
+        msg.includes('user already exists') ||
+        msg.includes('email already exists') ||
+        msg.includes('already been registered')
       ) {
         throw new ApiError(
           'DUPLICATE_EMAIL',
@@ -169,122 +188,94 @@ export const authService = {
         )
       }
 
-      // 2. Weak Password or password validation failure
+      // 3. Weak password policy rejections
       if (
         code === 'weak_password' ||
-        lower.includes('password should') ||
-        lower.includes('weak password') ||
-        lower.includes('password is too weak') ||
-        lower.includes('password must') ||
-        lower.includes('pwned')
+        msg.includes('weak password') ||
+        msg.includes('password should be') ||
+        msg.includes('password is too weak') ||
+        msg.includes('password must be') ||
+        msg.includes('pwned') ||
+        (status === 422 && msg.includes('password'))
       ) {
         throw new ApiError(
           'WEAK_PASSWORD',
-          msg || 'Password does not meet strength requirements. Please choose a stronger password.',
+          error.message || 'Password does not meet security requirements. Please choose a stronger password.',
           422
         )
       }
 
-      // 3. Email format validation failure
-      if (
-        code === 'validation_failed' ||
-        code === 'email_address_invalid' ||
-        lower.includes('invalid email') ||
-        lower.includes('validate email') ||
-        lower.includes('email address is invalid')
-      ) {
-        throw new ApiError(
-          'INVALID_EMAIL',
-          msg || 'Please enter a valid email address.',
-          400
-        )
-      }
-
-      // 4. Rate limit
-      if (
-        status === 429 ||
-        code === 'over_email_send_rate_limit' ||
-        code === 'over_request_rate_limit' ||
-        lower.includes('rate limit') ||
-        lower.includes('too many requests') ||
-        lower.includes('for security purposes, you can only request this once')
-      ) {
-        throw new ApiError(
-          'RATE_LIMITED',
-          'Too many signup attempts. Please wait a moment and try again.',
-          429
-        )
-      }
-
-      // 5. Signup disabled on server
+      // 4. Registration / Provider disabled
       if (
         code === 'signup_disabled' ||
         code === 'email_provider_disabled' ||
-        lower.includes('signups not allowed') ||
-        lower.includes('signups are disabled') ||
-        lower.includes('sign up is disabled')
+        msg.includes('signups not allowed') ||
+        msg.includes('logins are disabled') ||
+        msg.includes('provider disabled')
       ) {
         throw new ApiError(
           'SIGNUP_DISABLED',
-          'New account registration is currently disabled. Please contact support.',
+          'Account registration is currently disabled. Please contact support.',
           403
         )
       }
 
-      // 6. Database / trigger errors
+      // 5. Database trigger / schema failure (e.g. handle_new_user trigger failure)
       if (
+        status === 500 ||
         code === 'unexpected_failure' ||
-        lower.includes('database error') ||
-        lower.includes('saving new user') ||
-        lower.includes('profile creation') ||
-        lower.includes('trigger')
+        msg.includes('database error') ||
+        msg.includes('unexpected_failure')
       ) {
+        console.error('Database error during user signup:', error.message)
         throw new ApiError(
           'DATABASE_ERROR',
-          'A database error occurred while creating your account. Please try again or contact support.',
+          'An error occurred while setting up your account profile. Please try again later or contact support.',
           500
         )
       }
 
-      // 7. Network / connection errors
+      // 6. Network / connectivity error
       if (
-        lower.includes('failed to fetch') ||
-        lower.includes('network') ||
-        error.name === 'TypeError'
+        status === 0 ||
+        error.name === 'AuthRetryableFetchError' ||
+        msg.includes('failed to fetch') ||
+        msg.includes('networkerror') ||
+        msg.includes('network error')
       ) {
         throw new ApiError(
           'NETWORK_ERROR',
-          'Unable to reach authentication server. Please check your internet connection and try again.',
+          'Unable to connect to the authentication service. Please check your internet connection.',
           0
         )
       }
 
-      // 8. General fallback: Preserve actual server error message and code
+      // 7. General validation or GoTrue rejection (NEVER falsely claim duplicate email)
       throw new ApiError(
         error.code || 'SIGNUP_ERROR',
-        msg || 'Failed to create account. Please try again.',
-        status
+        error.message || 'Failed to create account. Please check your details and try again.',
+        error.status || 400
       )
     }
 
-    // Detect duplicate signup obfuscation when email confirmation is enabled:
-    // Supabase returns an empty identities array for existing users when identity enumeration protection is on.
-    if (!data?.session && data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
-      throw new ApiError(
-        'DUPLICATE_EMAIL',
-        'An account with this email already exists. Please log in instead.',
-        409
-      )
-    }
+    // Account enumeration protection handling:
+    // When Supabase user enumeration protection is enabled, GoTrue returns a user object
+    // with an empty identities array for existing users instead of returning an error.
+    // Rather than falsely asserting duplicate email or throwing an unhandled error,
+    // handle it safely as a confirmation-pending response per Supabase conventions.
+    const isEnumerationProtected = Boolean(
+      data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0
+    )
 
     // If confirmation is required, session will be null
-    const needsConfirmation = !data?.session
+    const needsConfirmation = !data?.session || isEnumerationProtected
 
     return {
       session: data?.session || null,
       authUser: data?.user || null,
       needsConfirmation,
       role: cleanRole,
+      isEnumerationProtected,
     }
   },
 

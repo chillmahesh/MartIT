@@ -727,261 +727,6 @@ async function handleExpirePayment(req, res, next) {
   }
 }
 
-export const inFlightPaymentRetries = new Set()
-
-/**
- * Dedicated payment retry allocation endpoint.
- * Allocates a fresh dynamic platform fee slot, sets 5-minute payment window,
- * updates authoritative total, generates fresh UPI payload and QR code,
- * and leaves previous unconfirmed fee reservation protected during cooldown.
- */
-export async function handleRetryPayment(req, res, next) {
-  const orderId = req.params?.id || req.body?.orderId
-  let lockAcquired = false
-
-  try {
-    if (!orderId) {
-      throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
-    }
-
-    if (inFlightPaymentRetries.has(orderId)) {
-      return res.status(409).json({
-        orderId,
-        status: 'in_flight',
-        code: 'RETRY_IN_FLIGHT',
-        message: 'Payment retry is currently in progress. Please wait a moment.',
-      })
-    }
-
-    inFlightPaymentRetries.add(orderId)
-    lockAcquired = true
-
-    const supabase = getSupabaseAdmin()
-
-    const { data: order, error } = await supabase
-      .from('orders')
-      .select(`
-        id,
-        customer_id,
-        runner_id,
-        delivery_location_id,
-        delivery_location_snapshot,
-        status,
-        payment_status,
-        item_subtotal,
-        combined_delivery_fee,
-        base_amount,
-        platform_fee,
-        total_payable,
-        route_distance_km,
-        route_stop_sequence,
-        routing_provider,
-        routing_mode,
-        fee_policy_version,
-        payment_attempt_id,
-        fee_paise,
-        payment_allocated_at,
-        payment_window_expires_at,
-        payment_cooldown_expires_at,
-        paid_at,
-        created_at,
-        order_fulfillment_groups (
-          id,
-          store_id,
-          store_snapshot,
-          status,
-          pickup_sequence_index,
-          picked_up_at,
-          order_items (
-            id,
-            product_id,
-            product_name,
-            product_pack,
-            unit_price,
-            quantity,
-            line_subtotal
-          )
-        )
-      `)
-      .eq('id', orderId)
-      .maybeSingle()
-
-    if (error || !order) {
-      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
-    }
-
-    // Customer Ownership & Staff Verification
-    const isOwner = order.customer_id === req.user.id
-    const hasStaffAccess =
-      req.user.roles?.includes(ROLES.ADMIN) ||
-      req.user.roles?.includes(ROLES.SUPER_ADMIN)
-
-    if (!isOwner && !hasStaffAccess) {
-      throw ApiError.forbidden("You do not have permission to retry this order's payment.", 'FORBIDDEN')
-    }
-
-    // 1. Guard against retrying completed/paid orders
-    if (order.payment_status === 'PAID' || order.status === 'CONFIRMED') {
-      throw ApiError.conflict('Cannot retry payment for an order that is already paid.', 'ALREADY_PAID')
-    }
-
-    // 2. Guard against retrying cancelled orders
-    if (order.status === 'CANCELLED') {
-      throw ApiError.conflict('This order has been cancelled and cannot be retried.', 'ORDER_CANCELLED')
-    }
-
-    // 3. Must be awaiting payment
-    if (order.status !== 'AWAITING_PAYMENT') {
-      throw ApiError.conflict('This order is not awaiting payment and cannot be retried.', 'INVALID_STATE')
-    }
-
-    // 4. Guard against active payment window (prevent multiple active attempts)
-    const now = Date.now()
-    const windowExpiry = order.payment_window_expires_at ? new Date(order.payment_window_expires_at).getTime() : 0
-    const isExpired = order.payment_status === 'EXPIRED' || (Number.isFinite(windowExpiry) && now >= windowExpiry)
-    if (!isExpired) {
-      throw ApiError.conflict('The current payment window is still active.', 'PAYMENT_ACTIVE')
-    }
-
-    // 5. Generate fresh attempt ID and allocate new dynamic platform fee slot
-    const newAttemptId = `att_${crypto.randomUUID().replace(/-/g, '').slice(0, 16)}`
-    const RPC_ALLOCATE_FEE = 'allocate_platform_fee'
-
-    const { data: feeResult, error: feeErr } = await supabase.rpc(RPC_ALLOCATE_FEE, {
-      p_order_id: order.id,
-      p_attempt_id: newAttemptId,
-      p_window_seconds: 300,
-      p_cooldown_seconds: 300,
-    })
-
-    if (feeErr) {
-      if (feeErr.message && feeErr.message.includes('ALL_PLATFORM_FEE_SLOTS_BUSY')) {
-        throw new ApiError(
-          'ALL_PLATFORM_FEE_SLOTS_BUSY',
-          'All dynamic payment fee slots are currently active. Please retry shortly.',
-          503
-        )
-      }
-      if (feeErr.message && feeErr.message.includes('ORDER_ALREADY_PAID')) {
-        throw ApiError.conflict('Cannot retry payment for an order that is already paid.', 'ALREADY_PAID')
-      }
-      throw ApiError.internal(
-        `Platform fee allocation failed: ${feeErr.message || 'Unknown database error'}`,
-        'FEE_ALLOCATION_FAILED'
-      )
-    }
-
-    const allocation = Array.isArray(feeResult) ? feeResult[0] : feeResult
-    if (!allocation) {
-      throw ApiError.internal('Failed to allocate payment fee slot.', 'FEE_ALLOCATION_FAILED')
-    }
-
-    const newFeePaise = Number(allocation.allocated_fee_paise ?? allocation.fee_paise ?? allocation.feePaise)
-    const newAllocatedAt = allocation.allocated_at || allocation.allocatedAt || new Date(now).toISOString()
-    const newWindowExpiresAt = allocation.window_expires_at || allocation.windowExpiresAt || new Date(now + 300 * 1000).toISOString()
-    const newCooldownExpiresAt = allocation.cooldown_expires_at || allocation.cooldownExpiresAt || new Date(now + 600 * 1000).toISOString()
-
-    // 6. Recalculate authoritative totals (preserving item subtotal, delivery fee, and base amount)
-    const itemSubtotal = Number(order.item_subtotal)
-    const deliveryFee = Number(order.combined_delivery_fee)
-    const baseAmount = Number(order.base_amount ?? Math.round((itemSubtotal + deliveryFee) * 100) / 100)
-    const newPlatformFee = Math.round(newFeePaise) / 100
-    const newTotalPayable = Math.round((baseAmount + newPlatformFee) * 100) / 100
-
-    // 7. Update database record with new payment attempt details
-    const { error: updateErr } = await supabase
-      .from('orders')
-      .update({
-        payment_status: 'PENDING',
-        status: 'AWAITING_PAYMENT',
-        payment_attempt_id: newAttemptId,
-        fee_paise: newFeePaise,
-        platform_fee: newPlatformFee,
-        total_payable: newTotalPayable,
-        payment_allocated_at: newAllocatedAt,
-        payment_window_expires_at: newWindowExpiresAt,
-        payment_cooldown_expires_at: newCooldownExpiresAt,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', order.id)
-
-    if (updateErr) {
-      throw ApiError.internal(`Failed to update order for payment retry: ${updateErr.message}`)
-    }
-
-    // 8. Generate dynamic UPI deep link URI and SVG QR code
-    const payeeVpa = process.env.UPI_PAYEE_VPA || env.UPI_PAYEE_VPA || 'omkarrakhonde485@oksbi'
-    const payeeName = process.env.UPI_PAYEE_NAME || env.UPI_PAYEE_NAME || 'MartIT'
-
-    const params = new URLSearchParams()
-    params.set('pa', payeeVpa)
-    params.set('pn', payeeName)
-    params.set('am', newTotalPayable.toFixed(2))
-    params.set('cu', 'INR')
-    params.set('tn', `MartIT Order ${order.id}`)
-    params.set('tr', order.id)
-    const upiUri = `upi://pay?${params.toString()}`
-
-    let qrCodeSvg = null
-    try {
-      qrCodeSvg = await QRCode.toString(upiUri, {
-        type: 'svg',
-        margin: 1,
-        errorCorrectionLevel: 'M',
-        color: {
-          dark: '#0b1410',
-          light: '#ffffff',
-        },
-      })
-    } catch (qrErr) {
-      console.warn('[handleRetryPayment] Non-fatal: QR SVG generation failed', qrErr?.message)
-    }
-
-    // 9. Format canonical order payload conforming to frontend contract
-    const updatedRecord = {
-      ...order,
-      payment_status: 'PENDING',
-      status: 'AWAITING_PAYMENT',
-      payment_attempt_id: newAttemptId,
-      fee_paise: newFeePaise,
-      platform_fee: newPlatformFee,
-      total_payable: newTotalPayable,
-      payment_allocated_at: newAllocatedAt,
-      payment_window_expires_at: newWindowExpiresAt,
-      payment_cooldown_expires_at: newCooldownExpiresAt,
-    }
-
-    const canonicalOrder = formatCanonicalOrder(updatedRecord)
-    const previousAttempt = {
-      attemptId: order.payment_attempt_id || order.id,
-      feePaise: order.fee_paise,
-      platformFee: Number(order.platform_fee),
-      allocatedAt: order.payment_allocated_at,
-      expiredAt: new Date(now).toISOString(),
-    }
-    const history = [
-      ...(Array.isArray(order.payment?.history) ? order.payment.history : []),
-      previousAttempt,
-    ]
-
-    res.status(200).json({
-      ...canonicalOrder,
-      payment: {
-        ...canonicalOrder.payment,
-        history,
-      },
-      upiUri,
-      qrCode: qrCodeSvg,
-    })
-  } catch (err) {
-    next(err)
-  } finally {
-    if (lockAcquired && orderId) {
-      inFlightPaymentRetries.delete(orderId)
-    }
-  }
-}
-
 /**
  * Helper to execute genuine atomic payment expiry in PostgreSQL via stored procedure.
  * STRICT: Does NOT fall back to sequential REST updates on failure.
@@ -1058,6 +803,216 @@ export async function executeAtomicPaymentVerification(supabase, orderId) {
 
   return true
 }
+
+export const inFlightPaymentReallocations = new Set()
+export const recentReallocations = new Map()
+
+/**
+ * Reallocates a fresh dynamic platform fee for an expired payment attempt.
+ * Enforces ownership, active-cooldown preservation, exact total updates,
+ * idempotency on rapid double-clicks, and strict lifecycle guards.
+ */
+export async function handleReallocatePayment(req, res, next) {
+  const orderId = req.params?.id || req.body?.orderId
+  let lockAcquired = false
+
+  try {
+    if (!orderId) {
+      throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
+    }
+
+    const supabase = getSupabaseAdmin()
+
+    // Concurrency guard: prevent duplicate concurrent reallocations for the same order
+    if (inFlightPaymentReallocations.has(orderId)) {
+      return res.status(409).json({
+        orderId,
+        code: 'REALLOCATION_IN_FLIGHT',
+        status: 'in_flight',
+        message: 'Payment reallocation is currently in progress. Please wait a moment.',
+      })
+    }
+
+    inFlightPaymentReallocations.add(orderId)
+    lockAcquired = true
+
+    const now = Date.now()
+
+    const { data: order, error } = await supabase
+      .from('orders')
+      .select(`
+        id, customer_id, runner_id, delivery_location_id, delivery_location_snapshot,
+        status, payment_status, item_subtotal, combined_delivery_fee, base_amount, platform_fee,
+        total_payable, route_distance_km, route_stop_sequence, routing_provider, routing_mode,
+        fee_policy_version, payment_attempt_id, fee_paise, payment_allocated_at,
+        payment_window_expires_at, payment_cooldown_expires_at, paid_at, created_at,
+        order_fulfillment_groups (
+          id, store_id, store_snapshot, status, pickup_sequence_index, picked_up_at,
+          order_items (
+            id, product_id, product_name, product_pack, unit_price, quantity, line_subtotal
+          )
+        )
+      `)
+      .eq('id', orderId)
+      .maybeSingle()
+
+    if (error || !order) {
+      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+    }
+
+    // Ownership check
+    const isOwner = order.customer_id === req.user.id
+    const hasStaffAccess =
+      req.user.roles.includes(ROLES.ADMIN) ||
+      req.user.roles.includes(ROLES.SUPER_ADMIN)
+
+    if (!isOwner && !hasStaffAccess) {
+      throw ApiError.forbidden("You do not have permission to retry this order's payment.")
+    }
+
+    // Guard: already paid or terminal fulfillment
+    if (
+      order.payment_status === 'PAID' ||
+      ['CONFIRMED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED'].includes(order.status)
+    ) {
+      throw ApiError.conflict('Cannot retry an order that is already paid.', 'ALREADY_PAID')
+    }
+
+    // Guard: cancelled order (that was not merely expired payment)
+    if (order.status === 'CANCELLED' && order.payment_status !== 'EXPIRED') {
+      throw ApiError.conflict('This order cannot be retried.', 'INVALID_STATE')
+    }
+
+    // Rapid double-click idempotency: if recently reallocated within 10 seconds, return the replacement allocation
+    const recent = recentReallocations.get(orderId)
+    if (recent && (now - recent.timestamp) <= 10000) {
+      return res.status(200).json(recent.order)
+    }
+
+    // Payment window expiry check:
+    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
+    const isExpired = order.payment_status === 'EXPIRED' || (Number.isFinite(windowExpiry) && now >= windowExpiry)
+
+    if (!isExpired) {
+      throw new ApiError('PAYMENT_ACTIVE', 'The current payment window is still active.', 409)
+    }
+
+    // Invoke atomic stored procedure in PostgreSQL
+    const { data: reallocData, error: reallocErr } = await supabase.rpc('retry_order_platform_fee', {
+      p_order_id: order.id,
+      p_customer_id: req.user.id,
+      p_fee_window_seconds: 300,   // Fresh 5-minute timeout window
+      p_fee_cooldown_seconds: 300, // 5-minute cooldown
+    })
+
+    if (reallocErr) {
+      if (reallocErr.message && reallocErr.message.includes('ALL_PLATFORM_FEE_SLOTS_BUSY')) {
+        throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'All dynamic payment fee slots are currently active. Please retry shortly.', 503)
+      }
+      if (reallocErr.message && (reallocErr.message.includes('CANNOT_RETRY_PAID_ORDER') || reallocErr.message.includes('ORDER_ALREADY_PAID'))) {
+        throw ApiError.conflict('Cannot retry an order that is already paid.', 'ALREADY_PAID')
+      }
+      if (reallocErr.message && reallocErr.message.includes('CANNOT_RETRY_CANCELLED_ORDER')) {
+        throw ApiError.conflict('This order cannot be retried.', 'INVALID_STATE')
+      }
+      if (reallocErr.message && reallocErr.message.includes('PAYMENT_ACTIVE')) {
+        throw new ApiError('PAYMENT_ACTIVE', 'The current payment window is still active.', 409)
+      }
+      if (reallocErr.message && reallocErr.message.includes('PERMISSION_DENIED')) {
+        throw ApiError.forbidden("You do not have permission to retry this order's payment.")
+      }
+      if (reallocErr.message && reallocErr.message.includes('ORDER_NOT_FOUND')) {
+        throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+      }
+      throw ApiError.internal(`Failed to reallocate payment: ${reallocErr.message || 'Database error'}`)
+    }
+
+    // Query refreshed order with complete relational lines
+    const { data: updatedOrder, error: fetchErr } = await supabase
+      .from('orders')
+      .select(`
+        id, customer_id, runner_id, delivery_location_id, delivery_location_snapshot,
+        status, payment_status, item_subtotal, combined_delivery_fee, base_amount, platform_fee,
+        total_payable, route_distance_km, route_stop_sequence, routing_provider, routing_mode,
+        fee_policy_version, payment_attempt_id, fee_paise, payment_allocated_at,
+        payment_window_expires_at, payment_cooldown_expires_at, paid_at, created_at,
+        order_fulfillment_groups (
+          id, store_id, store_snapshot, status, pickup_sequence_index, picked_up_at,
+          order_items (
+            id, product_id, product_name, product_pack, unit_price, quantity, line_subtotal
+          )
+        )
+      `)
+      .eq('id', order.id)
+      .maybeSingle()
+
+    if (fetchErr || !updatedOrder) {
+      throw ApiError.internal('Failed to load updated order details after reallocation.')
+    }
+
+    const formatted = formatCanonicalOrder(updatedOrder)
+
+    // Dynamic UPI deep link URI and SVG QR code
+    const payeeVpa = process.env.UPI_PAYEE_VPA || env.UPI_PAYEE_VPA || 'omkarrakhonde485@oksbi'
+    const payeeName = process.env.UPI_PAYEE_NAME || env.UPI_PAYEE_NAME || 'MartIT'
+
+    const totalPayable = Number(formatted.pricing?.total ?? updatedOrder.total_payable ?? 0)
+    const params = new URLSearchParams()
+    params.set('pa', payeeVpa)
+    params.set('pn', payeeName)
+    params.set('am', totalPayable.toFixed(2))
+    params.set('cu', 'INR')
+    params.set('tn', `MartIT Order ${order.id}`)
+    params.set('tr', order.id)
+    const upiUri = `upi://pay?${params.toString()}`
+
+    let qrCodeSvg = null
+    try {
+      qrCodeSvg = await QRCode.toString(upiUri, {
+        type: 'svg',
+        margin: 1,
+        errorCorrectionLevel: 'M',
+        color: {
+          dark: '#0b1410',
+          light: '#ffffff',
+        },
+      })
+    } catch (qrErr) {
+      console.warn('[handleReallocatePayment] Non-fatal: QR SVG generation failed', qrErr?.message)
+    }
+
+    formatted.upiUri = upiUri
+    formatted.qrCode = qrCodeSvg
+
+    const previousAttempt = {
+      attemptId: order.payment_attempt_id || order.id,
+      feePaise: order.fee_paise,
+      platformFee: Number(order.platform_fee),
+      allocatedAt: order.payment_allocated_at,
+      expiredAt: new Date(now).toISOString(),
+    }
+    formatted.payment = {
+      ...formatted.payment,
+      history: [
+        ...(Array.isArray(order.payment?.history) ? order.payment.history : []),
+        previousAttempt,
+      ],
+    }
+
+    recentReallocations.set(order.id, { order: formatted, timestamp: Date.now() })
+
+    return res.status(200).json(formatted)
+  } catch (err) {
+    next(err)
+  } finally {
+    if (lockAcquired && orderId) {
+      inFlightPaymentReallocations.delete(orderId)
+    }
+  }
+}
+
+export const handleRetryPayment = handleReallocatePayment
+export const inFlightPaymentRetries = inFlightPaymentReallocations
 
 /**
  * GET /api/v1/runner/orders - Authenticated runner's assigned orders.
@@ -2232,9 +2187,9 @@ async function handleCreateOrder(req, res, next) {
       p_fee_policy_version: PRICING_VERSION,
       p_route_distance_km: Number(maxDistanceKm.toFixed(4)),
       p_idempotency_key: finalIdempotencyKey,
-      p_fee_window_seconds: 120,
+      p_fee_window_seconds: 300,
       p_fee_cooldown_seconds: 300,
-      p_inventory_ttl_seconds: 420,
+      p_inventory_ttl_seconds: 600,
     })
 
     if (atomicErr) {
@@ -2436,9 +2391,11 @@ ordersRouter.post('/orders/checkPayment', authenticate, handleCheckPayment)
 ordersRouter.post('/api/v1/orders/:id/expire', authenticate, handleExpirePayment)
 ordersRouter.post('/orders/expire', authenticate, handleExpirePayment)
 
-// Dedicated payment retry allocation
-ordersRouter.post('/api/v1/orders/:id/retry-payment', authenticate, handleRetryPayment)
-ordersRouter.post('/orders/retryPayment', authenticate, handleRetryPayment)
+// Dedicated payment reallocation (Retry payment)
+ordersRouter.post('/api/v1/orders/:id/retry-payment', authenticate, handleReallocatePayment)
+ordersRouter.post('/api/v1/orders/:id/reallocate-payment', authenticate, handleReallocatePayment)
+ordersRouter.post('/orders/retryPayment', authenticate, handleReallocatePayment)
+ordersRouter.post('/orders/reallocatePayment', authenticate, handleReallocatePayment)
 
 // Runner assigned orders
 ordersRouter.get('/api/v1/runner/orders', authenticate, handleRunnerAssignedOrders)

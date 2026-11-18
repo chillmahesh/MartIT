@@ -3,7 +3,7 @@ import request from 'supertest'
 import { createApp } from '../app.js'
 import { createMockSupabaseClient } from './testHelpers.js'
 import { ROLES } from '../utils/permissions.js'
-import { setMakeVerifier, inFlightPaymentChecks } from '../routes/orders.js'
+import { setMakeVerifier, inFlightPaymentChecks, recentReallocations } from '../routes/orders.js'
 
 describe('Order History & Detail Endpoints', () => {
   let app
@@ -57,6 +57,7 @@ describe('Order History & Detail Endpoints', () => {
   }
 
   beforeEach(() => {
+    recentReallocations?.clear()
     const mock = createMockSupabaseClient({
       users: [
         { id: 'usr_alice', token: 'tok_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
@@ -335,6 +336,7 @@ describe('Payment State Transitions & Hardening', () => {
   }
 
   beforeEach(() => {
+    recentReallocations?.clear()
     const mock = createMockSupabaseClient({
       users: [
         { id: 'usr_alice', token: 'tok_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
@@ -2227,6 +2229,7 @@ describe('Milestone 3 — Runner Order Availability & Exclusive Acceptance', () 
   }
 
   beforeEach(() => {
+    recentReallocations?.clear()
     const mock = createMockSupabaseClient({
       users: [
         { id: 'usr_alice', token: 'tok_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
@@ -2521,6 +2524,7 @@ describe('Payment Retry & QR Regeneration Endpoints (RPC and REST)', () => {
   }
 
   beforeEach(() => {
+    recentReallocations?.clear()
     const mock = createMockSupabaseClient({
       users: [
         { id: 'usr_alice', token: 'tok_alice', email: 'alice@campus.edu', name: 'Alice Customer' },
@@ -2659,7 +2663,10 @@ describe('Payment Retry & QR Regeneration Endpoints (RPC and REST)', () => {
   })
 
   it('fails gracefully with 503 when all platform fee slots are busy', async () => {
-    mockState.rpcErrors = { allocate_platform_fee: 'ALL_PLATFORM_FEE_SLOTS_BUSY' }
+    mockState.rpcErrors = {
+      retry_order_platform_fee: 'ALL_PLATFORM_FEE_SLOTS_BUSY',
+      allocate_platform_fee: 'ALL_PLATFORM_FEE_SLOTS_BUSY',
+    }
 
     const res = await request(app)
       .post('/orders/retryPayment')
