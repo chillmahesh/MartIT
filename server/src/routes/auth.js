@@ -40,7 +40,7 @@ async function handleSignup(req, res, next) {
   try {
     const { email, password, name, phone, role } = req.body || {}
 
-    const nameRes = validateName(name, { required: true, minLength: 2, maxLength: 120, label: 'Full name' })
+    const nameRes = validateName(name, { required: true, minLength: 2, maxLength: 100, label: 'Full name' })
     if (!nameRes.isValid) {
       throw ApiError.badRequest(nameRes.error, 'INVALID_NAME')
     }

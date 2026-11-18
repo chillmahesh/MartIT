@@ -144,3 +144,26 @@ describe('orders.create', () => {
     ).rejects.toMatchObject({ code: 'INVALID_COORDINATES' })
   })
 })
+
+describe('auth.signup (mock server name limit)', () => {
+  it('enforces 100 character maximum for name on signup', async () => {
+    const validName = 'A'.repeat(50) + ' ' + 'B'.repeat(49) // 100 chars
+    const res = await server.handle('auth.signup', {
+      email: 'newstudent@campus.edu',
+      password: 'password123',
+      name: validName,
+      role: 'customer',
+    })
+    expect(res.user.name).toBe(validName)
+
+    const overlongName = 'A'.repeat(51) + ' ' + 'B'.repeat(49) // 101 chars
+    await expect(
+      server.handle('auth.signup', {
+        email: 'newstudent2@campus.edu',
+        password: 'password123',
+        name: overlongName,
+        role: 'customer',
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_NAME' })
+  })
+})

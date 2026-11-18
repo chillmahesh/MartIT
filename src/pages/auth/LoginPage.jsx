@@ -252,11 +252,13 @@ export default function LoginPage() {
 
   return (
     <section className="mx-auto max-w-lg px-4 py-10 md:py-16">
-      <div className="flex items-center gap-2">
-        <Badge tone={isMockMode ? 'outline' : 'success'} size="md">
-          {isMockMode ? 'Demo Mock Mode' : 'Supabase Auth'}
-        </Badge>
-      </div>
+      {isMockMode && (
+        <div className="flex items-center gap-2">
+          <Badge tone="outline" size="md">
+            Demo Mock Mode
+          </Badge>
+        </div>
+      )}
 
       <h1 className="mt-4 font-display text-4xl font-bold tracking-display text-ink">Log in</h1>
       <p className="mt-2 text-ink-muted">
@@ -357,11 +359,6 @@ export default function LoginPage() {
           <AlertCircle className="size-5 shrink-0 text-danger mt-0.5" aria-hidden="true" />
           <div>
             <p className="font-medium text-danger">{formError}</p>
-            {import.meta.env.DEV && (
-              <p className="mt-1 text-xs text-ink-muted">
-                Developer Diagnostics: Stage: supabase_auth
-              </p>
-            )}
           </div>
         </div>
       )}

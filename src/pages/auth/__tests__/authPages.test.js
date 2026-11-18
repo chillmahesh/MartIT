@@ -54,6 +54,28 @@ describe('Auth UI Components (LoginPage & SignupPage)', () => {
     expect(html).toContain('Remote API mode is enabled, but VITE_SUPABASE_URL is missing.')
     // Demo accounts must NOT be rendered in remote mode
     expect(html).not.toContain('Sample customer')
+    expect(html).not.toContain('Supabase Auth')
+  })
+
+  it('does not render "Supabase Auth" on LoginPage or SignupPage in remote mode', () => {
+    vi.spyOn(envConfig, 'isMockBackend', 'get').mockReturnValue(false)
+    const loginHtml = renderToString(
+      React.createElement(
+        MemoryRouter,
+        null,
+        React.createElement(LoginPage, null)
+      )
+    )
+    expect(loginHtml).not.toContain('Supabase Auth')
+
+    const signupHtml = renderToString(
+      React.createElement(
+        MemoryRouter,
+        null,
+        React.createElement(SignupPage, null)
+      )
+    )
+    expect(signupHtml).not.toContain('Supabase Auth')
   })
 
   it('renders SignupPage with accessible form fields and MartIT styling including role selection', () => {
@@ -307,8 +329,8 @@ describe('Password Recovery UI (ResetPasswordPage)', () => {
       )
     )
 
-    // Name field constraints
-    expect(html).toContain('maxLength="120"')
+    // Name field constraints (100-character limit)
+    expect(html).toContain('maxLength="100"')
     // Email field constraints
     expect(html).toContain('maxLength="255"')
     // Phone field constraints (16 chars allows formatted "+91 98765 43210")
@@ -316,6 +338,20 @@ describe('Password Recovery UI (ResetPasswordPage)', () => {
     expect(html).toContain('inputMode="tel"')
     // Password constraints
     expect(html).toContain('maxLength="72"')
+  })
+
+  it('enforces 100 character limit for name during account creation', async () => {
+    const { validateName } = await import('@/utils/validators')
+    const valid100Name = 'A'.repeat(90) + ' ' + 'B'.repeat(9) // 100 characters including space
+    expect(valid100Name.length).toBe(100)
+    const validRes = validateName(valid100Name, { required: true, label: 'Full name', maxLength: 100 })
+    expect(validRes.isValid).toBe(true)
+
+    const invalid101Name = 'A'.repeat(91) + ' ' + 'B'.repeat(9) // 101 characters
+    expect(invalid101Name.length).toBe(101)
+    const invalidRes = validateName(invalid101Name, { required: true, label: 'Full name', maxLength: 100 })
+    expect(invalidRes.isValid).toBe(false)
+    expect(invalidRes.error).toContain('cannot exceed 100 characters')
   })
 
   it('renders LoginPage with maxLength constraints to prevent overlong inputs', () => {

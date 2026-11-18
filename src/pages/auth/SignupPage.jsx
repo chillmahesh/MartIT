@@ -50,7 +50,7 @@ export default function SignupPage() {
   const validateSingleField = (fieldName, val, extra = {}) => {
     switch (fieldName) {
       case 'name':
-        return validateName(val, { required: true, label: 'Full name' }).error
+        return validateName(val, { required: true, label: 'Full name', maxLength: 100 }).error
       case 'email':
         return validateEmail(val, { required: true, label: 'Campus email' }).error
       case 'phone':
@@ -112,7 +112,7 @@ export default function SignupPage() {
       confirmPassword: true,
     })
 
-    const nameRes = validateName(name, { required: true, label: 'Full name' })
+    const nameRes = validateName(name, { required: true, label: 'Full name', maxLength: 100 })
     const emailRes = validateEmail(email, { required: true, label: 'Campus email' })
     const phoneRes = validateIndianPhone(phone, { required: false, label: 'Phone number' })
     const passwordRes = validatePassword(password, { minLength: 8, maxLength: 72, label: 'Password' })
@@ -248,7 +248,7 @@ export default function SignupPage() {
   return (
     <section className="mx-auto max-w-lg px-4 py-10 md:py-16">
       <div className="flex items-center gap-2">
-        <Badge tone={isMockMode ? 'outline' : role === 'runner' ? 'warning' : 'success'} size="md">
+        <Badge tone={isMockMode ? 'outline' : role === 'runner' ? 'warning' : 'brand'} size="md">
           {isMockMode
             ? `Demo Mock Mode (${role === 'runner' ? 'Runner' : 'Customer'})`
             : role === 'runner'
@@ -430,7 +430,7 @@ export default function SignupPage() {
             name="name"
             autoComplete="name"
             required
-            maxLength={120}
+            maxLength={100}
             value={name}
             onChange={(e) => handleChange('name', e.target.value)}
             onBlur={() => handleBlur('name')}

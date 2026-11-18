@@ -8,12 +8,14 @@ import { RouteFallback } from '@/components/layout/RouteFallback'
 import { LandingPage } from '@/pages/landing/LandingPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 
+import { ErrorBoundary, RootErrorFallback } from '@/components/layout/ErrorBoundary'
+import LoginPage from '@/pages/auth/LoginPage'
+import SignupPage from '@/pages/auth/SignupPage'
+
 // Signed-in areas and the dev styleguide are code-split so the landing page stays light.
 const CustomerLayout = lazy(() => import('./appLayouts').then((m) => ({ default: m.CustomerLayout })))
 const RunnerLayout = lazy(() => import('./appLayouts').then((m) => ({ default: m.RunnerLayout })))
 const AdminLayout = lazy(() => import('./appLayouts').then((m) => ({ default: m.AdminLayout })))
-const LoginPage = lazy(() => import('@/pages/auth/LoginPage'))
-const SignupPage = lazy(() => import('@/pages/auth/SignupPage'))
 const ResetPasswordPage = lazy(() => import('@/pages/auth/ResetPasswordPage'))
 const CustomerHomePage = lazy(() => import('@/pages/customer/HomePage'))
 const CartPage = lazy(() => import('@/pages/customer/CartPage'))
@@ -30,18 +32,21 @@ const PrivacyPage = lazy(() => import('@/pages/legal/PrivacyPage'))
 
 function Root() {
   return (
-    <Providers>
-      <SkipLink />
-      <Suspense fallback={<RouteFallback />}>
-        <Outlet />
-      </Suspense>
-    </Providers>
+    <ErrorBoundary>
+      <Providers>
+        <SkipLink />
+        <Suspense fallback={<RouteFallback />}>
+          <Outlet />
+        </Suspense>
+      </Providers>
+    </ErrorBoundary>
   )
 }
 
 export const routes = [
   {
     element: <Root />,
+    errorElement: <RootErrorFallback />,
     children: [
       {
         element: <MarketingLayout />,
