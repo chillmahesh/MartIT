@@ -278,17 +278,20 @@ export const useAuthStore = create(
             }
             const profileUser = await authService.me()
             set({ user: profileUser })
-            return { user: profileUser, needsConfirmation: false }
+            return {
+              user: profileUser,
+              needsConfirmation: false,
+              isEnumerationProtected: false,
+            }
           }
-          return { user: result.authUser, needsConfirmation: result.needsConfirmation }
+          return {
+            user: result.authUser,
+            needsConfirmation: result.needsConfirmation,
+            isEnumerationProtected: Boolean(result.isEnumerationProtected),
+          }
         } catch (err) {
           set({ session: null, token: null, user: null })
           throw err
-        }
-        return {
-          user: result.authUser,
-          needsConfirmation: result.needsConfirmation,
-          isEnumerationProtected: Boolean(result.isEnumerationProtected),
         }
       },
 

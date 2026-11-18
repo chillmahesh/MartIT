@@ -205,6 +205,21 @@ export const authService = {
         )
       }
 
+      // 3b. Email format validation failure
+      if (
+        code === 'validation_failed' ||
+        code === 'email_address_invalid' ||
+        msg.includes('invalid email') ||
+        msg.includes('validate email') ||
+        msg.includes('email address is invalid')
+      ) {
+        throw new ApiError(
+          'INVALID_EMAIL',
+          error.message || 'Please enter a valid email address.',
+          400
+        )
+      }
+
       // 4. Registration / Provider disabled
       if (
         code === 'signup_disabled' ||

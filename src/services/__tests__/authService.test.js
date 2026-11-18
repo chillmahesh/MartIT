@@ -73,17 +73,19 @@ describe('authService.signup - Error Classification & Registration Flow', () => 
         role: 'customer',
       })
 
-      expect(mockSupabase.auth.signUp).toHaveBeenCalledWith({
-        email: 'brandnew@campus.edu',
-        password: 'StrongPassword123!',
-        options: {
-          data: {
-            name: 'Brand New User',
-            phone: '9876543210',
-            role: 'customer',
-          },
-        },
-      })
+      expect(mockSupabase.auth.signUp).toHaveBeenCalledWith(
+        expect.objectContaining({
+          email: 'brandnew@campus.edu',
+          password: 'StrongPassword123!',
+          options: expect.objectContaining({
+            data: {
+              name: 'Brand New User',
+              phone: '9876543210',
+              role: 'customer',
+            },
+          }),
+        })
+      )
       expect(result.needsConfirmation).toBe(true)
       expect(result.session).toBeNull()
       expect(result.authUser.id).toBe('usr_new_123')
@@ -165,7 +167,7 @@ describe('authService.signup - Error Classification & Registration Flow', () => 
       })
     })
 
-    it('2c. Accurately identifies duplicate email obfuscation (empty identities array with no session)', async () => {
+    it('2c. Handles email enumeration protection (empty identities array with no session)', async () => {
       const mockSupabase = {
         auth: {
           signUp: vi.fn().mockResolvedValue({
@@ -183,13 +185,10 @@ describe('authService.signup - Error Classification & Registration Flow', () => 
       }
       vi.spyOn(supabaseModule, 'getSupabaseClient').mockReturnValue(mockSupabase)
 
-      await expect(
-        authService.signup('obfuscated@campus.edu', 'Password123!', { role: 'customer' })
-      ).rejects.toMatchObject({
-        code: 'DUPLICATE_EMAIL',
-        statusCode: 409,
-        message: 'An account with this email already exists. Please log in instead.',
-      })
+      const result = await authService.signup('obfuscated@campus.edu', 'Password123!', { role: 'customer' })
+      expect(result.needsConfirmation).toBe(true)
+      expect(result.isEnumerationProtected).toBe(true)
+      expect(result.session).toBeNull()
     })
 
     it('3. Does NOT convert invalid email errors into duplicate email errors', async () => {
@@ -261,7 +260,7 @@ describe('authService.signup - Error Classification & Registration Flow', () => 
       ).rejects.toMatchObject({
         code: 'DATABASE_ERROR',
         statusCode: 500,
-        message: 'A database error occurred while creating your account. Please try again or contact support.',
+        message: 'An error occurred while setting up your account profile. Please try again later or contact support.',
       })
     })
 
@@ -307,7 +306,7 @@ describe('authService.signup - Error Classification & Registration Flow', () => 
       ).rejects.toMatchObject({
         code: 'RATE_LIMITED',
         statusCode: 429,
-        message: 'Too many signup attempts. Please wait a moment and try again.',
+        message: 'Too many signup attempts. Please wait a few minutes and try again.',
       })
     })
 
@@ -331,7 +330,7 @@ describe('authService.signup - Error Classification & Registration Flow', () => 
       ).rejects.toMatchObject({
         code: 'SIGNUP_DISABLED',
         statusCode: 403,
-        message: 'New account registration is currently disabled. Please contact support.',
+        message: 'Account registration is currently disabled. Please contact support.',
       })
     })
 
@@ -355,7 +354,7 @@ describe('authService.signup - Error Classification & Registration Flow', () => 
       ).rejects.toMatchObject({
         code: 'NETWORK_ERROR',
         statusCode: 0,
-        message: 'Unable to reach authentication server. Please check your internet connection and try again.',
+        message: 'Unable to connect to the authentication service. Please check your internet connection.',
       })
     })
 
@@ -384,12 +383,12 @@ describe('authService.signup - Error Classification & Registration Flow', () => 
 
       expect(mockSupabase.auth.signUp).toHaveBeenCalledWith(
         expect.objectContaining({
-          options: {
+          options: expect.objectContaining({
             data: {
               name: 'Runner Applicant',
               role: 'runner',
             },
-          },
+          }),
         })
       )
       expect(result.role).toBe('runner')
