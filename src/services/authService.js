@@ -124,10 +124,21 @@ export const authService = {
     }
 
     const supabase = getSupabaseClient()
+    if (!supabase) {
+      throw new ApiError('CONFIG_ERROR', 'Supabase client is not configured.', 500)
+    }
+
+    const origin =
+      typeof window !== 'undefined' && window.location?.origin
+        ? window.location.origin
+        : 'https://martit.vercel.app'
+    const emailRedirectTo = `${origin}/login`
+
     const { data, error } = await supabase.auth.signUp({
       email: email.trim(),
       password,
       options: {
+        emailRedirectTo,
         data: {
           name: name?.trim() || '',
           ...(phone ? { phone: phone.trim() } : {}),
@@ -137,35 +148,129 @@ export const authService = {
     })
 
     if (error) {
-      const msg = error.message?.toLowerCase() || ''
-      if (msg.includes('already registered') || msg.includes('user already exists') || error.status === 422) {
+      const msg = (error.message || '').toLowerCase()
+      const code = (error.code || '').toLowerCase()
+      const status = error.status
+
+      // 1. Rate limits
+      if (
+        status === 429 ||
+        code === 'over_email_send_rate_limit' ||
+        code === 'over_request_rate_limit' ||
+        msg.includes('rate limit') ||
+        msg.includes('too many requests')
+      ) {
+        throw new ApiError(
+          'RATE_LIMITED',
+          'Too many signup attempts. Please wait a few minutes and try again.',
+          429
+        )
+      }
+
+      // 2. Duplicate email collisions (explicitly signaled by code or message)
+      if (
+        code === 'user_already_exists' ||
+        code === 'email_exists' ||
+        msg.includes('already registered') ||
+        msg.includes('user already exists') ||
+        msg.includes('email already exists') ||
+        msg.includes('already been registered')
+      ) {
         throw new ApiError(
           'DUPLICATE_EMAIL',
           'An account with this email already exists. Please log in instead.',
           409
         )
       }
-      throw new ApiError(error.code || 'SIGNUP_ERROR', error.message, error.status || 400)
-    }
 
-    // Detect duplicate signup obfuscation when email confirmation is enabled:
-    // Supabase returns an empty identities array for existing users when identity enumeration protection is on.
-    if (data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+      // 3. Weak password policy rejections
+      if (
+        code === 'weak_password' ||
+        msg.includes('weak password') ||
+        msg.includes('password should be') ||
+        msg.includes('password is too weak') ||
+        msg.includes('password must be') ||
+        msg.includes('pwned') ||
+        (status === 422 && msg.includes('password'))
+      ) {
+        throw new ApiError(
+          'WEAK_PASSWORD',
+          error.message || 'Password does not meet security requirements. Please choose a stronger password.',
+          422
+        )
+      }
+
+      // 4. Registration / Provider disabled
+      if (
+        code === 'signup_disabled' ||
+        code === 'email_provider_disabled' ||
+        msg.includes('signups not allowed') ||
+        msg.includes('logins are disabled') ||
+        msg.includes('provider disabled')
+      ) {
+        throw new ApiError(
+          'SIGNUP_DISABLED',
+          'Account registration is currently disabled. Please contact support.',
+          403
+        )
+      }
+
+      // 5. Database trigger / schema failure (e.g. handle_new_user trigger failure)
+      if (
+        status === 500 ||
+        code === 'unexpected_failure' ||
+        msg.includes('database error') ||
+        msg.includes('unexpected_failure')
+      ) {
+        console.error('Database error during user signup:', error.message)
+        throw new ApiError(
+          'DATABASE_ERROR',
+          'An error occurred while setting up your account profile. Please try again later or contact support.',
+          500
+        )
+      }
+
+      // 6. Network / connectivity error
+      if (
+        status === 0 ||
+        error.name === 'AuthRetryableFetchError' ||
+        msg.includes('failed to fetch') ||
+        msg.includes('networkerror') ||
+        msg.includes('network error')
+      ) {
+        throw new ApiError(
+          'NETWORK_ERROR',
+          'Unable to connect to the authentication service. Please check your internet connection.',
+          0
+        )
+      }
+
+      // 7. General validation or GoTrue rejection (NEVER falsely claim duplicate email)
       throw new ApiError(
-        'DUPLICATE_EMAIL',
-        'An account with this email already exists. Please log in instead.',
-        409
+        error.code || 'SIGNUP_ERROR',
+        error.message || 'Failed to create account. Please check your details and try again.',
+        error.status || 400
       )
     }
 
+    // Account enumeration protection handling:
+    // When Supabase user enumeration protection is enabled, GoTrue returns a user object
+    // with an empty identities array for existing users instead of returning an error.
+    // Rather than falsely asserting duplicate email or throwing an unhandled error,
+    // handle it safely as a confirmation-pending response per Supabase conventions.
+    const isEnumerationProtected = Boolean(
+      data?.user && Array.isArray(data.user.identities) && data.user.identities.length === 0
+    )
+
     // If confirmation is required, session will be null
-    const needsConfirmation = !data?.session
+    const needsConfirmation = !data?.session || isEnumerationProtected
 
     return {
       session: data?.session || null,
       authUser: data?.user || null,
       needsConfirmation,
       role: cleanRole,
+      isEnumerationProtected,
     }
   },
 

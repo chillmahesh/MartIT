@@ -136,3 +136,68 @@ SELECT
     ) THEN (SELECT COUNT(*) FROM public.user_roles)
     ELSE NULL
   END AS user_roles_count;
+
+-- ------------------------------------------------------------------------------
+-- 8. Identify Specific Orphaned Auth Users (in auth.users but missing profiles/roles)
+-- ------------------------------------------------------------------------------
+SELECT
+  u.id AS auth_user_id,
+  u.email,
+  u.created_at AS auth_created_at,
+  (p.id IS NOT NULL) AS has_profile,
+  (ur.id IS NOT NULL) AS has_customer_role
+FROM auth.users u
+LEFT JOIN public.profiles p ON p.id = u.id
+LEFT JOIN public.user_roles ur ON ur.user_id = u.id AND ur.role = 'customer'::public.role_enum
+WHERE p.id IS NULL OR ur.id IS NULL
+ORDER BY u.created_at DESC
+LIMIT 50;
+
+-- ------------------------------------------------------------------------------
+-- 9. Check Unique Constraint uq_user_role on public.user_roles
+-- ------------------------------------------------------------------------------
+SELECT
+  conname AS constraint_name,
+  contype AS constraint_type,
+  pg_get_constraintdef(c.oid) AS constraint_definition
+FROM pg_constraint c
+JOIN pg_class t ON c.conrelid = t.oid
+JOIN pg_namespace n ON t.relnamespace = n.oid
+WHERE n.nspname = 'public' AND t.relname = 'user_roles' AND c.conname = 'uq_user_role';
+
+-- ------------------------------------------------------------------------------
+-- 10. Inspect Table & Sequence Privileges for supabase_auth_admin
+-- ------------------------------------------------------------------------------
+SELECT
+  table_schema,
+  table_name,
+  privilege_type
+FROM information_schema.role_table_grants
+WHERE grantee = 'supabase_auth_admin'
+  AND table_schema = 'public'
+  AND table_name IN ('profiles', 'user_roles')
+ORDER BY table_name, privilege_type;
+
+-- ------------------------------------------------------------------------------
+-- 11. Inspect Schema USAGE Privileges for supabase_auth_admin
+-- ------------------------------------------------------------------------------
+SELECT
+  n.nspname AS schema_name,
+  has_schema_privilege('supabase_auth_admin', n.nspname, 'USAGE') AS has_usage_privilege
+FROM pg_namespace n
+WHERE n.nspname IN ('public', 'extensions', 'auth')
+ORDER BY n.nspname;
+
+-- ------------------------------------------------------------------------------
+-- 12. Inspect public.profiles Column Definitions (Verify phone data type)
+-- ------------------------------------------------------------------------------
+SELECT
+  column_name,
+  data_type,
+  udt_name,
+  is_nullable,
+  character_maximum_length
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name = 'profiles'
+ORDER BY ordinal_position;

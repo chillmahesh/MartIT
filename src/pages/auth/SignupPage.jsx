@@ -45,6 +45,7 @@ export default function SignupPage() {
   const [submitting, setSubmitting] = useState(false)
   const [googleSubmitting, setGoogleSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
+  const [formErrorCode, setFormErrorCode] = useState(null)
   const [confirmationNotice, setConfirmationNotice] = useState(null)
 
   const validateSingleField = (fieldName, val, extra = {}) => {
@@ -102,6 +103,7 @@ export default function SignupPage() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setFormError(null)
+    setFormErrorCode(null)
 
     // Mark all fields touched
     setTouched({
@@ -149,7 +151,10 @@ export default function SignupPage() {
       setConfirmPassword('')
 
       if (result.needsConfirmation) {
-        setConfirmationNotice(emailRes.value)
+        setConfirmationNotice({
+          email: emailRes.value,
+          isEnumerationProtected: Boolean(result.isEnumerationProtected),
+        })
       } else {
         if (role === 'runner') {
           toast.success(`Runner account created! Welcome, ${result.user?.name || nameRes.value}! Review is pending.`)
@@ -160,6 +165,7 @@ export default function SignupPage() {
       }
     } catch (err) {
       setFormError(err.message || 'Failed to create account. Please try again.')
+      setFormErrorCode(err.code || null)
     } finally {
       setSubmitting(false)
     }
@@ -210,6 +216,11 @@ export default function SignupPage() {
 
   // 1. Email Confirmation Notice View
   if (confirmationNotice) {
+    const noticeEmail =
+      typeof confirmationNotice === 'string' ? confirmationNotice : confirmationNotice.email
+    const isEnumeration =
+      typeof confirmationNotice === 'object' && Boolean(confirmationNotice.isEnumerationProtected)
+
     return (
       <section className="mx-auto max-w-lg px-4 py-10 md:py-16">
         <Card className="p-6 md:p-8 text-center border-brand/20 bg-surface">
@@ -218,13 +229,18 @@ export default function SignupPage() {
           </div>
 
           <h1 className="mt-5 font-display text-2xl md:text-3xl font-bold tracking-display text-ink">
-            Verify your email
+            Check your email
           </h1>
           <p className="mt-3 text-sm text-ink-muted leading-relaxed">
-            We’ve sent a confirmation link to{' '}
-            <strong className="text-ink font-semibold">{confirmationNotice}</strong>.
+            We’ve sent verification instructions to{' '}
+            <strong className="text-ink font-semibold">{noticeEmail}</strong>.
             Please check your inbox and verify your email before logging in.
           </p>
+          {isEnumeration && (
+            <p className="mt-2 text-xs text-ink-muted leading-relaxed">
+              If an account is already associated with this email address, you can log in directly.
+            </p>
+          )}
 
           <div className="mt-8">
             <Button
@@ -285,7 +301,27 @@ export default function SignupPage() {
           className="mt-6 flex items-start gap-3 rounded-card border border-danger/30 bg-danger/10 p-3.5 text-sm text-danger"
         >
           <AlertCircle className="size-5 shrink-0 text-danger mt-0.5" aria-hidden="true" />
-          <p className="font-medium text-danger">{formError}</p>
+          <div className="flex-1">
+            <p className="font-medium text-danger">{formError}</p>
+            {formErrorCode === 'DUPLICATE_EMAIL' && (
+              <p className="mt-1.5 text-xs text-danger/90">
+                Already registered?{' '}
+                <Link to="/login" className="font-semibold underline hover:text-danger-hover">
+                  Go to Log in
+                </Link>
+              </p>
+            )}
+            {formErrorCode === 'WEAK_PASSWORD' && (
+              <p className="mt-1.5 text-xs text-danger/90">
+                Tip: Choose a stronger password with at least 8 characters, combining uppercase and lowercase letters, numbers, and symbols.
+              </p>
+            )}
+            {formErrorCode === 'RATE_LIMITED' && (
+              <p className="mt-1.5 text-xs text-danger/90">
+                Please wait a few minutes before trying again to prevent temporary rate limiting.
+              </p>
+            )}
+          </div>
         </div>
       )}
 

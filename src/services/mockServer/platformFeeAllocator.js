@@ -61,16 +61,18 @@ export function createPlatformFeeAllocator({
     return getStatus(feePaise, now) === RESERVATION_STATUS.AVAILABLE
   }
 
-  function allocate({ orderId, attemptId, now = Date.now() }) {
+  function allocate({ orderId, attemptId, now = Date.now(), windowMs: customWindowMs }) {
     if (!orderId) {
       throw new Error('orderId is required for platform fee allocation')
     }
+
+    const effectiveWindowMs = customWindowMs != null ? customWindowMs : windowMs
 
     // Allocate smallest currently available eligible fee
     for (let p = minPaise; p <= maxPaise; p++) {
       if (isAvailable(p, now)) {
         const allocatedAt = now
-        const windowExpiresAt = allocatedAt + windowMs
+        const windowExpiresAt = allocatedAt + effectiveWindowMs
         const cooldownExpiresAt = windowExpiresAt + cooldownMs
 
         const reservation = {

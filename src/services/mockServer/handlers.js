@@ -758,7 +758,7 @@ export function createMockServer({ routingProvider = null } = {}) {
       }
 
       if (
-        order.status !== ORDER_STATUS.AWAITING_PAYMENT ||
+        (order.status !== ORDER_STATUS.AWAITING_PAYMENT && order.paymentStatus !== PAYMENT_STATUS.EXPIRED) ||
         order.paymentStatus === PAYMENT_STATUS.PAID
       ) {
         throw new ApiError('INVALID_STATE', 'This order cannot be retried.', 409)
@@ -769,12 +769,27 @@ export function createMockServer({ routingProvider = null } = {}) {
         order.paymentStatus === PAYMENT_STATUS.EXPIRED ||
         (order.payment?.windowExpiresAt && now >= order.payment.windowExpiresAt)
       if (!isExpired) {
+        // Idempotency: rapid double clicks within 10 seconds of a prior reallocation return the replacement allocation
+        if (
+          Array.isArray(order.payment?.history) &&
+          order.payment.history.length > 0 &&
+          order.payment?.allocatedAt &&
+          now - order.payment.allocatedAt <= 10000
+        ) {
+          const { ledger: _ledger, ...customerView } = order
+          return customerView
+        }
         throw new ApiError('PAYMENT_ACTIVE', 'The current payment window is still active.', 409)
       }
 
-      // Allocate new platform fee for this attempt
+      // Allocate new platform fee for this attempt with fresh 5-minute timeout window
       const attemptId = newId('att')
-      const newAllocation = db.feeAllocator.allocate({ orderId: order.id, attemptId, now })
+      const newAllocation = db.feeAllocator.allocate({
+        orderId: order.id,
+        attemptId,
+        now,
+        windowMs: 5 * 60 * 1000,
+      })
 
       const newTotals = calculateOrderTotals({
         lines: order.lines,
@@ -803,6 +818,7 @@ export function createMockServer({ routingProvider = null } = {}) {
         paidAt: null,
         history: [...(order.payment?.history || []), previousAttempt],
       }
+      order.status = ORDER_STATUS.AWAITING_PAYMENT
       order.paymentStatus = PAYMENT_STATUS.PENDING
 
       db.saveOrders?.()

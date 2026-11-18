@@ -278,7 +278,11 @@ export const useAuthStore = create(
           set({ user: profileUser })
           return { user: profileUser, needsConfirmation: false }
         }
-        return { user: result.authUser, needsConfirmation: result.needsConfirmation }
+        return {
+          user: result.authUser,
+          needsConfirmation: result.needsConfirmation,
+          isEnumerationProtected: Boolean(result.isEnumerationProtected),
+        }
       },
 
       /**
