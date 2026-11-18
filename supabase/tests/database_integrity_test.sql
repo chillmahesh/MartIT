@@ -73,6 +73,23 @@ BEGIN
     IF NOT has_function_privilege('supabase_auth_admin', 'handle_new_user()', 'EXECUTE') THEN
       RAISE EXCEPTION 'SECURITY FAIL: supabase_auth_admin does not have EXECUTE on handle_new_user';
     END IF;
+    IF NOT has_schema_privilege('supabase_auth_admin', 'public', 'USAGE') THEN
+      RAISE EXCEPTION 'SECURITY FAIL: supabase_auth_admin does not have USAGE on schema public';
+    END IF;
+    IF NOT has_table_privilege('supabase_auth_admin', 'public.profiles', 'INSERT') THEN
+      RAISE EXCEPTION 'SECURITY FAIL: supabase_auth_admin does not have INSERT on profiles';
+    END IF;
+    IF NOT has_table_privilege('supabase_auth_admin', 'public.user_roles', 'INSERT') THEN
+      RAISE EXCEPTION 'SECURITY FAIL: supabase_auth_admin does not have INSERT on user_roles';
+    END IF;
+  END IF;
+
+  -- Verify uq_user_role unique constraint exists on user_roles
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'uq_user_role' AND conrelid = 'public.user_roles'::regclass
+  ) THEN
+    RAISE EXCEPTION 'SCHEMA FAIL: uq_user_role constraint is missing on public.user_roles';
   END IF;
 
   -- Test helper function anon execution
@@ -566,6 +583,49 @@ BEGIN
   IF v_role_count <> 1 THEN
     RAISE EXCEPTION 'SECURITY FAIL: trigger is not idempotent; duplicate role created!';
   END IF;
+
+  -- Null email resilience test: handle missing auth email cleanly without violating not-null constraints
+  DECLARE
+    v_null_email_uid UUID := gen_random_uuid();
+    v_null_profile RECORD;
+  BEGIN
+    PERFORM public.handle_new_user()
+    FROM (
+      SELECT
+        v_null_email_uid AS id,
+        NULL::text AS email,
+        '+919876543210'::text AS phone,
+        '{"name":"Phone User"}'::jsonb AS raw_user_meta_data
+    ) AS NEW;
+
+    SELECT * INTO v_null_profile FROM public.profiles WHERE id = v_null_email_uid;
+    IF v_null_profile IS NULL OR v_null_profile.email IS NULL THEN
+      RAISE EXCEPTION 'FAIL: handle_new_user failed to set valid email for null-email auth user';
+    END IF;
+  END;
+
+  -- Malformed phone resilience test: handle non-numeric/out-of-range phone strings safely by setting NULL
+  DECLARE
+    v_malformed_phone_uid UUID := gen_random_uuid();
+    v_malformed_profile RECORD;
+  BEGIN
+    PERFORM public.handle_new_user()
+    FROM (
+      SELECT
+        v_malformed_phone_uid AS id,
+        'malformed_phone_test@campus.edu'::text AS email,
+        'invalid-phone-string-xyz'::text AS phone,
+        '{"name":"Malformed Phone User"}'::jsonb AS raw_user_meta_data
+    ) AS NEW;
+
+    SELECT * INTO v_malformed_profile FROM public.profiles WHERE id = v_malformed_phone_uid;
+    IF v_malformed_profile IS NULL THEN
+      RAISE EXCEPTION 'FAIL: handle_new_user failed to create profile for user with malformed phone';
+    END IF;
+    IF v_malformed_profile.phone IS NOT NULL THEN
+      RAISE EXCEPTION 'FAIL: handle_new_user should set malformed phone to NULL';
+    END IF;
+  END;
 
   RAISE NOTICE '✓ TEST 11 PASSED: Auth user trigger created profile and customer role safely without role escalation.';
 END;

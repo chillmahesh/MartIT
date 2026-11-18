@@ -697,3 +697,48 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `npm run test:server`: 17 test files, 380 passed, 1 skipped, exit code 0.
   - `git diff --check`: 0 issues, clean exit code 0.
   - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
+
+
+---
+
+## Milestone 14: Repair Supabase "Database error saving new user" at the Database Layer
+
+- **Date:** 2026-11-18
+- **Status:** `VERIFIED`
+- **Objective:** Fix Supabase `"Database error saving new user"` (`{"code":"unexpected_failure","message":"Database error saving new user"}`) at the database layer; resolve PostgreSQL transaction aborts during `on_auth_user_created` trigger execution on `auth.users`; ensure correct grants, schema usage, function ownership, unique constraints, and safe reconciliation for orphaned auth records.
+- **Root Cause Analysis:**
+  1. **GoTrue Caller Privileges & Missing Table/Sequence Grants (`SQLSTATE 42501`):** Supabase GoTrue inserts newly registered accounts as the PostgreSQL role `supabase_auth_admin`. While migration `20261010000004` initially granted permissions, subsequent migration `20261012000001` redefined `handle_new_user()` and omitted `GRANT USAGE ON SCHEMA public, extensions TO supabase_auth_admin`, table privileges (`GRANT SELECT, INSERT, UPDATE ON public.profiles, public.user_roles TO supabase_auth_admin`), and sequence privileges (`GRANT USAGE, SELECT ON SEQUENCE public.user_roles_id_seq TO supabase_auth_admin`).
+  2. **Index Inference Abort (`SQLSTATE 42P10`) in `ON CONFLICT (user_id, role)`:** In PostgreSQL, `ON CONFLICT (user_id, role)` requires an explicit, matching unique index or constraint on `(user_id, role)`. If `uq_user_role` was missing or defined differently in production, Postgres aborted the transaction with `42P10` (*there is no unique or exclusion constraint matching the ON CONFLICT specification*).
+  3. **RLS Trap & Function Ownership:** If `handle_new_user()` was not strictly owned by `postgres` (or if SECURITY DEFINER was executed in a context where RLS policies applied to `supabase_auth_admin` which has no user session `auth.uid()`), insertion failed with `SQLSTATE 42501` (RLS policy violation).
+  4. **Orphaned Email Uniqueness Collision (`SQLSTATE 23505`):** In `public.profiles`, `email` has a `UNIQUE` constraint. If an orphaned profile record existed with the same email but a differing or null ID, `handle_new_user()` previously only used `ON CONFLICT (id) DO NOTHING`, triggering a fatal `23505` unique violation on `profiles_email_key`.
+  5. **Null Email & Live Schema Phone Type Mismatch (`SQLSTATE 42804`):**
+     - Null or blank emails in OAuth/phone signups violated `NOT NULL` on `profiles.email`.
+     - In the live database schema, `public.profiles.phone` is typed as `BIGINT`. The original repair script declared `v_phone VARCHAR(20)` and supplied text expressions in the reconciliation backfill, causing PostgreSQL datatype mismatch aborts (`column "phone" is of type bigint but expression is of type character varying / text`).
+- **Implementation:**
+  1. `supabase/migrations/20261118000001_repair_auth_user_trigger_and_grants.sql`:
+     - Idempotently cleans duplicates and ensures `uq_user_role` unique constraint exists on `public.user_roles (user_id, role)`.
+     - Replaces `public.handle_new_user()` with a hardened, defensive trigger function:
+       - Generates sanitized fallback email (`<uuid>@temporary.martit.local`) if `NEW.email` is null/empty.
+       - Safely cleans orphaned profiles on email collision before profile insertion.
+       - Aligns with the live database `public.profiles.phone` `BIGINT` type: strips non-digits with `REGEXP_REPLACE`, validates digit count `^[0-9]{7,15}$` (E.164 standard, strictly safe within signed 64-bit `BIGINT`), safely casts to `::bigint`, and defaults invalid or out-of-range inputs to `NULL` without aborting registration.
+       - Decouples role assignment from index name/constraint inference by replacing `ON CONFLICT (user_id, role)` with `INSERT INTO public.user_roles ... SELECT ... WHERE NOT EXISTS (...)`, completely immune to `42P10` errors.
+       - Enforces `SECURITY DEFINER` and `SET search_path = public, auth, pg_temp;`.
+       - Sets `ALTER FUNCTION public.handle_new_user() OWNER TO postgres;`.
+     - Explicitly grants `USAGE` on schemas `public` and `extensions` to `supabase_auth_admin` and `service_role`.
+     - Grants `SELECT, INSERT, UPDATE` on `public.profiles` and `public.user_roles` to `supabase_auth_admin` and `service_role`.
+     - Grants `USAGE, SELECT` on `public.user_roles_id_seq` to `supabase_auth_admin` and `service_role`.
+     - Grants `USAGE` on `public.role_enum` and `public.runner_status_enum` to `supabase_auth_admin` and `service_role`.
+     - Drops and re-attaches `on_auth_user_created` trigger `AFTER INSERT ON auth.users`.
+     - Performs idempotent backfill reconciling existing orphaned `auth.users` into `profiles` and default `customer` role, using a CASE regex guard to safely cast valid phone digits to `::bigint` and `NULL` otherwise.
+  2. `supabase/diagnostic_check.sql`:
+     - Added Checks 8–12 inspecting orphaned Auth users, `uq_user_role` constraint, table/sequence grants for `supabase_auth_admin`, schema `USAGE` privileges, and `public.profiles` column data types.
+  3. `supabase/tests/database_integrity_test.sql`:
+     - Updated Tests 1 and 11 to verify `supabase_auth_admin` table/schema grants, `uq_user_role` constraint, missing email fallback resilience, and malformed phone string resilience (defaults to `NULL` without aborting).
+  4. `server/src/__tests__/authDatabaseTriggerContract.test.js`:
+     - 17 automated contract tests validating function SQL syntax, owner specification, schema usage, table/sequence grants, trigger events, index-free idempotency, live schema `BIGINT` phone declarations, safe digit extraction, range guards, and reconciliation logic.
+- **Verification Commands & Evidence:**
+  - `node scripts/validate-migrations.mjs`: 16 migrations statically verified successfully, exit code 0.
+  - `npm run test:server`: 18 test files, 397 passed, 1 skipped, exit code 0.
+  - `npm test`: 47 test files, 838 passed, 1 skipped (839 total), exit code 0.
+  - `git diff --check`: 0 issues, clean exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
