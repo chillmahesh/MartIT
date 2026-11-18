@@ -57,22 +57,17 @@ export function AppHeader({ variant = 'customer' }) {
               id="header-deliver-to-btn"
               data-testid="header-deliver-to-btn"
               onClick={() => setIsLocationDialogOpen(true)}
-              className="group block w-full text-left rounded-tile px-1.5 py-0.5 -mx-1.5 transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand cursor-pointer"
-              aria-label={`Deliver to: ${displayLabel || 'Choose a delivery spot'}. Click to change delivery location.`}
+              className="group flex items-center gap-1.5 rounded-tile px-2 py-1.5 -mx-1 text-left transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand cursor-pointer"
+              aria-label={`Delivery location: ${displayLabel || 'Choose a delivery spot'}. Click to change delivery location.`}
             >
-              <p className="text-[11px] font-medium uppercase tracking-wider text-ink-subtle flex items-center gap-1">
-                <span>Deliver to</span>
-                <ChevronDown className="size-3 text-ink-subtle group-hover:text-ink transition-transform duration-150" aria-hidden="true" />
-              </p>
-              <p className="flex items-center gap-1 truncate text-sm font-semibold text-ink group-hover:text-brand transition-colors">
-                <MapPin className="size-3.5 shrink-0 text-fresh-ink" aria-hidden="true" />
-                <span
-                  className="truncate max-w-[170px] sm:max-w-[240px] md:max-w-[320px]"
-                  title={displayLabel || 'Choose a delivery spot'}
-                >
-                  {displayLabel || 'Choose a delivery spot'}
-                </span>
-              </p>
+              <MapPin className="size-4 shrink-0 text-fresh-ink" aria-hidden="true" />
+              <span
+                className="truncate max-w-[160px] sm:max-w-[240px] md:max-w-[320px] text-sm font-semibold text-ink group-hover:text-brand transition-colors"
+                title={displayLabel || 'Choose a delivery spot'}
+              >
+                {displayLabel || 'Choose a delivery spot'}
+              </span>
+              <ChevronDown className="size-3.5 shrink-0 text-ink-subtle group-hover:text-ink transition-transform duration-150" aria-hidden="true" />
             </button>
           </div>
         )}

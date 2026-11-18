@@ -69,7 +69,8 @@ describe('Navbar Delivery Address & Active Destination Synchronization', () => {
     })
 
     const htmlDefault = renderHeaderWithProviders({ queryClient })
-    expect(htmlDefault).toContain('Deliver to')
+    expect(htmlDefault).not.toContain('Deliver to')
+    expect(htmlDefault).not.toContain('DELIVER TO')
     expect(htmlDefault).toContain('Hostel B, Block 3')
 
     // B: Customer with explicit active destination in cartStore
@@ -89,6 +90,25 @@ describe('Navbar Delivery Address & Active Destination Synchronization', () => {
     useCartStore.getState().clearActiveDestination()
     const htmlEmpty = renderHeaderWithProviders({ queryClient })
     expect(htmlEmpty).toContain('Choose a delivery spot')
+    expect(htmlEmpty).not.toContain('Deliver to')
+    expect(htmlEmpty).not.toContain('DELIVER TO')
+  })
+
+  // Acceptance Criterion: No "DELIVER TO" text displayed anywhere in navbar
+  it('displays the location pin and current delivery address directly with no DELIVER TO label', () => {
+    useAuthStore.setState({
+      user: {
+        id: 'u_aarav',
+        name: 'Aarav',
+        roles: ['customer'],
+        defaultLocationId: 'loc_hostel_b',
+      },
+    })
+
+    const html = renderHeaderWithProviders({ queryClient })
+    expect(html).not.toMatch(/deliver to/i)
+    expect(html).toContain('Hostel B, Block 3')
+    expect(html).toContain('data-testid="header-deliver-to-btn"')
   })
 
   // 2. Changing the active destination updates the navbar without a page reload
