@@ -21,6 +21,7 @@ export function createMockSupabaseClient({
   products = [],
   orders = [],
   platform_fee_reservations = [],
+  platformFeeReservations,
   payment_records = [],
   inventory_reservations = [],
 } = {}) {
@@ -33,7 +34,7 @@ export function createMockSupabaseClient({
     categories: structuredClone(categories),
     products: structuredClone(products),
     orders: structuredClone(orders),
-    platform_fee_reservations: structuredClone(platform_fee_reservations),
+    platform_fee_reservations: structuredClone(platformFeeReservations || platform_fee_reservations),
     payment_records: structuredClone(payment_records),
     inventory_reservations: structuredClone(inventory_reservations),
   }
@@ -724,6 +725,123 @@ export function createMockSupabaseClient({
             })
         }
         return { data: true, error: null }
+      }
+
+      if (fn === 'retry_order_platform_fee' || fn === 'reallocate_order_platform_fee') {
+        const orderId = args?.p_order_id
+        const customerId = args?.p_customer_id
+        const windowSec = args?.p_fee_window_seconds ?? 300
+        const cooldownSec = args?.p_fee_cooldown_seconds ?? 300
+        const order = state.orders.find((o) => o.id === orderId)
+        if (!order) {
+          return { data: null, error: { message: 'ORDER_NOT_FOUND' } }
+        }
+        if (customerId && order.customer_id !== customerId) {
+          return { data: null, error: { message: 'PERMISSION_DENIED_PAYMENT_RETRY' } }
+        }
+        if (
+          order.payment_status === 'PAID' ||
+          ['CONFIRMED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED'].includes(order.status)
+        ) {
+          return { data: null, error: { message: 'CANNOT_RETRY_PAID_ORDER' } }
+        }
+        if (order.status === 'CANCELLED' && order.payment_status !== 'EXPIRED') {
+          return { data: null, error: { message: 'CANNOT_RETRY_CANCELLED_ORDER' } }
+        }
+
+        const now = Date.now()
+        const windowExp = new Date(order.payment_window_expires_at).getTime()
+        if (order.payment_status === 'PENDING' && Number.isFinite(windowExp) && now < windowExp) {
+          const allocatedAt = new Date(order.payment_allocated_at).getTime()
+          if (now - allocatedAt <= 10000) {
+            // Idempotent return for rapid double-click
+            return {
+              data: {
+                orderId: order.id,
+                feePaise: order.fee_paise,
+                platformFee: order.platform_fee,
+                baseAmount: order.base_amount,
+                totalPayable: order.total_payable,
+                attemptId: order.payment_attempt_id,
+                allocatedAt: order.payment_allocated_at,
+                windowExpiresAt: order.payment_window_expires_at,
+                cooldownExpiresAt: order.payment_cooldown_expires_at,
+                isIdempotentHit: true,
+              },
+              error: null,
+            }
+          }
+          return { data: null, error: { message: 'PAYMENT_ACTIVE' } }
+        }
+
+        // Release old slot into cooldown
+        const oldSlot = (state.platform_fee_reservations || []).find(
+          (r) => r.active_order_id === orderId && !r.is_paid,
+        )
+        if (oldSlot) {
+          oldSlot.active_order_id = null
+          const prevCooldown = oldSlot.cooldown_expires_at ? new Date(oldSlot.cooldown_expires_at).getTime() : 0
+          oldSlot.cooldown_expires_at = new Date(Math.max(prevCooldown, now + cooldownSec * 1000)).toISOString()
+        }
+
+        // Find available slot (smallest paise)
+        const availableSlots = (state.platform_fee_reservations || [])
+          .filter((r) => {
+            if (r.is_paid) return false
+            if (r.active_order_id !== null && r.active_order_id !== undefined) return false
+            if (r.cooldown_expires_at && now < new Date(r.cooldown_expires_at).getTime()) return false
+            return true
+          })
+          .sort((a, b) => a.fee_paise - b.fee_paise)
+
+        if (availableSlots.length === 0) {
+          return { data: null, error: { message: 'ALL_PLATFORM_FEE_SLOTS_BUSY' } }
+        }
+
+        const newSlot = availableSlots[0]
+        const newFeePaise = newSlot.fee_paise
+        const newPlatformFee = Math.round((newFeePaise / 100) * 100) / 100
+        const baseAmt = Number(order.base_amount)
+        const newTotal = Number((baseAmt + newPlatformFee).toFixed(2))
+        const attemptId = `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+        const allocatedAtIso = new Date(now).toISOString()
+        const windowExpiresAtIso = new Date(now + windowSec * 1000).toISOString()
+        const cooldownExpiresAtIso = new Date(now + (windowSec + cooldownSec) * 1000).toISOString()
+
+        newSlot.active_order_id = orderId
+        newSlot.attempt_id = attemptId
+        newSlot.allocated_at = allocatedAtIso
+        newSlot.window_expires_at = windowExpiresAtIso
+        newSlot.cooldown_expires_at = cooldownExpiresAtIso
+        newSlot.is_paid = false
+        newSlot.paid_at = null
+
+        order.fee_paise = newFeePaise
+        order.platform_fee = newPlatformFee
+        order.total_payable = newTotal
+        order.payment_attempt_id = attemptId
+        order.payment_allocated_at = allocatedAtIso
+        order.payment_window_expires_at = windowExpiresAtIso
+        order.payment_cooldown_expires_at = cooldownExpiresAtIso
+        order.payment_status = 'PENDING'
+        order.status = 'AWAITING_PAYMENT'
+        order.updated_at = allocatedAtIso
+
+        return {
+          data: {
+            orderId: order.id,
+            feePaise: newFeePaise,
+            platformFee: newPlatformFee,
+            baseAmount: order.base_amount,
+            totalPayable: newTotal,
+            attemptId,
+            allocatedAt: allocatedAtIso,
+            windowExpiresAt: windowExpiresAtIso,
+            cooldownExpiresAt: cooldownExpiresAtIso,
+            isIdempotentHit: false,
+          },
+          error: null,
+        }
       }
 
       if (fn === 'transition_order_to_on_the_way') {

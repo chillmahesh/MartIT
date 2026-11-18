@@ -742,3 +742,64 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `npm test`: 47 test files, 838 passed, 1 skipped (839 total), exit code 0.
   - `git diff --check`: 0 issues, clean exit code 0.
   - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
+
+---
+
+## Milestone 15: Fix Dynamic UPI Payment Reallocation and Timeout Lifecycle
+
+- **Date:** 2026-11-18
+- **Status:** `VERIFIED`
+- **Objective:** Fix dynamic UPI payment reallocation and timeout lifecycle. Ensure the reallocation button assigns the next available dynamic payment amount while safely releasing expired allocations into cooldown, enforces the 5-minute timeout window (300 seconds), preserves item pricing and whole-rupee order totals, prevents late-payment miscrediting, provides rapid click idempotency, and maintains end-to-end consistency across client, server, QR/URI generation, and Make.com + Gmail verification workflows.
+- **Root Cause Analysis:**
+  1. **Absence of Atomic Reallocation RPC:** No server-side or database RPC existed to atomically release an expired platform-fee slot and allocate the next available suffix (1 to 99 paise) for an existing pending order without re-creating the order, leaking suffixes, or risking concurrent race conditions.
+  2. **Window Discrepancy & Premature Expiry:** The frontend fallback countdown in `CustomerPaymentView.jsx` defaulted to 2 minutes (`120_000ms`), while the production payment lifecycle expects an authoritative 5-minute timeout window (300 seconds).
+  3. **Concurrency & Rapid-Click Double Allocation:** Rapid double-clicking on the reallocation button could trigger multiple parallel requests, consuming multiple suffix slots and causing race conditions on order state updates.
+  4. **Late Payment Miscrediting Risk:** Suffixes released after timeout could be claimed by another order; late payments matching an old suffix or obsolete attempt ID required strict fail-closed rejection (`PAYMENT_ATTEMPT_MISMATCH` / `PAYMENT_AMOUNT_MISMATCH`) and quarantine.
+- **Implementation:**
+  1. `supabase/migrations/20261118000002_reallocate_platform_fee.sql`:
+     - Creates PostgreSQL function `public.retry_order_platform_fee(p_order_id, p_customer_id, p_fee_window_seconds, p_fee_cooldown_seconds)`.
+     - Acquires row-level exclusive lock `SELECT ... FOR UPDATE` on `public.orders`.
+     - Enforces customer ownership and order state (blocks `PAID`, `FULFILLED`, `CANCELLED` orders).
+     - Releases previous fee slot into cooldown (`active_order_id = NULL`, cooldown updated) ensuring late payment quarantine.
+     - Atomically locks and reserves next available fee slot (1 to 99 paise) via `FOR UPDATE SKIP LOCKED` on `public.platform_fee_allocations`.
+     - Updates `orders`: updates `fee_paise`, `platform_fee`, calculates `total_payable = base_amount + platform_fee`, sets fresh 5-minute window (`payment_window_expires_at = NOW() + 300s`), fresh cooldown (`payment_cooldown_expires_at = NOW() + 600s`), resets `payment_status = 'PENDING'`, `status = 'AWAITING_PAYMENT'`, and generates a fresh `payment_attempt_id`.
+     - Grants `EXECUTE` strictly to `service_role` and revokes from `PUBLIC`, `anon`, and `authenticated`.
+  2. `server/src/routes/orders.js`:
+     - Implemented `handleReallocatePayment` validating customer ownership, order state, window expiration, and invoking `retry_order_platform_fee`.
+     - Added `inFlightPaymentReallocations` Set preventing concurrent duplicate allocations.
+     - Added `recentReallocations` Map providing 10-second rapid-click idempotency without burning suffixes.
+     - Bound API routes: `POST /api/v1/orders/:id/retry-payment`, `POST /api/v1/orders/:id/reallocate-payment`, and aliases `POST /orders/retryPayment`, `POST /orders/reallocatePayment`.
+     - Updated default window in `create_order_atomic` call to 300 seconds (5 minutes) and TTL to 600 seconds.
+  3. `src/components/payment/CustomerPaymentView.jsx`:
+     - Calibrated fallback countdown timer to 5 minutes (`allocatedAt/createdAt + 5 * 60 * 1000`).
+     - Hardened retry click handler with `if (!order?.id || isRetrying) return;` lock.
+     - Cleanly resets countdown timer to 5 minutes upon reallocation and clears previous action errors and inconclusive feedback.
+     - Updated expiry banner message to state the 5-minute timeout window.
+  4. `src/services/mockServer/platformFeeAllocator.js` & `src/services/mockServer/handlers.js`:
+     - Updated mock platform fee allocator to support custom `windowMs` (5 minutes).
+     - Updated `'orders.retryPayment'` mock handler to reallocate with 5-minute window, reset order status to `AWAITING_PAYMENT`, and provide idempotency for repeated clicks.
+  5. `server/src/__tests__/testHelpers.js`:
+     - Added mock RPC support for `retry_order_platform_fee` and `reallocate_order_platform_fee` with numeric total calculations.
+  6. `server/src/__tests__/paymentReallocationLifecycle.test.js`:
+     - 15 comprehensive automated regression tests verifying:
+       1. Base total with ₹10 delivery fee, store surcharge, and valid dynamic suffix.
+       2. Paid orders prevent reallocation.
+       3. Expired allocation is eligible.
+       4. Different suffix assigned while old suffix remains in cooldown.
+       5. Exact total equals base total + new suffix.
+       6. New UPI URI & QR use exact replacement amount.
+       7. Fresh 5-minute timeout window (300s).
+       8. Old attempt ID replaced.
+       9. Double-clicks handled idempotently without burning suffixes.
+       10. Late payments for old attempt/amount rejected (`PAYMENT_ATTEMPT_MISMATCH` & `PAYMENT_AMOUNT_MISMATCH`).
+       11. 401 unauthenticated and 403 unauthorized ownership blocked.
+       12. Item subtotals, delivery fees, lines, and stores preserved.
+       13. Inconclusive/negative Make.com checks fail closed.
+       14. Cancelled orders cannot bypass lifecycle.
+       15. `POST /orders/retryPayment` alias support.
+- **Verification Commands & Evidence:**
+  - `node scripts/validate-migrations.mjs`: 17 migrations statically verified successfully, exit code 0.
+  - `npm run test:server`: 19 test files, 412 passed, 1 skipped, exit code 0.
+  - `npm test`: 48 test files, 853 passed, 1 skipped (854 total), exit code 0.
+  - `git diff --check`: 0 issues, clean exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.

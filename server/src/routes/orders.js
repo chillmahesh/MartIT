@@ -803,6 +803,165 @@ export async function executeAtomicPaymentVerification(supabase, orderId) {
   return true
 }
 
+export const inFlightPaymentReallocations = new Set()
+export const recentReallocations = new Map()
+
+/**
+ * Reallocates a fresh dynamic platform fee for an expired payment attempt.
+ * Enforces ownership, active-cooldown preservation, exact total updates,
+ * idempotency on rapid double-clicks, and strict lifecycle guards.
+ */
+export async function handleReallocatePayment(req, res, next) {
+  const orderId = req.params?.id || req.body?.orderId
+  let lockAcquired = false
+
+  try {
+    if (!orderId) {
+      throw ApiError.badRequest('Order reference is required.', 'INVALID_ORDER_ID')
+    }
+
+    const supabase = getSupabaseAdmin()
+
+    // Concurrency guard: prevent duplicate concurrent reallocations for the same order
+    if (inFlightPaymentReallocations.has(orderId)) {
+      return res.status(409).json({
+        orderId,
+        code: 'REALLOCATION_IN_FLIGHT',
+        status: 'in_flight',
+        message: 'Payment reallocation is currently in progress. Please wait a moment.',
+      })
+    }
+
+    inFlightPaymentReallocations.add(orderId)
+    lockAcquired = true
+
+    const now = Date.now()
+
+    const { data: order, error } = await supabase
+      .from('orders')
+      .select(`
+        id, customer_id, runner_id, delivery_location_id, delivery_location_snapshot,
+        status, payment_status, item_subtotal, combined_delivery_fee, base_amount, platform_fee,
+        total_payable, route_distance_km, route_stop_sequence, routing_provider, routing_mode,
+        fee_policy_version, payment_attempt_id, fee_paise, payment_allocated_at,
+        payment_window_expires_at, payment_cooldown_expires_at, paid_at, created_at,
+        order_fulfillment_groups (
+          id, store_id, store_snapshot, status, pickup_sequence_index, picked_up_at,
+          order_items (
+            id, product_id, product_name, product_pack, unit_price, quantity, line_subtotal
+          )
+        )
+      `)
+      .eq('id', orderId)
+      .maybeSingle()
+
+    if (error || !order) {
+      throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+    }
+
+    // Ownership check
+    const isOwner = order.customer_id === req.user.id
+    const hasStaffAccess =
+      req.user.roles.includes(ROLES.ADMIN) ||
+      req.user.roles.includes(ROLES.SUPER_ADMIN)
+
+    if (!isOwner && !hasStaffAccess) {
+      throw ApiError.forbidden("You do not have permission to retry this order's payment.")
+    }
+
+    // Guard: already paid or terminal fulfillment
+    if (
+      order.payment_status === 'PAID' ||
+      ['CONFIRMED', 'PREPARING', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'DELIVERED'].includes(order.status)
+    ) {
+      throw ApiError.conflict('Cannot retry an order that is already paid.', 'ALREADY_PAID')
+    }
+
+    // Guard: cancelled order (that was not merely expired payment)
+    if (order.status === 'CANCELLED' && order.payment_status !== 'EXPIRED') {
+      throw ApiError.conflict('This order cannot be retried.', 'INVALID_STATE')
+    }
+
+    // Rapid double-click idempotency: if recently reallocated within 10 seconds, return the replacement allocation
+    const recent = recentReallocations.get(orderId)
+    if (recent && (now - recent.timestamp) <= 10000) {
+      return res.status(200).json(recent.order)
+    }
+
+    // Payment window expiry check:
+    const windowExpiry = new Date(order.payment_window_expires_at).getTime()
+    const isExpired = order.payment_status === 'EXPIRED' || (Number.isFinite(windowExpiry) && now >= windowExpiry)
+
+    if (!isExpired) {
+      throw new ApiError('PAYMENT_ACTIVE', 'The current payment window is still active.', 409)
+    }
+
+    // Invoke atomic stored procedure in PostgreSQL
+    const { data: reallocData, error: reallocErr } = await supabase.rpc('retry_order_platform_fee', {
+      p_order_id: order.id,
+      p_customer_id: req.user.id,
+      p_fee_window_seconds: 300,   // Fresh 5-minute timeout window
+      p_fee_cooldown_seconds: 300, // 5-minute cooldown
+    })
+
+    if (reallocErr) {
+      if (reallocErr.message && reallocErr.message.includes('ALL_PLATFORM_FEE_SLOTS_BUSY')) {
+        throw new ApiError('ALL_PLATFORM_FEE_SLOTS_BUSY', 'All dynamic payment fee slots are currently active. Please retry shortly.', 503)
+      }
+      if (reallocErr.message && (reallocErr.message.includes('CANNOT_RETRY_PAID_ORDER') || reallocErr.message.includes('ORDER_ALREADY_PAID'))) {
+        throw ApiError.conflict('Cannot retry an order that is already paid.', 'ALREADY_PAID')
+      }
+      if (reallocErr.message && reallocErr.message.includes('CANNOT_RETRY_CANCELLED_ORDER')) {
+        throw ApiError.conflict('This order cannot be retried.', 'INVALID_STATE')
+      }
+      if (reallocErr.message && reallocErr.message.includes('PAYMENT_ACTIVE')) {
+        throw new ApiError('PAYMENT_ACTIVE', 'The current payment window is still active.', 409)
+      }
+      if (reallocErr.message && reallocErr.message.includes('PERMISSION_DENIED')) {
+        throw ApiError.forbidden("You do not have permission to retry this order's payment.")
+      }
+      if (reallocErr.message && reallocErr.message.includes('ORDER_NOT_FOUND')) {
+        throw ApiError.notFound('Order not found.', 'ORDER_NOT_FOUND')
+      }
+      throw ApiError.internal(`Failed to reallocate payment: ${reallocErr.message || 'Database error'}`)
+    }
+
+    // Query refreshed order with complete relational lines
+    const { data: updatedOrder, error: fetchErr } = await supabase
+      .from('orders')
+      .select(`
+        id, customer_id, runner_id, delivery_location_id, delivery_location_snapshot,
+        status, payment_status, item_subtotal, combined_delivery_fee, base_amount, platform_fee,
+        total_payable, route_distance_km, route_stop_sequence, routing_provider, routing_mode,
+        fee_policy_version, payment_attempt_id, fee_paise, payment_allocated_at,
+        payment_window_expires_at, payment_cooldown_expires_at, paid_at, created_at,
+        order_fulfillment_groups (
+          id, store_id, store_snapshot, status, pickup_sequence_index, picked_up_at,
+          order_items (
+            id, product_id, product_name, product_pack, unit_price, quantity, line_subtotal
+          )
+        )
+      `)
+      .eq('id', order.id)
+      .maybeSingle()
+
+    if (fetchErr || !updatedOrder) {
+      throw ApiError.internal('Failed to load updated order details after reallocation.')
+    }
+
+    const formatted = formatCanonicalOrder(updatedOrder)
+    recentReallocations.set(order.id, { order: formatted, timestamp: Date.now() })
+
+    return res.status(200).json(formatted)
+  } catch (err) {
+    next(err)
+  } finally {
+    if (lockAcquired && orderId) {
+      inFlightPaymentReallocations.delete(orderId)
+    }
+  }
+}
+
 /**
  * GET /api/v1/runner/orders - Authenticated runner's assigned orders.
  * Strictly limited to approved runners viewing their assigned orders and, when online, available confirmed orders.
@@ -1976,9 +2135,9 @@ async function handleCreateOrder(req, res, next) {
       p_fee_policy_version: PRICING_VERSION,
       p_route_distance_km: Number(maxDistanceKm.toFixed(4)),
       p_idempotency_key: finalIdempotencyKey,
-      p_fee_window_seconds: 120,
+      p_fee_window_seconds: 300,
       p_fee_cooldown_seconds: 300,
-      p_inventory_ttl_seconds: 420,
+      p_inventory_ttl_seconds: 600,
     })
 
     if (atomicErr) {
@@ -2179,6 +2338,12 @@ ordersRouter.post('/orders/checkPayment', authenticate, handleCheckPayment)
 // Dedicated payment expiration
 ordersRouter.post('/api/v1/orders/:id/expire', authenticate, handleExpirePayment)
 ordersRouter.post('/orders/expire', authenticate, handleExpirePayment)
+
+// Dedicated payment reallocation (Retry payment)
+ordersRouter.post('/api/v1/orders/:id/retry-payment', authenticate, handleReallocatePayment)
+ordersRouter.post('/api/v1/orders/:id/reallocate-payment', authenticate, handleReallocatePayment)
+ordersRouter.post('/orders/retryPayment', authenticate, handleReallocatePayment)
+ordersRouter.post('/orders/reallocatePayment', authenticate, handleReallocatePayment)
 
 // Runner assigned orders
 ordersRouter.get('/api/v1/runner/orders', authenticate, handleRunnerAssignedOrders)
