@@ -39,6 +39,7 @@ This is the durable execution ledger. Update it throughout implementation. Never
 | M12.4 | Combined payment & multi-store runner tracking | VERIFIED | Commit ab76194; Single UPI payment view with multi-store fee breakdown, OrderConfirmation multi-store pickup checklist, multi-store runner pickup completion, 42 test files (750 passed) & clean build | Complete |
 | M12.5 | Cart selector stability & React Error #185 fix | VERIFIED | Commit ed8b799; Fixed unstable Zustand selectors with useShallow and memoized store selectors, eliminated infinite re-render loop on /app/cart, 44 test files (770 passed, 1 skipped) | Complete |
 | M12.6 | Authoritative ₹10 multi-store surcharge & pricing consistency | VERIFIED | Commit 7f5c3d9; Authoritative ₹10 surcharge default, fees.js, env.js, server orders.js, OrdersPage, AdminConsole, 48 deliveryFee + 95 orders tests, 44 test files (782 passed, 1 skipped) | Complete |
+| M13 | Animated Sun-to-Moon theme transition | VERIFIED | Commit 04df19a; Clockwise 360° eclipse sweep starting at 3 o'clock, 8 prominent spokes (12:00, 1:30, 3:00, 4:30, 6:00, 7:30, 9:00, 10:30) with userSpaceOnUse filter fix, 0.75x speed refinement, 45 test files (809 passed) | Complete |
 
 ## Milestone Evidence & Audit Trails
 
@@ -499,6 +500,60 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
   - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
 
+### M13 — Animated Sun-to-Moon Theme Transition
+- **Date / Session:** 2026-11-17
+- **Objective:**
+  - Replace MartIT's basic circular reveal theme toggle with a cinematic, animated sun-to-moon eclipse transition.
+  - Deliver genuine clockwise 360-degree sweep starting from the 3 o'clock position (rightmost coordinate: $(cx + r, cy)$).
+  - Guarantee zero flash of previous theme or unstyled intermediate states.
+  - Support `prefers-reduced-motion` accessible bypass, rapid-click protection, and SSR pre-rendering compatibility.
+- **Changes Implemented:**
+  1. `src/stores/themeStore.js`:
+     - Added `isTransitioning`, `transitionDirection` (`'to-dark'` | `'to-light'`), `targetTheme`, and `isOverlayMounted`.
+     - Hardened `setTheme(theme)` with rapid click guard: ignores redundant triggers while transition is running.
+     - Added `prefers-reduced-motion` check: instantly commits theme without animation if reduced motion is requested.
+     - Added overlay mount check: commits immediately when overlay is not mounted (e.g. headless unit tests, non-overlay routes).
+     - Added `commitTheme(targetTheme)` to commit dataset and localStorage state at totality.
+     - Added `finishTransition()` to clean up transition state after exit fade.
+  2. `src/components/theme/ThemeTransitionOverlay.jsx`:
+     - Full-screen fixed overlay (`fixed inset-0 z-[99999] pointer-events-auto`) mounted centrally in the viewport.
+     - Implemented `getSectorPath(cx, cy, r, angleDeg)` generating an exact circular sector starting at 3 o'clock and sweeping clockwise through 360°.
+     - Light $\to$ Dark: Warm glowing sun (`#FEF08A`) with 8 rays that extinguish sequentially as the dark moon sector (`#0b1410`) sweeps clockwise from 3 o'clock over the sun disk.
+     - Dark $\to$ Light: Dark celestial moon disk revealed clockwise into a warm glowing sun with a radiant dawn beam travelling along the leading sweep edge.
+     - Totality synchronization: at 360° totality (850ms), the backdrop veil reaches 100% opacity of the destination theme token (`#0b1410` for dark, `#f8fafc` for light), calling `commitTheme()` behind the solid veil with zero visible flash.
+     - Exit fade: smooth 200ms dissolve from opacity 1.0 to 0 with subtle scale dispersion.
+  3. `src/components/layout/ThemeToggle.jsx`:
+     - Connected `disabled={isTransitioning}` and `aria-busy={isTransitioning}`.
+     - Blocked click events during transition (`if (!isTransitioning) setTheme(next)`).
+     - Preserved accessible `aria-label` and spring-based icon flip.
+  4. `src/app/providers.jsx`:
+     - Mounted `<ThemeTransitionOverlay />` inside the application's global provider hierarchy.
+  5. `src/components/theme/__tests__/themeTransition.test.jsx`:
+     - 27 comprehensive unit and integration tests covering:
+       - 3 o'clock starting position $(cx + r, cy)$ and clockwise 360° sweep geometry.
+       - 8 evenly spaced spokes at 12 o'clock, 1:30, 3 o'clock, 4:30, 6 o'clock, 7:30, 9 o'clock, 10:30.
+       - Uniform spoke length and zero collision with sun circular outline.
+       - Scaled durations reflecting 0.75x playback speed (1.3333x duration scaling).
+       - `easeInOutCubic` monotonicity and bounds.
+       - Store state transitions, rapid click protection, totality commit, and finish lifecycle.
+       - Reverse `to-light` transition.
+       - `prefers-reduced-motion` instant bypass.
+       - `ThemeToggle` accessibility attributes (`aria-label`, `disabled`, `aria-busy`).
+       - Full-screen overlay markup in both directions.
+  6. Spokes & Speed Refinements:
+     - Completely redesigned and rewrote the sun spokes so that all 8 spokes (12:00, 1:30, 3:00, 4:30, 6:00, 7:30, 9:00, 10:30) are bold, crisp, and prominent.
+     - Resolved SVG filter zero-dimension bounding-box collapse bug: vertical lines (`x1 === x2`, width 0) and horizontal lines (`y1 === y2`, height 0) were previously hidden by browsers when `filterUnits="objectBoundingBox"` was evaluated per line. Fixed by specifying `filterUnits="userSpaceOnUse"` and applying `filter="url(#martitWarmGlow)"` to the parent `<g id="sunRays">` container.
+     - Spoke length extended to a uniform 14.0 units (inner radius 26.0, outer radius 40.0, strokeWidth 3.6 with rounded caps).
+     - Sun circular body calibrated to radius 19.0 (strokeWidth 3.2, outer edge 20.6), providing a clean 5.4-unit visual margin with guaranteed zero collision.
+     - Calibrated subtle glow filter (`stdDeviation="1.0"`) and radial aura (`r="23"`) so diagonal rays are never washed out or blurred into background haze.
+     - Maintained 0.75x playback speed consistently across the entire transition lifecycle (1.3333x duration scaling: INTRO 187ms, SWEEP 907ms, OUTRO 267ms, TOTAL 1361ms).
+- **Verification Commands & Evidence:**
+  - `npx vitest run src/components/theme/__tests__/themeTransition.test.jsx`: 27 tests passed, exit code 0.
+  - `npm test`: 45 test files, 809 passed, 1 skipped (810 total), exit code 0.
+  - `npm run test:server`: 17 test files, 380 passed, 1 skipped, exit code 0.
+  - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
+
 ### M12.6 — Authoritative ₹10 Multi-Store Surcharge & Pricing Consistency
 - **Date / Session:** 2026-11-17
 - **Problem Statement:**
@@ -534,5 +589,217 @@ This is the durable execution ledger. Update it throughout implementation. Never
   - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
   - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
 
+### M13 — Animated Sun-to-Moon Theme Transition
+- **Date / Session:** 2026-11-17
+- **Objective:**
+  - Replace MartIT's basic circular reveal theme toggle with a cinematic, animated sun-to-moon eclipse transition.
+  - Deliver genuine clockwise 360-degree sweep starting from the 3 o'clock position (rightmost coordinate: $(cx + r, cy)$).
+  - Guarantee zero flash of previous theme or unstyled intermediate states.
+  - Support `prefers-reduced-motion` accessible bypass, rapid-click protection, and SSR pre-rendering compatibility.
+- **Changes Implemented:**
+  1. `src/stores/themeStore.js`:
+     - Added `isTransitioning`, `transitionDirection` (`'to-dark'` | `'to-light'`), `targetTheme`, and `isOverlayMounted`.
+     - Hardened `setTheme(theme)` with rapid click guard: ignores redundant triggers while transition is running.
+     - Added `prefers-reduced-motion` check: instantly commits theme without animation if reduced motion is requested.
+     - Added overlay mount check: commits immediately when overlay is not mounted (e.g. headless unit tests, non-overlay routes).
+     - Added `commitTheme(targetTheme)` to commit dataset and localStorage state at totality.
+     - Added `finishTransition()` to clean up transition state after exit fade.
+  2. `src/components/theme/ThemeTransitionOverlay.jsx`:
+     - Full-screen fixed overlay (`fixed inset-0 z-[99999] pointer-events-auto`) mounted centrally in the viewport.
+     - Implemented `getSectorPath(cx, cy, r, angleDeg)` generating an exact circular sector starting at 3 o'clock and sweeping clockwise through 360°.
+     - Light $\to$ Dark: Warm glowing sun (`#FEF08A`) with 8 rays that extinguish sequentially as the dark moon sector (`#0b1410`) sweeps clockwise from 3 o'clock over the sun disk.
+     - Dark $\to$ Light: Dark celestial moon disk revealed clockwise into a warm glowing sun with a radiant dawn beam travelling along the leading sweep edge.
+     - Totality synchronization: at 360° totality (850ms), the backdrop veil reaches 100% opacity of the destination theme token (`#0b1410` for dark, `#f8fafc` for light), calling `commitTheme()` behind the solid veil with zero visible flash.
+     - Exit fade: smooth 200ms dissolve from opacity 1.0 to 0 with subtle scale dispersion.
+  3. `src/components/layout/ThemeToggle.jsx`:
+     - Connected `disabled={isTransitioning}` and `aria-busy={isTransitioning}`.
+     - Blocked click events during transition (`if (!isTransitioning) setTheme(next)`).
+     - Preserved accessible `aria-label` and spring-based icon flip.
+  4. `src/app/providers.jsx`:
+     - Mounted `<ThemeTransitionOverlay />` inside the application's global provider hierarchy.
+  5. `src/components/theme/__tests__/themeTransition.test.jsx`:
+     - 27 comprehensive unit and integration tests covering:
+       - 3 o'clock starting position $(cx + r, cy)$ and clockwise 360° sweep geometry.
+       - 8 evenly spaced spokes at 12 o'clock, 1:30, 3 o'clock, 4:30, 6 o'clock, 7:30, 9 o'clock, 10:30.
+       - Uniform spoke length and zero collision with sun circular outline.
+       - Scaled durations reflecting 0.75x playback speed (1.3333x duration scaling).
+       - `easeInOutCubic` monotonicity and bounds.
+       - Store state transitions, rapid click protection, totality commit, and finish lifecycle.
+       - Reverse `to-light` transition.
+       - `prefers-reduced-motion` instant bypass.
+       - `ThemeToggle` accessibility attributes (`aria-label`, `disabled`, `aria-busy`).
+       - Full-screen overlay markup in both directions.
+  6. Spokes & Speed Refinements:
+     - Completely redesigned and rewrote the sun spokes so that all 8 spokes (12:00, 1:30, 3:00, 4:30, 6:00, 7:30, 9:00, 10:30) are bold, crisp, and prominent.
+     - Resolved SVG filter zero-dimension bounding-box collapse bug: vertical lines (`x1 === x2`, width 0) and horizontal lines (`y1 === y2`, height 0) were previously hidden by browsers when `filterUnits="objectBoundingBox"` was evaluated per line. Fixed by specifying `filterUnits="userSpaceOnUse"` and applying `filter="url(#martitWarmGlow)"` to the parent `<g id="sunRays">` container.
+     - Spoke length extended to a uniform 14.0 units (inner radius 26.0, outer radius 40.0, strokeWidth 3.6 with rounded caps).
+     - Sun circular body calibrated to radius 19.0 (strokeWidth 3.2, outer edge 20.6), providing a clean 5.4-unit visual margin with guaranteed zero collision.
+     - Calibrated subtle glow filter (`stdDeviation="1.0"`) and radial aura (`r="23"`) so diagonal rays are never washed out or blurred into background haze.
+     - Maintained 0.75x playback speed consistently across the entire transition lifecycle (1.3333x duration scaling: INTRO 187ms, SWEEP 907ms, OUTRO 267ms, TOTAL 1361ms).
+- **Verification Commands & Evidence:**
+  - `npx vitest run src/components/theme/__tests__/themeTransition.test.jsx`: 27 tests passed, exit code 0.
+  - `npm test`: 45 test files, 809 passed, 1 skipped (810 total), exit code 0.
+  - `npm run test:server`: 17 test files, 380 passed, 1 skipped, exit code 0.
+  - `node scripts/validate-migrations.mjs`: 15 migrations statically validated, exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
 
 
+
+---
+
+## Milestone 13: Fix False "Email Already Exists" Signup Error & Account Enumeration Protection
+
+- **Date:** 2026-11-18
+- **Status:** `VERIFIED`
+- **Objective:** Fix false "Email already exists" error displayed on user registration attempts for new emails; properly categorize Supabase Auth error responses (weak password, rate limits, database triggers, network failures, explicit duplicate emails); handle account-enumeration-protected responses safely according to Supabase conventions.
+- **Root Cause Analysis:**
+  1. Overbroad 422 HTTP Status Mapping: In `src/services/authService.js`, line 141 checked:
+     `if (msg.includes('already registered') || msg.includes('user already exists') || error.status === 422)`
+     Supabase GoTrue returns HTTP 422 (Unprocessable Entity) for multiple non-duplicate conditions, including weak passwords (`code: 'weak_password'`), signups disabled (`code: 'signup_disabled'`), email logins disabled (`code: 'email_provider_disabled'`), and general validation rejections. Because of the blanket `error.status === 422` check, all of these failures were falsely reported as:
+     *"An account with this email already exists. Please log in instead."*
+  2. Sub-optimal Account Enumeration / Confirmation Handling: When Supabase identity enumeration protection is active, GoTrue returns an empty identities array (`data.user.identities: []`) with HTTP 200. The previous code immediately threw a duplicate error `409 DUPLICATE_EMAIL`. In reality, per Supabase conventions, an empty identities array indicates that the email is already registered (confirmed or unconfirmed) and should be handled safely as a confirmation-pending response prompting the user to check their email or log in directly, without leaking user existence to attackers or blocking legitimate users.
+- **Implementation:**
+  1. `src/services/authService.js`:
+     - Removed overbroad `error.status === 422` mapping to `DUPLICATE_EMAIL`.
+     - Granularly categorized error conditions:
+       - `RATE_LIMITED` (`429`): Over email send rate limit or too many requests.
+       - `DUPLICATE_EMAIL` (`409`): Strictly when `code === 'user_already_exists'`, `code === 'email_exists'`, or message explicitly indicates duplicate registration.
+       - `WEAK_PASSWORD` (`422`): GoTrue password policy rejections (`weak_password`, message mentioning weak/short/common password).
+       - `SIGNUP_DISABLED` (`403`): `signup_disabled` or `email_provider_disabled`.
+       - `DATABASE_ERROR` (`500`): Postgres trigger/profile creation failures (`unexpected_failure`, `Database error saving new user`).
+       - `NETWORK_ERROR` (`0`): Offline, DNS, CORS, or connection failures (`AuthRetryableFetchError`, `Failed to fetch`).
+       - Other GoTrue errors preserve their real status and message (`SIGNUP_ERROR`).
+     - Handled empty identities array (`data.user.identities: []`) per Supabase conventions: returns `{ session: null, authUser: data.user, needsConfirmation: true, role: cleanRole, isEnumerationProtected: true }` without falsely throwing duplicate error.
+     - Provided explicit `emailRedirectTo: '${origin}/login'` option in `supabase.auth.signUp()`.
+  2. `src/stores/authStore.js`:
+     - Preserved `isEnumerationProtected` pass-through in `authStore.signup()`.
+  3. `src/pages/auth/SignupPage.jsx`:
+     - Stored `formErrorCode` to render targeted recovery actions in error alert (direct link to `/login` for duplicate emails, password complexity guidance for weak passwords, wait tip for rate limits).
+     - Enhanced email verification view to support enumeration protection guidance with direct "Go to Log in" button.
+  4. `src/pages/auth/__tests__/signupErrorHandling.test.js`:
+     - 12 comprehensive unit and integration tests covering all 8 specified regression test cases plus UI integration:
+       1. New email signup success with confirmation pending (`session: null`).
+       2. New email signup success with active session (auto-confirm).
+       3. Genuinely existing user signup returning duplicate email (code: `user_already_exists`).
+       4. Genuinely existing user signup returning duplicate email (message: `already been registered`).
+       5. Account-enumeration-protected response (`identities: []`) handled safely as confirmation-pending without false duplicate error.
+       6. Weak password rejection (`422`) not mapped to duplicate email, throws `422 WEAK_PASSWORD`.
+       7. Rate limit rejection (`429`) not mapped to duplicate email, throws `429 RATE_LIMITED`.
+       8. Database trigger error (`500`) not mapped to duplicate email, throws `500 DATABASE_ERROR`.
+       9. Network failure (`status: 0`) not mapped to duplicate email, throws `0 NETWORK_ERROR`.
+       10. Signup disabled (`422`) not mapped to duplicate email, throws `403 SIGNUP_DISABLED`.
+       11. Store state propagation of `isEnumerationProtected`.
+       12. Verification notice view rendering with login action.
+- **Verification Commands & Evidence:**
+  - `npx vitest run src/pages/auth/__tests__/signupErrorHandling.test.js`: 12 passed (100%), exit code 0.
+  - `npx vitest run src/pages/auth/__tests__/authPages.test.js src/stores/__tests__/authStore.test.js src/pages/auth/__tests__/resetPasswordFlow.test.js src/pages/admin/__tests__/adminAuth.test.jsx server/src/__tests__/authAndPermissions.test.js`: 105 passed, exit code 0.
+  - `npm test`: 46 test files, 821 passed, 1 skipped (822 total), exit code 0.
+  - `npm run test:server`: 17 test files, 380 passed, 1 skipped, exit code 0.
+  - `git diff --check`: 0 issues, clean exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
+
+
+---
+
+## Milestone 14: Repair Supabase "Database error saving new user" at the Database Layer
+
+- **Date:** 2026-11-18
+- **Status:** `VERIFIED`
+- **Objective:** Fix Supabase `"Database error saving new user"` (`{"code":"unexpected_failure","message":"Database error saving new user"}`) at the database layer; resolve PostgreSQL transaction aborts during `on_auth_user_created` trigger execution on `auth.users`; ensure correct grants, schema usage, function ownership, unique constraints, and safe reconciliation for orphaned auth records.
+- **Root Cause Analysis:**
+  1. **GoTrue Caller Privileges & Missing Table/Sequence Grants (`SQLSTATE 42501`):** Supabase GoTrue inserts newly registered accounts as the PostgreSQL role `supabase_auth_admin`. While migration `20261010000004` initially granted permissions, subsequent migration `20261012000001` redefined `handle_new_user()` and omitted `GRANT USAGE ON SCHEMA public, extensions TO supabase_auth_admin`, table privileges (`GRANT SELECT, INSERT, UPDATE ON public.profiles, public.user_roles TO supabase_auth_admin`), and sequence privileges (`GRANT USAGE, SELECT ON SEQUENCE public.user_roles_id_seq TO supabase_auth_admin`).
+  2. **Index Inference Abort (`SQLSTATE 42P10`) in `ON CONFLICT (user_id, role)`:** In PostgreSQL, `ON CONFLICT (user_id, role)` requires an explicit, matching unique index or constraint on `(user_id, role)`. If `uq_user_role` was missing or defined differently in production, Postgres aborted the transaction with `42P10` (*there is no unique or exclusion constraint matching the ON CONFLICT specification*).
+  3. **RLS Trap & Function Ownership:** If `handle_new_user()` was not strictly owned by `postgres` (or if SECURITY DEFINER was executed in a context where RLS policies applied to `supabase_auth_admin` which has no user session `auth.uid()`), insertion failed with `SQLSTATE 42501` (RLS policy violation).
+  4. **Orphaned Email Uniqueness Collision (`SQLSTATE 23505`):** In `public.profiles`, `email` has a `UNIQUE` constraint. If an orphaned profile record existed with the same email but a differing or null ID, `handle_new_user()` previously only used `ON CONFLICT (id) DO NOTHING`, triggering a fatal `23505` unique violation on `profiles_email_key`.
+  5. **Null Email & Live Schema Phone Type Mismatch (`SQLSTATE 42804`):**
+     - Null or blank emails in OAuth/phone signups violated `NOT NULL` on `profiles.email`.
+     - In the live database schema, `public.profiles.phone` is typed as `BIGINT`. The original repair script declared `v_phone VARCHAR(20)` and supplied text expressions in the reconciliation backfill, causing PostgreSQL datatype mismatch aborts (`column "phone" is of type bigint but expression is of type character varying / text`).
+- **Implementation:**
+  1. `supabase/migrations/20261118000001_repair_auth_user_trigger_and_grants.sql`:
+     - Idempotently cleans duplicates and ensures `uq_user_role` unique constraint exists on `public.user_roles (user_id, role)`.
+     - Replaces `public.handle_new_user()` with a hardened, defensive trigger function:
+       - Generates sanitized fallback email (`<uuid>@temporary.martit.local`) if `NEW.email` is null/empty.
+       - Safely cleans orphaned profiles on email collision before profile insertion.
+       - Aligns with the live database `public.profiles.phone` `BIGINT` type: strips non-digits with `REGEXP_REPLACE`, validates digit count `^[0-9]{7,15}$` (E.164 standard, strictly safe within signed 64-bit `BIGINT`), safely casts to `::bigint`, and defaults invalid or out-of-range inputs to `NULL` without aborting registration.
+       - Decouples role assignment from index name/constraint inference by replacing `ON CONFLICT (user_id, role)` with `INSERT INTO public.user_roles ... SELECT ... WHERE NOT EXISTS (...)`, completely immune to `42P10` errors.
+       - Enforces `SECURITY DEFINER` and `SET search_path = public, auth, pg_temp;`.
+       - Sets `ALTER FUNCTION public.handle_new_user() OWNER TO postgres;`.
+     - Explicitly grants `USAGE` on schemas `public` and `extensions` to `supabase_auth_admin` and `service_role`.
+     - Grants `SELECT, INSERT, UPDATE` on `public.profiles` and `public.user_roles` to `supabase_auth_admin` and `service_role`.
+     - Grants `USAGE, SELECT` on `public.user_roles_id_seq` to `supabase_auth_admin` and `service_role`.
+     - Grants `USAGE` on `public.role_enum` and `public.runner_status_enum` to `supabase_auth_admin` and `service_role`.
+     - Drops and re-attaches `on_auth_user_created` trigger `AFTER INSERT ON auth.users`.
+     - Performs idempotent backfill reconciling existing orphaned `auth.users` into `profiles` and default `customer` role, using a CASE regex guard to safely cast valid phone digits to `::bigint` and `NULL` otherwise.
+  2. `supabase/diagnostic_check.sql`:
+     - Added Checks 8–12 inspecting orphaned Auth users, `uq_user_role` constraint, table/sequence grants for `supabase_auth_admin`, schema `USAGE` privileges, and `public.profiles` column data types.
+  3. `supabase/tests/database_integrity_test.sql`:
+     - Updated Tests 1 and 11 to verify `supabase_auth_admin` table/schema grants, `uq_user_role` constraint, missing email fallback resilience, and malformed phone string resilience (defaults to `NULL` without aborting).
+  4. `server/src/__tests__/authDatabaseTriggerContract.test.js`:
+     - 17 automated contract tests validating function SQL syntax, owner specification, schema usage, table/sequence grants, trigger events, index-free idempotency, live schema `BIGINT` phone declarations, safe digit extraction, range guards, and reconciliation logic.
+- **Verification Commands & Evidence:**
+  - `node scripts/validate-migrations.mjs`: 16 migrations statically verified successfully, exit code 0.
+  - `npm run test:server`: 18 test files, 397 passed, 1 skipped, exit code 0.
+  - `npm test`: 47 test files, 838 passed, 1 skipped (839 total), exit code 0.
+  - `git diff --check`: 0 issues, clean exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
+
+---
+
+## Milestone 15: Fix Dynamic UPI Payment Reallocation and Timeout Lifecycle
+
+- **Date:** 2026-11-18
+- **Status:** `VERIFIED`
+- **Objective:** Fix dynamic UPI payment reallocation and timeout lifecycle. Ensure the reallocation button assigns the next available dynamic payment amount while safely releasing expired allocations into cooldown, enforces the 5-minute timeout window (300 seconds), preserves item pricing and whole-rupee order totals, prevents late-payment miscrediting, provides rapid click idempotency, and maintains end-to-end consistency across client, server, QR/URI generation, and Make.com + Gmail verification workflows.
+- **Root Cause Analysis:**
+  1. **Absence of Atomic Reallocation RPC:** No server-side or database RPC existed to atomically release an expired platform-fee slot and allocate the next available suffix (1 to 99 paise) for an existing pending order without re-creating the order, leaking suffixes, or risking concurrent race conditions.
+  2. **Window Discrepancy & Premature Expiry:** The frontend fallback countdown in `CustomerPaymentView.jsx` defaulted to 2 minutes (`120_000ms`), while the production payment lifecycle expects an authoritative 5-minute timeout window (300 seconds).
+  3. **Concurrency & Rapid-Click Double Allocation:** Rapid double-clicking on the reallocation button could trigger multiple parallel requests, consuming multiple suffix slots and causing race conditions on order state updates.
+  4. **Late Payment Miscrediting Risk:** Suffixes released after timeout could be claimed by another order; late payments matching an old suffix or obsolete attempt ID required strict fail-closed rejection (`PAYMENT_ATTEMPT_MISMATCH` / `PAYMENT_AMOUNT_MISMATCH`) and quarantine.
+- **Implementation:**
+  1. `supabase/migrations/20261118000002_reallocate_platform_fee.sql`:
+     - Creates PostgreSQL function `public.retry_order_platform_fee(p_order_id, p_customer_id, p_fee_window_seconds, p_fee_cooldown_seconds)`.
+     - Acquires row-level exclusive lock `SELECT ... FOR UPDATE` on `public.orders`.
+     - Enforces customer ownership and order state (blocks `PAID`, `FULFILLED`, `CANCELLED` orders).
+     - Releases previous fee slot into cooldown (`active_order_id = NULL`, cooldown updated) ensuring late payment quarantine.
+     - Atomically locks and reserves next available fee slot (1 to 99 paise) via `FOR UPDATE SKIP LOCKED` on `public.platform_fee_allocations`.
+     - Updates `orders`: updates `fee_paise`, `platform_fee`, calculates `total_payable = base_amount + platform_fee`, sets fresh 5-minute window (`payment_window_expires_at = NOW() + 300s`), fresh cooldown (`payment_cooldown_expires_at = NOW() + 600s`), resets `payment_status = 'PENDING'`, `status = 'AWAITING_PAYMENT'`, and generates a fresh `payment_attempt_id`.
+     - Grants `EXECUTE` strictly to `service_role` and revokes from `PUBLIC`, `anon`, and `authenticated`.
+  2. `server/src/routes/orders.js`:
+     - Implemented `handleReallocatePayment` validating customer ownership, order state, window expiration, and invoking `retry_order_platform_fee`.
+     - Added `inFlightPaymentReallocations` Set preventing concurrent duplicate allocations.
+     - Added `recentReallocations` Map providing 10-second rapid-click idempotency without burning suffixes.
+     - Bound API routes: `POST /api/v1/orders/:id/retry-payment`, `POST /api/v1/orders/:id/reallocate-payment`, and aliases `POST /orders/retryPayment`, `POST /orders/reallocatePayment`.
+     - Updated default window in `create_order_atomic` call to 300 seconds (5 minutes) and TTL to 600 seconds.
+  3. `src/components/payment/CustomerPaymentView.jsx`:
+     - Calibrated fallback countdown timer to 5 minutes (`allocatedAt/createdAt + 5 * 60 * 1000`).
+     - Hardened retry click handler with `if (!order?.id || isRetrying) return;` lock.
+     - Cleanly resets countdown timer to 5 minutes upon reallocation and clears previous action errors and inconclusive feedback.
+     - Updated expiry banner message to state the 5-minute timeout window.
+  4. `src/services/mockServer/platformFeeAllocator.js` & `src/services/mockServer/handlers.js`:
+     - Updated mock platform fee allocator to support custom `windowMs` (5 minutes).
+     - Updated `'orders.retryPayment'` mock handler to reallocate with 5-minute window, reset order status to `AWAITING_PAYMENT`, and provide idempotency for repeated clicks.
+  5. `server/src/__tests__/testHelpers.js`:
+     - Added mock RPC support for `retry_order_platform_fee` and `reallocate_order_platform_fee` with numeric total calculations.
+  6. `server/src/__tests__/paymentReallocationLifecycle.test.js`:
+     - 15 comprehensive automated regression tests verifying:
+       1. Base total with ₹10 delivery fee, store surcharge, and valid dynamic suffix.
+       2. Paid orders prevent reallocation.
+       3. Expired allocation is eligible.
+       4. Different suffix assigned while old suffix remains in cooldown.
+       5. Exact total equals base total + new suffix.
+       6. New UPI URI & QR use exact replacement amount.
+       7. Fresh 5-minute timeout window (300s).
+       8. Old attempt ID replaced.
+       9. Double-clicks handled idempotently without burning suffixes.
+       10. Late payments for old attempt/amount rejected (`PAYMENT_ATTEMPT_MISMATCH` & `PAYMENT_AMOUNT_MISMATCH`).
+       11. 401 unauthenticated and 403 unauthorized ownership blocked.
+       12. Item subtotals, delivery fees, lines, and stores preserved.
+       13. Inconclusive/negative Make.com checks fail closed.
+       14. Cancelled orders cannot bypass lifecycle.
+       15. `POST /orders/retryPayment` alias support.
+- **Verification Commands & Evidence:**
+  - `node scripts/validate-migrations.mjs`: 17 migrations statically verified successfully, exit code 0.
+  - `npm run test:server`: 19 test files, 412 passed, 1 skipped, exit code 0.
+  - `npm test`: 48 test files, 853 passed, 1 skipped (854 total), exit code 0.
+  - `git diff --check`: 0 issues, clean exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.

@@ -285,6 +285,11 @@ export const useAuthStore = create(
           set({ session: null, token: null, user: null })
           throw err
         }
+        return {
+          user: result.authUser,
+          needsConfirmation: result.needsConfirmation,
+          isEnumerationProtected: Boolean(result.isEnumerationProtected),
+        }
       },
 
       /**
