@@ -1,11 +1,28 @@
+import { useState, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { DropdownMenu } from 'radix-ui'
-import { Bike, ClipboardList, FileText, LogOut, MapPin, ShieldCheck, ShoppingBag, UserRound } from 'lucide-react'
+import {
+  Bike,
+  Bookmark,
+  Check,
+  ChevronDown,
+  ClipboardList,
+  FileText,
+  LogOut,
+  MapPin,
+  ShieldCheck,
+  ShoppingBag,
+  UserRound,
+} from 'lucide-react'
 import { Logo } from '@/components/ui/Logo'
 import { Badge } from '@/components/ui/Badge'
 import { useAuthStore } from '@/stores/authStore'
 import { useCartStore, selectCartCount } from '@/stores/cartStore'
-import { useLocationName } from '@/hooks/useLocations'
+import { useActiveDestination } from '@/hooks/useLocations'
+import { Dialog, DialogContent, DialogClose } from '@/components/ui/Dialog'
+import { PRESET_CAMPUS_LOCATIONS, OTHER_LOCATION_VALUE } from '@/utils/checkoutValidation'
+import { SAVED_LOCATION_STORAGE_KEY } from '@/components/cart/DeliveryDetailsForm'
+import { cn } from '@/utils/cn'
 import { ThemeToggle } from './ThemeToggle'
 import { CountBadge } from './CountBadge'
 import { hasPermission, PERMISSIONS, ROLE_LABEL, ROLES } from '@/utils/permissions'
@@ -15,7 +32,8 @@ export function AppHeader({ variant = 'customer' }) {
   const userFromHook = useAuthStore((s) => s.user)
   const user = userFromHook ?? useAuthStore.getState().user
   const cartCount = useCartStore(selectCartCount)
-  const locationName = useLocationName(user?.defaultLocationId)
+  const { displayLabel } = useActiveDestination()
+  const [isLocationDialogOpen, setIsLocationDialogOpen] = useState(false)
   const home = { customer: '/app', runner: '/runner', admin: '/admin' }[variant]
 
   return (
@@ -34,11 +52,28 @@ export function AppHeader({ variant = 'customer' }) {
           </Badge>
         ) : (
           <div className="min-w-0 flex-1 sm:flex-none">
-            <p className="text-[11px] font-medium uppercase tracking-wider text-ink-subtle">Deliver to</p>
-            <p className="flex items-center gap-1 truncate text-sm font-semibold">
-              <MapPin className="size-3.5 shrink-0 text-fresh-ink" aria-hidden="true" />
-              <span className="truncate">{locationName ?? 'Choose a delivery spot'}</span>
-            </p>
+            <button
+              type="button"
+              id="header-deliver-to-btn"
+              data-testid="header-deliver-to-btn"
+              onClick={() => setIsLocationDialogOpen(true)}
+              className="group block w-full text-left rounded-tile px-1.5 py-0.5 -mx-1.5 transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand cursor-pointer"
+              aria-label={`Deliver to: ${displayLabel || 'Choose a delivery spot'}. Click to change delivery location.`}
+            >
+              <p className="text-[11px] font-medium uppercase tracking-wider text-ink-subtle flex items-center gap-1">
+                <span>Deliver to</span>
+                <ChevronDown className="size-3 text-ink-subtle group-hover:text-ink transition-transform duration-150" aria-hidden="true" />
+              </p>
+              <p className="flex items-center gap-1 truncate text-sm font-semibold text-ink group-hover:text-brand transition-colors">
+                <MapPin className="size-3.5 shrink-0 text-fresh-ink" aria-hidden="true" />
+                <span
+                  className="truncate max-w-[170px] sm:max-w-[240px] md:max-w-[320px]"
+                  title={displayLabel || 'Choose a delivery spot'}
+                >
+                  {displayLabel || 'Choose a delivery spot'}
+                </span>
+              </p>
+            </button>
           </div>
         )}
 
@@ -137,6 +172,12 @@ export function AppHeader({ variant = 'customer' }) {
           <AccountMenu user={user} variant={variant} />
         </div>
       </div>
+      {variant === 'customer' && (
+        <DeliveryLocationDialog
+          open={isLocationDialogOpen}
+          onOpenChange={setIsLocationDialogOpen}
+        />
+      )}
     </header>
   )
 }
@@ -276,5 +317,197 @@ function AccountMenu({ user, variant }) {
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  )
+}
+
+function DeliveryLocationDialog({ open, onOpenChange }) {
+  const checkoutDetails = useCartStore((s) => s.checkoutDetails)
+  const setCheckoutDetails = useCartStore((s) => s.setCheckoutDetails)
+  const clearActiveDestination = useCartStore((s) => s.clearActiveDestination)
+  const user = useAuthStore((s) => s.user)
+
+  const [customAddress, setCustomAddress] = useState(
+    checkoutDetails?.presetLocation === OTHER_LOCATION_VALUE
+      ? checkoutDetails?.customLocation || ''
+      : '',
+  )
+  const [customInstructions, setCustomInstructions] = useState(
+    checkoutDetails?.deliveryInstructions || '',
+  )
+
+  const savedLocation = useMemo(() => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const item = window.localStorage.getItem(SAVED_LOCATION_STORAGE_KEY)
+        if (!item) return null
+        const parsed = JSON.parse(item)
+        if (parsed.userId && user?.id && parsed.userId !== user.id) return null
+        return parsed
+      }
+    } catch {}
+    return null
+  }, [user?.id, open])
+
+  const handleSelectPreset = (preset) => {
+    setCheckoutDetails({
+      presetLocation: preset,
+      customLocation: '',
+      deliveryInstructions: customInstructions,
+    })
+    onOpenChange(false)
+  }
+
+  const handleApplyCustom = (e) => {
+    e?.preventDefault()
+    if (!customAddress.trim()) return
+    setCheckoutDetails({
+      presetLocation: OTHER_LOCATION_VALUE,
+      customLocation: customAddress.trim(),
+      deliveryInstructions: customInstructions.trim(),
+    })
+    onOpenChange(false)
+  }
+
+  const handleApplySaved = () => {
+    if (!savedLocation) return
+    setCheckoutDetails({
+      presetLocation: savedLocation.presetLocation || '',
+      customLocation: savedLocation.customLocation || '',
+      deliveryInstructions: savedLocation.deliveryInstructions || '',
+    })
+    onOpenChange(false)
+  }
+
+  const handleClear = () => {
+    clearActiveDestination()
+    onOpenChange(false)
+  }
+
+  const currentPreset = checkoutDetails?.presetLocation
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        title="Choose Delivery Location"
+        description="Select your campus delivery spot or enter an address."
+        className="max-w-md sm:max-w-lg"
+      >
+        {savedLocation && (
+          <div
+            data-testid="dialog-saved-location-banner"
+            className="mb-4 flex items-center justify-between gap-3 rounded-tile border border-brand/30 bg-brand-soft/40 p-3 text-xs"
+          >
+            <div className="flex items-center gap-2.5 min-w-0">
+              <Bookmark className="size-4 text-brand shrink-0" aria-hidden="true" />
+              <div className="min-w-0">
+                <p className="font-semibold text-ink leading-tight">Saved Default Address</p>
+                <p className="truncate text-ink-muted mt-0.5">
+                  {savedLocation.presetLocation === OTHER_LOCATION_VALUE
+                    ? savedLocation.customLocation
+                    : savedLocation.presetLocation}
+                  {savedLocation.deliveryInstructions ? ` • ${savedLocation.deliveryInstructions}` : ''}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              data-testid="dialog-apply-saved-btn"
+              onClick={handleApplySaved}
+              className="shrink-0 rounded-full bg-brand px-3 py-1 text-xs font-bold text-white shadow-1 hover:bg-brand/90 transition-colors cursor-pointer"
+            >
+              Apply
+            </button>
+          </div>
+        )}
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wider text-ink-subtle">
+              Preset Campus Spots
+            </span>
+            {checkoutDetails?.presetLocation && (
+              <button
+                type="button"
+                data-testid="dialog-clear-location-btn"
+                onClick={handleClear}
+                className="text-xs font-medium text-danger hover:underline cursor-pointer"
+              >
+                Clear selection
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            {PRESET_CAMPUS_LOCATIONS.map((preset) => {
+              const isSelected = currentPreset === preset
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  data-testid={`dialog-preset-${preset.toLowerCase().replace(/\s+/g, '-')}`}
+                  onClick={() => handleSelectPreset(preset)}
+                  className={cn(
+                    'flex items-center justify-between gap-2 rounded-tile border px-3 py-2 text-left text-xs font-medium transition-colors cursor-pointer',
+                    isSelected
+                      ? 'border-brand bg-brand-soft text-brand-ink font-semibold shadow-1'
+                      : 'border-line bg-surface hover:bg-surface-2 text-ink',
+                  )}
+                >
+                  <span className="flex items-center gap-1.5 truncate">
+                    <MapPin className="size-3.5 text-fresh-ink shrink-0" aria-hidden="true" />
+                    <span className="truncate">{preset}</span>
+                  </span>
+                  {isSelected && <Check className="size-3.5 text-fresh-ink shrink-0" aria-hidden="true" />}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <form onSubmit={handleApplyCustom} className="mt-4 space-y-3 border-t border-line/60 pt-3">
+          <span className="text-xs font-semibold uppercase tracking-wider text-ink-subtle block">
+            Or Custom Destination
+          </span>
+          <div className="space-y-2">
+            <input
+              type="text"
+              data-testid="dialog-custom-location-input"
+              placeholder="e.g. Science Block, Old Workshop"
+              value={customAddress}
+              onChange={(e) => setCustomAddress(e.target.value)}
+              maxLength={200}
+              className="w-full rounded-tile border border-line bg-surface px-3 py-2 text-xs text-ink placeholder:text-ink-subtle focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+            />
+            <input
+              type="text"
+              data-testid="dialog-custom-instructions-input"
+              placeholder="Room, floor, or nearby landmark (optional)"
+              value={customInstructions}
+              onChange={(e) => setCustomInstructions(e.target.value)}
+              maxLength={500}
+              className="w-full rounded-tile border border-line bg-surface px-3 py-2 text-xs text-ink placeholder:text-ink-subtle focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-1">
+            <DialogClose asChild>
+              <button
+                type="button"
+                className="rounded-tile border border-line px-3 py-1.5 text-xs font-semibold text-ink hover:bg-surface-2 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+            </DialogClose>
+            <button
+              type="submit"
+              data-testid="dialog-apply-custom-btn"
+              disabled={!customAddress.trim()}
+              className="rounded-tile bg-brand px-3.5 py-1.5 text-xs font-bold text-white shadow-1 hover:bg-brand/90 transition-colors disabled:opacity-50 cursor-pointer"
+            >
+              Set Custom Address
+            </button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }

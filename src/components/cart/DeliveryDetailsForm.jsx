@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { Field } from '@/components/ui/Field'
 import { Input } from '@/components/ui/Input'
+import { useAuthStore } from '@/stores/authStore'
 import {
   PRESET_CAMPUS_LOCATIONS,
   OTHER_LOCATION_VALUE,
@@ -48,11 +49,19 @@ export function DeliveryDetailsForm({
   const dropdownRef = useRef(null)
   const listboxRef = useRef(null)
 
+  const user = useAuthStore((s) => s.user)
+
   const [savedLocation, setSavedLocation] = useState(() => {
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
         const item = window.localStorage.getItem(SAVED_LOCATION_STORAGE_KEY)
-        return item ? JSON.parse(item) : null
+        if (!item) return null
+        const parsed = JSON.parse(item)
+        const currentUser = useAuthStore.getState().user
+        if (parsed.userId && currentUser?.id && parsed.userId !== currentUser.id) {
+          return null
+        }
+        return parsed
       }
     } catch {
       // Ignore localStorage read error
@@ -60,6 +69,26 @@ export function DeliveryDetailsForm({
     return null
   })
   const [saveFeedback, setSaveFeedback] = useState('')
+
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const item = window.localStorage.getItem(SAVED_LOCATION_STORAGE_KEY)
+        if (!item) {
+          setSavedLocation(null)
+          return
+        }
+        const parsed = JSON.parse(item)
+        if (parsed.userId && user?.id && parsed.userId !== user.id) {
+          setSavedLocation(null)
+          return
+        }
+        setSavedLocation(parsed)
+      }
+    } catch {
+      setSavedLocation(null)
+    }
+  }, [user?.id])
 
   const handleApplySavedLocation = () => {
     if (!savedLocation) return
@@ -85,6 +114,7 @@ export function DeliveryDetailsForm({
     if (!details.presetLocation) return
     try {
       const payload = {
+        userId: user?.id || null,
         presetLocation: details.presetLocation,
         customLocation: details.customLocation || '',
         deliveryInstructions: details.deliveryInstructions || '',

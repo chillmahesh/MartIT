@@ -5,6 +5,7 @@ import { setTokenProvider, setOnUnauthorizedHandler } from '@/services/api'
 import { zustandSafeStorage } from '@/utils/storage'
 import { isMockBackend } from '@/config/env'
 import { validateSupabaseConfig } from '@/config/supabaseClient'
+import { useCartStore } from '@/stores/cartStore'
 
 let authSubscription = null
 
@@ -348,6 +349,12 @@ export const useAuthStore = create(
       async logout() {
         try {
           await authService.logout()
+        } catch {
+          // ignore
+        }
+        try {
+          useCartStore.getState().clear()
+          useCartStore.getState().resetCheckoutDetails()
         } catch {
           // ignore
         }

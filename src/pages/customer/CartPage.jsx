@@ -32,6 +32,7 @@ import { OrderConfirmationView } from '@/components/cart/OrderConfirmationView'
 import {
   validateCheckoutDetails,
   mapCampusLocationToDestinationId,
+  CAMPUS_LOCATION_DESTINATION_MAP,
   OTHER_LOCATION_VALUE,
 } from '@/utils/checkoutValidation'
 import { Button } from '@/components/ui/Button'
@@ -105,8 +106,10 @@ export default function CartPage() {
   // Prefill authenticated profile details without overwriting existing user edits
   const userName = user?.name
   const userPhone = user?.phone
+  const userDefaultLocationId = user?.defaultLocationId
+  const userId = user?.id
+
   useEffect(() => {
-    if (!userName && !userPhone) return
     const updates = {}
     if (!checkoutDetails?.fullName && userName) {
       updates.fullName = userName
@@ -114,20 +117,92 @@ export default function CartPage() {
     if (!checkoutDetails?.mobileNumber && userPhone) {
       updates.mobileNumber = userPhone
     }
+    // Prefill active destination if not set and not explicitly cleared
+    if (
+      !checkoutDetails?.isCleared &&
+      !checkoutDetails?.presetLocation &&
+      !checkoutDetails?.customLocation
+    ) {
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          const raw = window.localStorage.getItem('martit_saved_delivery_location')
+          if (raw) {
+            const saved = JSON.parse(raw)
+            if (!saved.userId || !userId || saved.userId === userId) {
+              if (saved.presetLocation) updates.presetLocation = saved.presetLocation
+              if (saved.customLocation) updates.customLocation = saved.customLocation
+              if (saved.deliveryInstructions) updates.deliveryInstructions = saved.deliveryInstructions
+            }
+          }
+        }
+      } catch {}
+
+      if (!updates.presetLocation && userDefaultLocationId) {
+        const matchedPreset = Object.entries(CAMPUS_LOCATION_DESTINATION_MAP).find(
+          ([, destId]) => destId === userDefaultLocationId,
+        )?.[0]
+        if (matchedPreset) {
+          updates.presetLocation = matchedPreset
+        }
+      }
+    }
+
     if (Object.keys(updates).length > 0) {
       setCheckoutDetails(updates)
     }
-  }, [userName, userPhone, checkoutDetails?.fullName, checkoutDetails?.mobileNumber, setCheckoutDetails])
+  }, [
+    userName,
+    userPhone,
+    userDefaultLocationId,
+    userId,
+    checkoutDetails?.fullName,
+    checkoutDetails?.mobileNumber,
+    checkoutDetails?.presetLocation,
+    checkoutDetails?.customLocation,
+    checkoutDetails?.isCleared,
+    setCheckoutDetails,
+  ])
 
   // Map selected campus preset / other to authoritative registered delivery destination ID
   const selectedLocationId = useMemo(() => {
-    const preset = checkoutDetails?.presetLocation || 'A Block'
+    if (checkoutDetails?.isCleared) {
+      return null
+    }
+    const preset = checkoutDetails?.presetLocation
+    const custom = checkoutDetails?.customLocation
+    if (preset) {
+      return mapCampusLocationToDestinationId(
+        preset,
+        locations,
+        user?.defaultLocationId || 'loc_hostel_b',
+      )
+    }
+    if (custom) {
+      return mapCampusLocationToDestinationId(
+        OTHER_LOCATION_VALUE,
+        locations,
+        user?.defaultLocationId || 'loc_hostel_b',
+      )
+    }
+    if (user?.defaultLocationId) {
+      const exists = locations.some((l) => l.id === user.defaultLocationId)
+      if (exists || locations.length === 0) {
+        return user.defaultLocationId
+      }
+    }
+    // Fallback for SSR / initial cart preview
     return mapCampusLocationToDestinationId(
-      preset,
+      'A Block',
       locations,
-      user?.defaultLocationId || 'loc_hostel_b',
+      'loc_hostel_a',
     )
-  }, [checkoutDetails?.presetLocation, locations, user?.defaultLocationId])
+  }, [
+    checkoutDetails?.presetLocation,
+    checkoutDetails?.customLocation,
+    checkoutDetails?.isCleared,
+    locations,
+    user?.defaultLocationId,
+  ])
 
   // Order submission state
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -250,6 +325,9 @@ export default function CartPage() {
   }
 
   const formattedAddressPreview = useMemo(() => {
+    if (checkoutDetails?.isCleared) {
+      return 'Select campus destination'
+    }
     const isOther =
       checkoutDetails?.presetLocation === OTHER_LOCATION_VALUE ||
       checkoutDetails?.presetLocation === 'other'
@@ -260,14 +338,24 @@ export default function CartPage() {
         ? `${custom}, ${checkoutDetails.deliveryInstructions.trim()}`
         : custom
     }
-    const preset = checkoutDetails?.presetLocation || 'A Block'
-    return checkoutDetails?.deliveryInstructions?.trim()
-      ? `${preset}, ${checkoutDetails.deliveryInstructions.trim()}`
-      : preset
+    if (checkoutDetails?.presetLocation) {
+      const preset = checkoutDetails.presetLocation
+      return checkoutDetails?.deliveryInstructions?.trim()
+        ? `${preset}, ${checkoutDetails.deliveryInstructions.trim()}`
+        : preset
+    }
+    if (user?.defaultLocationId) {
+      const locName = locations.find((l) => l.id === user.defaultLocationId)?.name
+      if (locName) return locName
+    }
+    return 'A Block'
   }, [
     checkoutDetails?.presetLocation,
     checkoutDetails?.customLocation,
     checkoutDetails?.deliveryInstructions,
+    checkoutDetails?.isCleared,
+    user?.defaultLocationId,
+    locations,
   ])
 
   // Handle Order Placement

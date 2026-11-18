@@ -43,9 +43,10 @@ export const useCartStore = create(
       checkoutDetails: {
         fullName: '',
         mobileNumber: '',
-        presetLocation: 'A Block',
+        presetLocation: '',
         customLocation: '',
         deliveryInstructions: '',
+        isCleared: false,
       },
 
       setQuantity(productId, quantity, storeId) {
@@ -111,6 +112,25 @@ export const useCartStore = create(
           checkoutDetails: {
             ...s.checkoutDetails,
             ...details,
+            isCleared:
+              details?.isCleared !== undefined
+                ? details.isCleared
+                : (details?.presetLocation && details.presetLocation.trim()) ||
+                    (details?.customLocation && details.customLocation.trim())
+                  ? false
+                  : s.checkoutDetails.isCleared,
+          },
+        }))
+      },
+
+      clearActiveDestination() {
+        set((s) => ({
+          checkoutDetails: {
+            ...s.checkoutDetails,
+            presetLocation: '',
+            customLocation: '',
+            deliveryInstructions: '',
+            isCleared: true,
           },
         }))
       },
@@ -120,9 +140,10 @@ export const useCartStore = create(
           checkoutDetails: {
             fullName: '',
             mobileNumber: '',
-            presetLocation: 'A Block',
+            presetLocation: '',
             customLocation: '',
             deliveryInstructions: '',
+            isCleared: false,
           },
         })
       },
@@ -141,6 +162,7 @@ export const useCartStore = create(
         storeId: s.storeId,
         lines: s.lines,
         warningDismissed: s.warningDismissed,
+        checkoutDetails: s.checkoutDetails,
       }),
       storage: createJSONStorage(() => zustandSafeStorage),
     },
