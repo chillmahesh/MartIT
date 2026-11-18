@@ -645,3 +645,55 @@ This is the durable execution ledger. Update it throughout implementation. Never
 
 
 
+---
+
+## Milestone 13: Fix False "Email Already Exists" Signup Error & Account Enumeration Protection
+
+- **Date:** 2026-11-18
+- **Status:** `VERIFIED`
+- **Objective:** Fix false "Email already exists" error displayed on user registration attempts for new emails; properly categorize Supabase Auth error responses (weak password, rate limits, database triggers, network failures, explicit duplicate emails); handle account-enumeration-protected responses safely according to Supabase conventions.
+- **Root Cause Analysis:**
+  1. Overbroad 422 HTTP Status Mapping: In `src/services/authService.js`, line 141 checked:
+     `if (msg.includes('already registered') || msg.includes('user already exists') || error.status === 422)`
+     Supabase GoTrue returns HTTP 422 (Unprocessable Entity) for multiple non-duplicate conditions, including weak passwords (`code: 'weak_password'`), signups disabled (`code: 'signup_disabled'`), email logins disabled (`code: 'email_provider_disabled'`), and general validation rejections. Because of the blanket `error.status === 422` check, all of these failures were falsely reported as:
+     *"An account with this email already exists. Please log in instead."*
+  2. Sub-optimal Account Enumeration / Confirmation Handling: When Supabase identity enumeration protection is active, GoTrue returns an empty identities array (`data.user.identities: []`) with HTTP 200. The previous code immediately threw a duplicate error `409 DUPLICATE_EMAIL`. In reality, per Supabase conventions, an empty identities array indicates that the email is already registered (confirmed or unconfirmed) and should be handled safely as a confirmation-pending response prompting the user to check their email or log in directly, without leaking user existence to attackers or blocking legitimate users.
+- **Implementation:**
+  1. `src/services/authService.js`:
+     - Removed overbroad `error.status === 422` mapping to `DUPLICATE_EMAIL`.
+     - Granularly categorized error conditions:
+       - `RATE_LIMITED` (`429`): Over email send rate limit or too many requests.
+       - `DUPLICATE_EMAIL` (`409`): Strictly when `code === 'user_already_exists'`, `code === 'email_exists'`, or message explicitly indicates duplicate registration.
+       - `WEAK_PASSWORD` (`422`): GoTrue password policy rejections (`weak_password`, message mentioning weak/short/common password).
+       - `SIGNUP_DISABLED` (`403`): `signup_disabled` or `email_provider_disabled`.
+       - `DATABASE_ERROR` (`500`): Postgres trigger/profile creation failures (`unexpected_failure`, `Database error saving new user`).
+       - `NETWORK_ERROR` (`0`): Offline, DNS, CORS, or connection failures (`AuthRetryableFetchError`, `Failed to fetch`).
+       - Other GoTrue errors preserve their real status and message (`SIGNUP_ERROR`).
+     - Handled empty identities array (`data.user.identities: []`) per Supabase conventions: returns `{ session: null, authUser: data.user, needsConfirmation: true, role: cleanRole, isEnumerationProtected: true }` without falsely throwing duplicate error.
+     - Provided explicit `emailRedirectTo: '${origin}/login'` option in `supabase.auth.signUp()`.
+  2. `src/stores/authStore.js`:
+     - Preserved `isEnumerationProtected` pass-through in `authStore.signup()`.
+  3. `src/pages/auth/SignupPage.jsx`:
+     - Stored `formErrorCode` to render targeted recovery actions in error alert (direct link to `/login` for duplicate emails, password complexity guidance for weak passwords, wait tip for rate limits).
+     - Enhanced email verification view to support enumeration protection guidance with direct "Go to Log in" button.
+  4. `src/pages/auth/__tests__/signupErrorHandling.test.js`:
+     - 12 comprehensive unit and integration tests covering all 8 specified regression test cases plus UI integration:
+       1. New email signup success with confirmation pending (`session: null`).
+       2. New email signup success with active session (auto-confirm).
+       3. Genuinely existing user signup returning duplicate email (code: `user_already_exists`).
+       4. Genuinely existing user signup returning duplicate email (message: `already been registered`).
+       5. Account-enumeration-protected response (`identities: []`) handled safely as confirmation-pending without false duplicate error.
+       6. Weak password rejection (`422`) not mapped to duplicate email, throws `422 WEAK_PASSWORD`.
+       7. Rate limit rejection (`429`) not mapped to duplicate email, throws `429 RATE_LIMITED`.
+       8. Database trigger error (`500`) not mapped to duplicate email, throws `500 DATABASE_ERROR`.
+       9. Network failure (`status: 0`) not mapped to duplicate email, throws `0 NETWORK_ERROR`.
+       10. Signup disabled (`422`) not mapped to duplicate email, throws `403 SIGNUP_DISABLED`.
+       11. Store state propagation of `isEnumerationProtected`.
+       12. Verification notice view rendering with login action.
+- **Verification Commands & Evidence:**
+  - `npx vitest run src/pages/auth/__tests__/signupErrorHandling.test.js`: 12 passed (100%), exit code 0.
+  - `npx vitest run src/pages/auth/__tests__/authPages.test.js src/stores/__tests__/authStore.test.js src/pages/auth/__tests__/resetPasswordFlow.test.js src/pages/admin/__tests__/adminAuth.test.jsx server/src/__tests__/authAndPermissions.test.js`: 105 passed, exit code 0.
+  - `npm test`: 46 test files, 821 passed, 1 skipped (822 total), exit code 0.
+  - `npm run test:server`: 17 test files, 380 passed, 1 skipped, exit code 0.
+  - `git diff --check`: 0 issues, clean exit code 0.
+  - `npm run build`: Production client, SSR build, and static pre-rendering cleanly succeeded, exit code 0.
